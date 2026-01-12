@@ -318,12 +318,17 @@ function generateFieldMapping(entity: string, fields?: string[]): string {
     } else if (entity === 'projects') {
       return `
         const taskArray = item.tasks || [];
+        const activeTaskArray = taskArray.filter(t =>
+          t.taskStatus !== Task.Status.Completed &&
+          t.taskStatus !== Task.Status.Dropped
+        );
         return {
           id: item.id.primaryKey,
           name: item.name || "",
           status: projectStatusMap[item.status] || "Unknown",
           folderName: item.parentFolder ? item.parentFolder.name : null,
           taskCount: taskArray.length,
+          activeTaskCount: activeTaskArray.length,
           flagged: item.flagged || false,
           dueDate: formatDate(item.dueDate),
           deferDate: formatDate(item.deferDate),
@@ -390,6 +395,8 @@ function generateFieldMapping(entity: string, fields?: string[]): string {
       return `folderID: item.parentFolder ? item.parentFolder.id.primaryKey : null`;
     } else if (field === 'taskCount') {
       return `taskCount: item.tasks ? item.tasks.length : 0`;
+    } else if (field === 'activeTaskCount') {
+      return `activeTaskCount: item.tasks ? item.tasks.filter(t => t.taskStatus !== Task.Status.Completed && t.taskStatus !== Task.Status.Dropped).length : 0`;
     } else if (field === 'tasks') {
       return `tasks: item.tasks ? item.tasks.map(t => t.id.primaryKey) : []`;
     } else if (field === 'projectCount') {

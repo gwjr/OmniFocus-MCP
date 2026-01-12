@@ -18,7 +18,7 @@ export const schema = z.object({
     hasNote: z.boolean().optional().describe("Filter by note presence. true = items with non-empty notes (whitespace ignored), false = items with no notes or only whitespace")
   }).optional().describe("Optional filters to narrow results. ALL filters combine with AND logic (must match all). Within array filters (tags, status) OR logic applies"),
   
-  fields: z.array(z.string()).optional().describe("Specific fields to return (reduces response size). TASK FIELDS: id, name, note, flagged, taskStatus, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, sequential, completedByChildren, inInbox, modificationDate (or modified), creationDate (or added). PROJECT FIELDS: id, name, status, note, folderName, folderID, sequential, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, completedByChildren, containsSingletonActions, taskCount, tasks, modificationDate, creationDate. FOLDER FIELDS: id, name, path, parentFolderID, status, projectCount, projects, subfolders. NOTE: Date fields use 'added' and 'modified' in OmniFocus API"),
+  fields: z.array(z.string()).optional().describe("Specific fields to return (reduces response size). TASK FIELDS: id, name, note, flagged, taskStatus, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, sequential, completedByChildren, inInbox, modificationDate (or modified), creationDate (or added). PROJECT FIELDS: id, name, status, note, folderName, folderID, sequential, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, completedByChildren, containsSingletonActions, taskCount, activeTaskCount, tasks, modificationDate, creationDate. FOLDER FIELDS: id, name, path, parentFolderID, status, projectCount, projects, subfolders. NOTE: Date fields use 'added' and 'modified' in OmniFocus API"),
   
   limit: z.number().optional().describe("Maximum number of items to return. Useful for large result sets. Default: no limit"),
   
@@ -200,11 +200,17 @@ function formatProjects(projects: any[]): string {
   return projects.map(project => {
     const status = project.status !== 'Active' ? ` [${project.status}]` : '';
     const folder = project.folderName ? ` 📁 ${project.folderName}` : '';
-    const taskCount = project.taskCount !== undefined && project.taskCount !== null ? ` (${project.taskCount} tasks)` : '';
+    // Show active/total task count when activeTaskCount is available
+    let taskCountStr = '';
+    if (project.activeTaskCount !== undefined && project.taskCount !== undefined) {
+      taskCountStr = ` (${project.activeTaskCount}/${project.taskCount} tasks)`;
+    } else if (project.taskCount !== undefined && project.taskCount !== null) {
+      taskCountStr = ` (${project.taskCount} tasks)`;
+    }
     const flagged = project.flagged ? '🚩 ' : '';
     const due = project.dueDate ? ` [due: ${formatDate(project.dueDate)}]` : '';
 
-    let result = `P: ${flagged}${project.name}${status}${due}${folder}${taskCount}`;
+    let result = `P: ${flagged}${project.name}${status}${due}${folder}${taskCountStr}`;
 
     // Add note on a new line if present
     if (project.note) {
