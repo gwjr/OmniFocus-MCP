@@ -4,6 +4,7 @@ import { writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { createDateOutsideTellBlock } from '../../utils/dateFormatting.js';
+import { escapeForAppleScript } from '../../utils/applescriptEscaping.js';
 const execAsync = promisify(exec);
 
 // Interface for task creation parameters
@@ -27,16 +28,16 @@ export interface AddOmniFocusTaskParams {
  */
 function generateAppleScript(params: AddOmniFocusTaskParams): string {
   // Sanitize and prepare parameters for AppleScript
-  const name = params.name.replace(/['"\\]/g, '\\$&'); // Escape quotes and backslashes
-  const note = params.note?.replace(/['"\\]/g, '\\$&') || '';
+  const name = escapeForAppleScript(params.name);
+  const note = escapeForAppleScript(params.note);
   const dueDate = params.dueDate || '';
   const deferDate = params.deferDate || '';
   const flagged = params.flagged === true;
   const estimatedMinutes = params.estimatedMinutes?.toString() || '';
   const tags = params.tags || [];
-  const projectName = params.projectName?.replace(/['"\\]/g, '\\$&') || '';
-  const parentTaskId = params.parentTaskId?.replace(/['"\\]/g, '\\$&') || '';
-  const parentTaskName = params.parentTaskName?.replace(/['"\\]/g, '\\$&') || '';
+  const projectName = escapeForAppleScript(params.projectName);
+  const parentTaskId = escapeForAppleScript(params.parentTaskId);
+  const parentTaskName = escapeForAppleScript(params.parentTaskName);
   
   // Generate date constructions outside tell blocks
   let datePreScript = '';
@@ -171,7 +172,7 @@ function generateAppleScript(params: AddOmniFocusTaskParams): string {
         
         -- Add tags if provided
         ${tags.length > 0 ? tags.map(tag => {
-          const sanitizedTag = tag.replace(/['"\\]/g, '\\$&');
+          const sanitizedTag = escapeForAppleScript(tag);
           return `
           try
             set theTag to first flattened tag where name = "${sanitizedTag}"

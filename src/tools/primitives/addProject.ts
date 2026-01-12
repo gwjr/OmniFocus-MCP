@@ -1,6 +1,7 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { createDateOutsideTellBlock } from '../../utils/dateFormatting.js';
+import { escapeForAppleScript } from '../../utils/applescriptEscaping.js';
 const execAsync = promisify(exec);
 
 // Interface for project creation parameters
@@ -21,14 +22,14 @@ export interface AddProjectParams {
  */
 function generateAppleScript(params: AddProjectParams): string {
   // Sanitize and prepare parameters for AppleScript
-  const name = params.name.replace(/['"\\]/g, '\\$&'); // Escape quotes and backslashes
-  const note = params.note?.replace(/['"\\]/g, '\\$&') || '';
+  const name = escapeForAppleScript(params.name);
+  const note = escapeForAppleScript(params.note);
   const dueDate = params.dueDate || '';
   const deferDate = params.deferDate || '';
   const flagged = params.flagged === true;
   const estimatedMinutes = params.estimatedMinutes?.toString() || '';
   const tags = params.tags || [];
-  const folderName = params.folderName?.replace(/['"\\]/g, '\\$&') || '';
+  const folderName = escapeForAppleScript(params.folderName);
   const sequential = params.sequential === true;
   
   // Generate date constructions outside tell blocks
@@ -82,7 +83,7 @@ function generateAppleScript(params: AddProjectParams): string {
         
         -- Add tags if provided
         ${tags.length > 0 ? tags.map(tag => {
-          const sanitizedTag = tag.replace(/['"\\]/g, '\\$&');
+          const sanitizedTag = escapeForAppleScript(tag);
           return `
           try
             set theTag to first flattened tag where name = "${sanitizedTag}"
