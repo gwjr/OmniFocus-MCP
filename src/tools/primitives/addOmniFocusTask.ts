@@ -13,6 +13,7 @@ export interface AddOmniFocusTaskParams {
   note?: string;
   dueDate?: string; // ISO date string
   deferDate?: string; // ISO date string
+  plannedDate?: string; // ISO date string
   flagged?: boolean;
   estimatedMinutes?: number;
   tags?: string[]; // Tag names
@@ -32,26 +33,33 @@ function generateAppleScript(params: AddOmniFocusTaskParams): string {
   const note = escapeForAppleScript(params.note);
   const dueDate = params.dueDate || '';
   const deferDate = params.deferDate || '';
+  const plannedDate = params.plannedDate || '';
   const flagged = params.flagged === true;
   const estimatedMinutes = params.estimatedMinutes?.toString() || '';
   const tags = params.tags || [];
   const projectName = escapeForAppleScript(params.projectName);
   const parentTaskId = escapeForAppleScript(params.parentTaskId);
   const parentTaskName = escapeForAppleScript(params.parentTaskName);
-  
+
   // Generate date constructions outside tell blocks
   let datePreScript = '';
   let dueDateVar = '';
   let deferDateVar = '';
-  
+  let plannedDateVar = '';
+
   if (dueDate) {
     dueDateVar = `dueDate${Math.random().toString(36).substr(2, 9)}`;
     datePreScript += createDateOutsideTellBlock(dueDate, dueDateVar) + '\n\n';
   }
-  
+
   if (deferDate) {
     deferDateVar = `deferDate${Math.random().toString(36).substr(2, 9)}`;
     datePreScript += createDateOutsideTellBlock(deferDate, deferDateVar) + '\n\n';
+  }
+
+  if (plannedDate) {
+    plannedDateVar = `plannedDate${Math.random().toString(36).substr(2, 9)}`;
+    datePreScript += createDateOutsideTellBlock(plannedDate, plannedDateVar) + '\n\n';
   }
   
   // Construct AppleScript with error handling and ASObjC for JSON escaping
@@ -142,6 +150,9 @@ end escapeForJSON
         ${deferDate ? `
           -- Set defer date
           set defer date of newTask to ` + deferDateVar : ''}
+        ${plannedDate ? `
+          -- Set planned date
+          set planned date of newTask to ` + plannedDateVar : ''}
         ${flagged ? `set flagged of newTask to true` : ''}
         ${estimatedMinutes ? `set estimated minutes of newTask to ${estimatedMinutes}` : ''}
         
