@@ -243,17 +243,24 @@ function generateFilterConditions(entity: string, filters: any): string {
   }
   
   if (entity === 'projects') {
+    if (filters.projectName) {
+      conditions.push(`
+        const projectName = item.name.toLowerCase();
+        if (!projectName.includes("${filters.projectName.toLowerCase()}")) return false;
+      `);
+    }
+
     if (filters.folderId) {
       conditions.push(`
-        if (!item.parentFolder || 
+        if (!item.parentFolder ||
             item.parentFolder.id.primaryKey !== "${filters.folderId}") {
           return false;
         }
       `);
     }
-    
+
     if (filters.status && filters.status.length > 0) {
-      const statusCondition = filters.status.map((status: string) => 
+      const statusCondition = filters.status.map((status: string) =>
         `projectStatusMap[item.status] === "${status}"`
       ).join(' || ');
       conditions.push(`if (!(${statusCondition})) return false;`);
