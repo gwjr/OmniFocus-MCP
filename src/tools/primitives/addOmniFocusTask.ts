@@ -54,15 +54,26 @@ function generateAppleScript(params: AddOmniFocusTaskParams): string {
     datePreScript += createDateOutsideTellBlock(deferDate, deferDateVar) + '\n\n';
   }
   
-  // Construct AppleScript with error handling
-  let script = datePreScript + `
-  try
-    tell application "OmniFocus"
-      tell front document
-        -- Resolve parent task if provided
-        set newTask to missing value
-        set parentTask to missing value
-        set placement to ""
+  // Construct AppleScript with error handling and ASObjC for JSON escaping
+  let script = `use framework "Foundation"
+
+property NSString : a reference to current application's NSString
+property NSJSONSerialization : a reference to current application's NSJSONSerialization
+
+on escapeForJSON(theText)
+  set nsStr to NSString's stringWithString:theText
+  set jsonData to NSJSONSerialization's dataWithJSONObject:{nsStr} options:0 |error|:(missing value)
+  set jsonArrayString to (NSString's alloc()'s initWithData:jsonData encoding:4) as text
+  return text 3 thru -3 of jsonArrayString
+end escapeForJSON
+
+` + datePreScript + `try
+  tell application "OmniFocus"
+    tell front document
+      -- Resolve parent task if provided
+      set newTask to missing value
+      set parentTask to missing value
+      set placement to ""
 
         if "${parentTaskId}" is not "" then
           try
@@ -188,12 +199,13 @@ function generateAppleScript(params: AddOmniFocusTaskParams): string {
           end try`;
         }).join('\n') : ''}
         
-        -- Return success with task ID and placement
-        return "{\\\"success\\\":true,\\\"taskId\\\":\\"" & taskId & "\\",\\\"name\\\":\\"${name}\\\",\\\"placement\\\":\\"" & placement & "\\"}"
+        -- Return success with task ID, name, and placement (escape name for JSON)
+        set taskName to name of newTask
+        return "{\\\"success\\\":true,\\\"taskId\\\":\\"" & taskId & "\\",\\\"name\\\":\\"" & my escapeForJSON(taskName) & "\\",\\\"placement\\\":\\"" & placement & "\\"}"
       end tell
     end tell
   on error errorMessage
-    return "{\\\"success\\\":false,\\\"error\\\":\\"" & errorMessage & "\\"}"
+    return "{\\\"success\\\":false,\\\"error\\\":\\"" & my escapeForJSON(errorMessage) & "\\"}"
   end try
   `;
   

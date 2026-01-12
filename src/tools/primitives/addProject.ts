@@ -47,24 +47,35 @@ function generateAppleScript(params: AddProjectParams): string {
     datePreScript += createDateOutsideTellBlock(deferDate, deferDateVar) + '\n\n';
   }
   
-  // Construct AppleScript with error handling
-  let script = datePreScript + `
-  try
-    tell application "OmniFocus"
-      tell front document
-        -- Determine the container (root or folder)
-        if "${folderName}" is "" then
-          -- Create project at the root level
-          set newProject to make new project with properties {name:"${name}"}
-        else
-          -- Use specified folder
-          try
-            set theFolder to first flattened folder where name = "${folderName}"
-            set newProject to make new project with properties {name:"${name}"} at end of projects of theFolder
-          on error
-            return "{\\\"success\\\":false,\\\"error\\\":\\\"Folder not found: ${folderName}\\\"}"
-          end try
-        end if
+  // Construct AppleScript with error handling and ASObjC for JSON escaping
+  let script = `use framework "Foundation"
+
+property NSString : a reference to current application's NSString
+property NSJSONSerialization : a reference to current application's NSJSONSerialization
+
+on escapeForJSON(theText)
+  set nsStr to NSString's stringWithString:theText
+  set jsonData to NSJSONSerialization's dataWithJSONObject:{nsStr} options:0 |error|:(missing value)
+  set jsonArrayString to (NSString's alloc()'s initWithData:jsonData encoding:4) as text
+  return text 3 thru -3 of jsonArrayString
+end escapeForJSON
+
+` + datePreScript + `try
+  tell application "OmniFocus"
+    tell front document
+      -- Determine the container (root or folder)
+      if "${folderName}" is "" then
+        -- Create project at the root level
+        set newProject to make new project with properties {name:"${name}"}
+      else
+        -- Use specified folder
+        try
+          set theFolder to first flattened folder where name = "${folderName}"
+          set newProject to make new project with properties {name:"${name}"} at end of projects of theFolder
+        on error
+          return "{\\\"success\\\":false,\\\"error\\\":\\\"Folder not found: ${folderName}\\\"}"
+        end try
+      end if
         
         -- Set project properties
         ${note ? `set note of newProject to "${note}"` : ''}
@@ -99,12 +110,13 @@ function generateAppleScript(params: AddProjectParams): string {
           end try`;
         }).join('\n') : ''}
         
-        -- Return success with project ID
-        return "{\\\"success\\\":true,\\\"projectId\\\":\\"" & projectId & "\\",\\\"name\\\":\\"${name}\\"}"
+        -- Return success with project ID (escape name for JSON)
+        set projectName to name of newProject
+        return "{\\\"success\\\":true,\\\"projectId\\\":\\"" & projectId & "\\",\\\"name\\\":\\"" & my escapeForJSON(projectName) & "\\"}"
       end tell
     end tell
   on error errorMessage
-    return "{\\\"success\\\":false,\\\"error\\\":\\"" & errorMessage & "\\"}"
+    return "{\\\"success\\\":false,\\\"error\\\":\\"" & my escapeForJSON(errorMessage) & "\\"}"
   end try
   `;
   

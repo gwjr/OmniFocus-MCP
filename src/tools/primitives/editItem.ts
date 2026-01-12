@@ -81,8 +81,20 @@ function generateAppleScript(params: EditItemParams): string {
     script += datePreScripts.join('\n') + '\n\n';
   }
   
-  // Start the main script
-  script += `try
+  // Start the main script with ASObjC support for JSON escaping
+  script += `use framework "Foundation"
+
+property NSString : a reference to current application's NSString
+property NSJSONSerialization : a reference to current application's NSJSONSerialization
+
+on escapeForJSON(theText)
+  set nsStr to NSString's stringWithString:theText
+  set jsonData to NSJSONSerialization's dataWithJSONObject:{nsStr} options:0 |error|:(missing value)
+  set jsonArrayString to (NSString's alloc()'s initWithData:jsonData encoding:4) as text
+  return text 3 thru -3 of jsonArrayString
+end escapeForJSON
+
+try
   tell application "OmniFocus"
     tell front document
       -- Find the item to edit
@@ -418,9 +430,9 @@ function generateAppleScript(params: EditItemParams): string {
             set changedPropsText to changedPropsText & ", "
           end if
         end repeat
-        
-        -- Return success with details
-        return "{\\\"success\\\":true,\\\"id\\\":\\"" & itemId & "\\",\\\"name\\\":\\"" & itemName & "\\",\\\"changedProperties\\\":\\"" & changedPropsText & "\\"}"
+
+        -- Return success with details (escape name for JSON)
+        return "{\\\"success\\\":true,\\\"id\\\":\\"" & itemId & "\\",\\\"name\\\":\\"" & my escapeForJSON(itemName) & "\\",\\\"changedProperties\\\":\\"" & changedPropsText & "\\"}"
       else
         -- Item not found
         return "{\\\"success\\\":false,\\\"error\\\":\\\"Item not found\\"}"
@@ -428,7 +440,7 @@ function generateAppleScript(params: EditItemParams): string {
     end tell
   end tell
 on error errorMessage
-  return "{\\\"success\\\":false,\\\"error\\\":\\"" & errorMessage & "\\"}"
+  return "{\\\"success\\\":false,\\\"error\\\":\\"" & my escapeForJSON(errorMessage) & "\\"}"
 end try
 `;
   

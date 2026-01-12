@@ -24,13 +24,24 @@ function generateAppleScript(params: RemoveItemParams): string {
     return `return "{\\\"success\\\":false,\\\"error\\\":\\\"Either id or name must be provided\\\"}"`;
   }
   
-  // Construct AppleScript with error handling
-  let script = `
-  try
-    tell application "OmniFocus"
-      tell front document
-        -- Find the item to remove
-        set foundItem to missing value
+  // Construct AppleScript with error handling and ASObjC for JSON escaping
+  let script = `use framework "Foundation"
+
+property NSString : a reference to current application's NSString
+property NSJSONSerialization : a reference to current application's NSJSONSerialization
+
+on escapeForJSON(theText)
+  set nsStr to NSString's stringWithString:theText
+  set jsonData to NSJSONSerialization's dataWithJSONObject:{nsStr} options:0 |error|:(missing value)
+  set jsonArrayString to (NSString's alloc()'s initWithData:jsonData encoding:4) as text
+  return text 3 thru -3 of jsonArrayString
+end escapeForJSON
+
+try
+  tell application "OmniFocus"
+    tell front document
+      -- Find the item to remove
+      set foundItem to missing value
 `;
         
   // Add ID search if provided
@@ -118,12 +129,12 @@ function generateAppleScript(params: RemoveItemParams): string {
         if foundItem is not missing value then
           set itemName to name of foundItem
           set itemId to id of foundItem as string
-          
+
           -- Delete the item
           delete foundItem
-          
-          -- Return success
-          return "{\\\"success\\\":true,\\\"id\\\":\\"" & itemId & "\\",\\\"name\\\":\\"" & itemName & "\\"}"
+
+          -- Return success (escape name for JSON)
+          return "{\\\"success\\\":true,\\\"id\\\":\\"" & itemId & "\\",\\\"name\\\":\\"" & my escapeForJSON(itemName) & "\\"}"
         else
           -- Item not found
           return "{\\\"success\\\":false,\\\"error\\\":\\\"Item not found\\\"}"
@@ -131,7 +142,7 @@ function generateAppleScript(params: RemoveItemParams): string {
       end tell
     end tell
   on error errorMessage
-    return "{\\\"success\\\":false,\\\"error\\\":\\"" & errorMessage & "\\"}"
+    return "{\\\"success\\\":false,\\\"error\\\":\\"" & my escapeForJSON(errorMessage) & "\\"}"
   end try
   `;
   
