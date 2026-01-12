@@ -259,19 +259,19 @@ function generateAppleScript(params: EditItemParams): string {
     if (params.newStatus !== undefined) {
       if (params.newStatus === 'completed') {
         script += `
-        -- Mark task as completed
-        set completed of foundItem to true
+        -- Mark task as completed (using verb, not property assignment)
+        mark complete foundItem
         set end of changedProperties to "status (completed)"
 `;
       } else if (params.newStatus === 'dropped') {
         script += `
-        -- Mark task as dropped
-        set dropped of foundItem to true
+        -- Mark task as dropped (using verb, not property assignment)
+        mark dropped foundItem
         set end of changedProperties to "status (dropped)"
 `;
       } else if (params.newStatus === 'incomplete') {
         script += `
-        -- Mark task as incomplete
+        -- Mark task as incomplete (reopen it)
         set completed of foundItem to false
         set dropped of foundItem to false
         set end of changedProperties to "status (incomplete)"
@@ -361,15 +361,29 @@ function generateAppleScript(params: EditItemParams): string {
     
     // Update project status
     if (params.newProjectStatus !== undefined) {
-      const statusValue = params.newProjectStatus === 'active' ? 'active status' : 
-                          params.newProjectStatus === 'completed' ? 'done status' :
-                          params.newProjectStatus === 'dropped' ? 'dropped status' :
-                          'on hold status';
-      script += `
+      if (params.newProjectStatus === 'completed') {
+        // Use mark verb for completed status
+        script += `
+        -- Mark project as completed (using verb, not property assignment)
+        mark complete foundItem
+        set end of changedProperties to "status (completed)"
+`;
+      } else if (params.newProjectStatus === 'dropped') {
+        // Use mark verb for dropped status
+        script += `
+        -- Mark project as dropped (using verb, not property assignment)
+        mark dropped foundItem
+        set end of changedProperties to "status (dropped)"
+`;
+      } else {
+        // active and onHold can use property assignment
+        const statusValue = params.newProjectStatus === 'active' ? 'active status' : 'on hold status';
+        script += `
         -- Update project status
         set status of foundItem to ${statusValue}
         set end of changedProperties to "status"
 `;
+      }
     }
     
     // Move to a new folder
