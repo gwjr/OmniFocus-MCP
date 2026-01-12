@@ -13,6 +13,7 @@ export interface QueryOmnifocusParams {
     deferredUntil?: number;
     plannedWithin?: number;
     hasNote?: boolean;
+    untimely?: boolean;
   };
   fields?: string[];
   limit?: number;
@@ -240,8 +241,26 @@ function generateFilterConditions(entity: string, filters: any): string {
         if (hasNote !== ${filters.hasNote}) return false;
       `);
     }
+
+    if (filters.untimely !== undefined) {
+      if (filters.untimely) {
+        conditions.push(`
+          const now = new Date();
+          const hasPastDate = (item.dueDate && item.dueDate < now) ||
+                              (item.plannedDate && item.plannedDate < now);
+          if (!hasPastDate) return false;
+        `);
+      } else {
+        conditions.push(`
+          const now = new Date();
+          const hasPastDate = (item.dueDate && item.dueDate < now) ||
+                              (item.plannedDate && item.plannedDate < now);
+          if (hasPastDate) return false;
+        `);
+      }
+    }
   }
-  
+
   if (entity === 'projects') {
     if (filters.projectName) {
       conditions.push(`
@@ -265,8 +284,24 @@ function generateFilterConditions(entity: string, filters: any): string {
       ).join(' || ');
       conditions.push(`if (!(${statusCondition})) return false;`);
     }
+
+    if (filters.untimely !== undefined) {
+      if (filters.untimely) {
+        conditions.push(`
+          const now = new Date();
+          const hasPastDate = (item.dueDate && item.dueDate < now);
+          if (!hasPastDate) return false;
+        `);
+      } else {
+        conditions.push(`
+          const now = new Date();
+          const hasPastDate = (item.dueDate && item.dueDate < now);
+          if (hasPastDate) return false;
+        `);
+      }
+    }
   }
-  
+
   return conditions.join('\n');
 }
 
