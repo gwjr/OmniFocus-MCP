@@ -174,7 +174,7 @@ export async function removeItem(params: RemoveItemParams): Promise<{success: bo
     writeFileSync(tempFile, script);
 
     // Execute AppleScript from file
-    const { stdout, stderr } = await execAsync(`osascript ${tempFile}`);
+    const { stdout, stderr } = await execAsync(`osascript "${tempFile}"`);
 
     // Clean up temp file
     try {

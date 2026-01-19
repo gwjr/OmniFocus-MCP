@@ -84,13 +84,15 @@ function generateAppleScript(params: EditItemParams): string {
   }
   
   // Build the complete script
-  let script = '';
-  
+  // IMPORTANT: Date constructions must happen BEFORE 'use framework "Foundation"'
+  // because Foundation's date class conflicts with AppleScript's current date command
+  let script = 'use scripting additions\n\n';
+
   // Add date constructions outside tell blocks
   if (datePreScripts.length > 0) {
     script += datePreScripts.join('\n') + '\n\n';
   }
-  
+
   // Start the main script with ASObjC support for JSON escaping
   script += `use framework "Foundation"
 
@@ -493,7 +495,7 @@ export async function editItem(params: EditItemParams): Promise<{
     writeFileSync(tempFile, script);
     
     // Execute AppleScript from file
-    const { stdout, stderr } = await execAsync(`osascript ${tempFile}`);
+    const { stdout, stderr } = await execAsync(`osascript "${tempFile}"`);
     
     // Clean up temp file
     try {

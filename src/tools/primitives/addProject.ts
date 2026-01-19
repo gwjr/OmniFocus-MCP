@@ -1,5 +1,8 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { writeFileSync, unlinkSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { createDateOutsideTellBlock } from '../../utils/dateFormatting.js';
 import { escapeForAppleScript } from '../../utils/applescriptEscaping.js';
 const execAsync = promisify(exec);
@@ -48,7 +51,11 @@ function generateAppleScript(params: AddProjectParams): string {
   }
   
   // Construct AppleScript with error handling and ASObjC for JSON escaping
-  let script = `use framework "Foundation"
+  // IMPORTANT: Date constructions must happen BEFORE 'use framework "Foundation"'
+  // because Foundation's date class conflicts with AppleScript's current date command
+  let script = `use scripting additions
+
+` + datePreScript + `use framework "Foundation"
 
 property NSString : a reference to current application's NSString
 property NSJSONSerialization : a reference to current application's NSJSONSerialization
@@ -60,7 +67,7 @@ on escapeForJSON(theText)
   return text 3 thru -3 of jsonArrayString
 end escapeForJSON
 
-` + datePreScript + `try
+try
   tell application "OmniFocus"
     tell front document
       -- Determine the container (root or folder)
@@ -130,18 +137,25 @@ export async function addProject(params: AddProjectParams): Promise<{success: bo
   try {
     // Generate AppleScript
     const script = generateAppleScript(params);
-    
-    console.error("Executing AppleScript directly...");
-    
-    // Execute AppleScript directly
-    const { stdout, stderr } = await execAsync(`osascript -e '${script}'`);
+
+    console.error("Executing AppleScript via temp file...");
+
+    // Write to a temporary AppleScript file to avoid shell escaping issues
+    const tempFile = join(tmpdir(), `omnifocus_project_${Date.now()}.applescript`);
+    writeFileSync(tempFile, script, { encoding: 'utf8' });
+
+    // Execute AppleScript from file
+    const { stdout, stderr } = await execAsync(`osascript "${tempFile}"`);
     
     if (stderr) {
       console.error("AppleScript stderr:", stderr);
     }
-    
+
     console.error("AppleScript stdout:", stdout);
-    
+
+    // Cleanup temp file
+    try { unlinkSync(tempFile); } catch {}
+
     // Parse the result
     try {
       const result = JSON.parse(stdout);

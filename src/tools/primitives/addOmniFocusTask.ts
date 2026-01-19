@@ -63,7 +63,11 @@ function generateAppleScript(params: AddOmniFocusTaskParams): string {
   }
   
   // Construct AppleScript with error handling and ASObjC for JSON escaping
-  let script = `use framework "Foundation"
+  // IMPORTANT: Date constructions must happen BEFORE 'use framework "Foundation"'
+  // because Foundation's date class conflicts with AppleScript's current date command
+  let script = `use scripting additions
+
+` + datePreScript + `use framework "Foundation"
 
 property NSString : a reference to current application's NSString
 property NSJSONSerialization : a reference to current application's NSJSONSerialization
@@ -75,7 +79,7 @@ on escapeForJSON(theText)
   return text 3 thru -3 of jsonArrayString
 end escapeForJSON
 
-` + datePreScript + `try
+try
   tell application "OmniFocus"
     tell front document
       -- Resolve parent task if provided
@@ -237,7 +241,7 @@ export async function addOmniFocusTask(params: AddOmniFocusTaskParams): Promise<
     writeFileSync(tempFile, script, { encoding: 'utf8' });
 
     // Execute AppleScript from file
-    const { stdout, stderr } = await execAsync(`osascript ${tempFile}`);
+    const { stdout, stderr } = await execAsync(`osascript "${tempFile}"`);
 
     if (stderr) {
       console.error("AppleScript stderr:", stderr);
