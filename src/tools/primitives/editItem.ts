@@ -140,7 +140,7 @@ try
       -- Try to find project by ID
       repeat with aProject in (flattened projects)
         if (id of aProject as string) = "${id}" then
-          set foundItem to aProject
+          set foundItem to contents of aProject
           exit repeat
         end if
       end repeat
@@ -175,7 +175,7 @@ try
       -- Find project by name
       repeat with aProject in (flattened projects)
         if (name of aProject) = "${name}" then
-          set foundItem to aProject
+          set foundItem to contents of aProject
           exit repeat
         end if
       end repeat
@@ -210,7 +210,7 @@ try
       if foundItem is missing value then
         repeat with aProject in (flattened projects)
           if (name of aProject) = "${name}" then
-            set foundItem to aProject
+            set foundItem to contents of aProject
             exit repeat
           end if
         end repeat
@@ -435,7 +435,7 @@ try
         end if
         
         -- Move project to the folder
-        move foundItem to destFolder
+        move {foundItem} to end of projects of destFolder
         set end of changedProperties to "folder"
 `;
     }
