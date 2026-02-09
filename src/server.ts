@@ -14,6 +14,7 @@ import * as batchRemoveItemsTool from './tools/definitions/batchRemoveItems.js';
 import * as queryOmniFocusTool from './tools/definitions/queryOmnifocus.js';
 import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
 import * as getPerspectiveViewTool from './tools/definitions/getPerspectiveView.js';
+import * as moveItemTool from './tools/definitions/moveItem.js';
 
 // Create an MCP server
 const server = new McpServer({
@@ -90,6 +91,13 @@ server.tool(
   "Get the items visible in a specific OmniFocus perspective. Shows what tasks and projects are displayed when viewing that perspective",
   getPerspectiveViewTool.schema.shape,
   getPerspectiveViewTool.handler
+);
+
+server.tool(
+  "move_item",
+  "Move a task to a different project (or inbox), or a project to a different folder",
+  moveItemTool.schema.shape,
+  moveItemTool.handler
 );
 
 // Start the MCP server
