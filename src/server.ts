@@ -22,83 +22,81 @@ const server = new McpServer({
   version: "1.0.0"
 });
 
-// Register tools
-server.tool(
-  "dump_database",
+// Helper to register tools with annotations, avoiding TS2589 deep type instantiation
+// from the SDK's complex Zod v3/v4 compatibility generics.
+function register(name: string, description: string, schema: any, annotations: any, handler: any) {
+  server.registerTool(name, { description, inputSchema: schema.shape, annotations }, handler);
+}
+
+// Read-only tools
+register("dump_database",
   "Gets the current state of your OmniFocus database",
-  dumpDatabaseTool.schema.shape,
-  dumpDatabaseTool.handler
-);
+  dumpDatabaseTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  dumpDatabaseTool.handler);
 
-server.tool(
-  "add_omnifocus_task",
-  "Add a new task to OmniFocus",
-  addOmniFocusTaskTool.schema.shape,
-  addOmniFocusTaskTool.handler
-);
-
-server.tool(
-  "add_project",
-  "Add a new project to OmniFocus",
-  addProjectTool.schema.shape,
-  addProjectTool.handler
-);
-
-server.tool(
-  "remove_item",
-  "Remove a task or project from OmniFocus",
-  removeItemTool.schema.shape,
-  removeItemTool.handler
-);
-
-server.tool(
-  "edit_item",
-  "Edit a task or project in OmniFocus",
-  editItemTool.schema.shape,
-  editItemTool.handler
-);
-
-server.tool(
-  "batch_add_items",
-  "Add multiple tasks or projects to OmniFocus in a single operation",
-  batchAddItemsTool.schema.shape,
-  batchAddItemsTool.handler
-);
-
-server.tool(
-  "batch_remove_items",
-  "Remove multiple tasks or projects from OmniFocus in a single operation",
-  batchRemoveItemsTool.schema.shape,
-  batchRemoveItemsTool.handler
-);
-
-server.tool(
-  "query_omnifocus",
+register("query_omnifocus",
   "Efficiently query OmniFocus database with powerful filters. Get specific tasks, projects, or folders without loading the entire database. Supports filtering by project, tags, status, due dates, and more. Much faster than dump_database for targeted queries.",
-  queryOmniFocusTool.schema.shape,
-  queryOmniFocusTool.handler
-);
+  queryOmniFocusTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  queryOmniFocusTool.handler);
 
-server.tool(
-  "list_perspectives",
+register("list_perspectives",
   "List all available perspectives in OmniFocus, including built-in perspectives (Inbox, Projects, Tags, etc.) and custom perspectives (Pro feature)",
-  listPerspectivesTool.schema.shape,
-  listPerspectivesTool.handler
-);
+  listPerspectivesTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  listPerspectivesTool.handler);
 
-server.tool(
-  "get_perspective_view",
+register("get_perspective_view",
   "Get the items visible in a specific OmniFocus perspective. Shows what tasks and projects are displayed when viewing that perspective",
-  getPerspectiveViewTool.schema.shape,
-  getPerspectiveViewTool.handler
-);
+  getPerspectiveViewTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  getPerspectiveViewTool.handler);
 
-server.tool(
-  "move_item",
+// Additive tools (not destructive, not idempotent)
+register("add_omnifocus_task",
+  "Add a new task to OmniFocus",
+  addOmniFocusTaskTool.schema,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  addOmniFocusTaskTool.handler);
+
+register("add_project",
+  "Add a new project to OmniFocus",
+  addProjectTool.schema,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  addProjectTool.handler);
+
+register("batch_add_items",
+  "Add multiple tasks or projects to OmniFocus in a single operation",
+  batchAddItemsTool.schema,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  batchAddItemsTool.handler);
+
+// Mutative tools (not destructive, idempotent)
+register("edit_item",
+  "Edit a task or project in OmniFocus",
+  editItemTool.schema,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  editItemTool.handler);
+
+register("move_item",
   "Move a task to a different project (or inbox), or a project to a different folder",
-  moveItemTool.schema.shape,
-  moveItemTool.handler
-);
+  moveItemTool.schema,
+  { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  moveItemTool.handler);
+
+// Destructive tools (idempotent — removing an already-removed item is a no-op)
+register("remove_item",
+  "Remove a task or project from OmniFocus",
+  removeItemTool.schema,
+  { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  removeItemTool.handler);
+
+register("batch_remove_items",
+  "Remove multiple tasks or projects from OmniFocus in a single operation",
+  batchRemoveItemsTool.schema,
+  { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  batchRemoveItemsTool.handler);
 
 // Start the MCP server
 const transport = new StdioServerTransport();

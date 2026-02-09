@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { moveItem, MoveItemParams } from '../primitives/moveItem.js';
-import { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 
 export const schema = z.object({
   id: z.string().optional().describe("The ID of the task or project to move (preferred)"),
@@ -16,7 +15,7 @@ export const schema = z.object({
   toFolderName: z.string().optional().describe("Move project to this folder (by name)"),
 });
 
-export async function handler(args: z.infer<typeof schema>, _extra: RequestHandlerExtra) {
+export async function handler(args: z.infer<typeof schema>, _extra: any) {
   try {
     if (!args.id && !args.name) {
       return {
