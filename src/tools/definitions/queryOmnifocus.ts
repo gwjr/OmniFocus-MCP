@@ -213,6 +213,14 @@ function formatProjects(projects: any[]): string {
 
     let result = `P: ${flagged}${project.name}${status}${due}${folder}${taskCountStr}`;
 
+    // Metadata dates if requested
+    if (project.creationDate) {
+      result += ` [created: ${formatDate(project.creationDate)}]`;
+    }
+    if (project.modificationDate) {
+      result += ` [modified: ${formatDate(project.modificationDate)}]`;
+    }
+
     // Add note on a new line if present
     if (project.note) {
       result += `\n  Note: ${project.note}`;

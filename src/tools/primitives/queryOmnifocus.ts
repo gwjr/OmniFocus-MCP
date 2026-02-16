@@ -143,7 +143,7 @@ function generateQueryScript(params: QueryOmnifocusParams): string {
       });
       
       // Apply sorting if specified
-      ${sortBy ? generateSortLogic(sortBy, sortOrder) : ''}
+      ${sortBy ? generateSortLogic(sortBy, sortOrder, entity) : ''}
       
       // Apply limit if specified
       ${limit ? `filtered = filtered.slice(0, ${limit});` : ''}
@@ -305,13 +305,40 @@ function generateFilterConditions(entity: string, filters: any): string {
   return conditions.join('\n');
 }
 
-function generateSortLogic(sortBy: string, sortOrder?: string): string {
+// Map user-facing field names to actual OmniJS property accessors.
+// Tasks use .modified/.added directly.
+// Projects don't expose dates directly — they live on the root task: .task.modified/.task.added.
+function mapFieldToProperty(field: string, entity?: string): string {
+  if (entity === 'projects') {
+    const projectMap: Record<string, string> = {
+      modificationDate: 'task.modified',
+      modified: 'task.modified',
+      creationDate: 'task.added',
+      added: 'task.added',
+    };
+    return projectMap[field] || field;
+  }
+  // Tasks (and default)
+  const taskMap: Record<string, string> = {
+    modificationDate: 'modified',
+    modified: 'modified',
+    creationDate: 'added',
+    added: 'added',
+  };
+  return taskMap[field] || field;
+}
+
+function generateSortLogic(sortBy: string, sortOrder?: string, entity?: string): string {
   const order = sortOrder === 'desc' ? -1 : 1;
-  
+
+  // Map user-facing field names to actual OmniJS property names.
+  // Tasks use .modified/.added; Projects use .modificationDate/.creationDate.
+  const jxaProp = mapFieldToProperty(sortBy, entity);
+
   return `
     filtered.sort((a, b) => {
-      let aVal = a.${sortBy};
-      let bVal = b.${sortBy};
+      let aVal = a.${jxaProp};
+      let bVal = b.${jxaProp};
       
       // Handle null/undefined values
       if (aVal == null && bVal == null) return 0;
@@ -393,9 +420,9 @@ function generateFieldMapping(entity: string, fields?: string[]): string {
     } else if (field === 'status') {
       return `status: projectStatusMap[item.status]`;
     } else if (field === 'modificationDate' || field === 'modified') {
-      return `modificationDate: formatDate(item.modified)`;
+      return `modificationDate: formatDate(item.${mapFieldToProperty('modified', entity)})`;
     } else if (field === 'creationDate' || field === 'added') {
-      return `creationDate: formatDate(item.added)`;
+      return `creationDate: formatDate(item.${mapFieldToProperty('added', entity)})`;
     } else if (field === 'completionDate') {
       return `completionDate: item.completionDate ? formatDate(item.completionDate) : null`;
     } else if (field === 'dueDate') {

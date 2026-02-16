@@ -15,6 +15,7 @@ import * as queryOmniFocusTool from './tools/definitions/queryOmnifocus.js';
 import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
 import * as getPerspectiveViewTool from './tools/definitions/getPerspectiveView.js';
 import * as moveItemTool from './tools/definitions/moveItem.js';
+import * as listTagsTool from './tools/definitions/listTags.js';
 
 // Create an MCP server
 const server = new McpServer({
@@ -52,6 +53,12 @@ register("get_perspective_view",
   getPerspectiveViewTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   getPerspectiveViewTool.handler);
+
+register("list_tags",
+  "List all tags in OmniFocus with task counts. Returns tag names, hierarchy (parent/child), status, and number of active tasks per tag. Use this to discover available tags before filtering by them in query_omnifocus.",
+  listTagsTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  listTagsTool.handler);
 
 // Additive tools (not destructive, not idempotent)
 register("add_omnifocus_task",
