@@ -83,7 +83,6 @@
               deferDate: formatDate(project.deferDate),
               completedByChildren: project.completedByChildren,
               containsSingletonActions: project.containsSingletonActions,
-              note: project.note || "",
               tasks: [] // Will be populated in the task loop
             };
             projectsMap.set(projectId, projectData);
@@ -163,7 +162,6 @@
               const taskData = {
                 id: task.id.primaryKey,
                 name: task.name,
-                note: task.note || "",
                 taskStatus: getEnumValue(task.taskStatus, taskStatusMap),
                 flagged: task.flagged,
                 dueDate: formatDate(task.dueDate),

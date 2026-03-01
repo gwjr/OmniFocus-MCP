@@ -6,7 +6,6 @@ import fs from 'fs';
 interface OmnifocusDumpTask {
   id: string;
   name: string;
-  note?: string;
   taskStatus: string;
   flagged: boolean;
   dueDate: string | null;
@@ -35,7 +34,6 @@ interface OmnifocusDumpProject {
   deferDate: string | null;
   completedByChildren: boolean;
   containsSingletonActions: boolean;
-  note: string;
   tasks: string[];
 }
 
@@ -106,7 +104,7 @@ export async function dumpDatabase(): Promise<OmnifocusDatabase> {
         return {
           id: String(task.id),
           name: String(task.name),
-          note: String(task.note || ""),
+          note: "",
           flagged: Boolean(task.flagged),
           completed: task.taskStatus === "Completed",
           completionDate: null, // Not available in the new format
@@ -151,7 +149,7 @@ export async function dumpDatabase(): Promise<OmnifocusDatabase> {
           deferDate: project.deferDate,
           completedByChildren: Boolean(project.completedByChildren),
           containsSingletonActions: Boolean(project.containsSingletonActions),
-          note: String(project.note || ""),
+          note: "",
           tasks: project.tasks || [],
           flagged: false, // Default value
           estimatedMinutes: null // Default value
