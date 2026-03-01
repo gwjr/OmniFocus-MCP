@@ -114,7 +114,12 @@ function generateScript(config: BulkReadConfig): string {
   let sourceExpr: string;
   if (config.projectScope) {
     const scopeJxa = generateScopeWhose(config.projectScope);
-    sourceExpr = `doc.flattenedProjects.whose(${scopeJxa})[0].flattenedTasks`;
+    if (scopeJxa) {
+      sourceExpr = `doc.flattenedProjects.whose(${scopeJxa})[0].flattenedTasks`;
+    } else {
+      // Scope can't be expressed as .whose() — fall back to broad read
+      sourceExpr = `doc.flattenedTasks`;
+    }
   } else {
     sourceExpr = `doc.flattenedTasks`;
   }
@@ -221,29 +226,28 @@ ${completedFilter}
  * Generate a .whose() predicate for project scoping.
  * Handles simple name-matching patterns from the extracted container scope.
  */
-function generateScopeWhose(scopeExpr: LoweredExpr): string {
+function generateScopeWhose(scopeExpr: LoweredExpr): string | null {
   // The scope is the sub-expression from inside container("project", <here>)
   // Common patterns: {contains: [{var:"name"}, "text"]}, {eq: [{var:"name"}, "text"]}
   if (typeof scopeExpr !== 'object' || scopeExpr === null || Array.isArray(scopeExpr)) {
-    // Fallback: can't convert to .whose() — use a broad match
-    return '{_match: true}';
+    return null;
   }
 
   const node = scopeExpr as { op: string; args: LoweredExpr[] };
-  if (!('op' in node)) return '{_match: true}';
+  if (!('op' in node)) return null;
 
   // {eq: [{var: "name"}, "literal"]}
   if (node.op === 'eq' && isVarNode(node.args[0], 'name') && typeof node.args[1] === 'string') {
     return `{name: "${escapeJxaString(node.args[1])}"}`;
   }
 
-  // {contains: [{var: "name"}, "literal"]} → use _match
+  // {contains: [{var: "name"}, "literal"]} → use _contains
   if (node.op === 'contains' && isVarNode(node.args[0], 'name') && typeof node.args[1] === 'string') {
-    return `{name: {_match: "*${escapeJxaString(node.args[1])}*"}}`;
+    return `{name: {_contains: "${escapeJxaString(node.args[1])}"}}`;
   }
 
-  // Can't express this as a .whose() — fall back
-  return '{_match: true}';
+  // Can't express this as a .whose() — return null to signal extraction failure
+  return null;
 }
 
 function isVarNode(node: LoweredExpr, expectedName?: string): boolean {

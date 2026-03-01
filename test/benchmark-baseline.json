@@ -1,0 +1,273 @@
+{
+  "timestamp": "2026-03-01T20:03:15.720Z",
+  "iterations": 3,
+  "warmupMs": 143,
+  "results": [
+    {
+      "name": "Tasks in project (name contains)",
+      "category": "project-lookup",
+      "expectedPath": "project-scoped",
+      "actualPath": "project-scoped",
+      "medianMs": 115,
+      "timings": [
+        131,
+        113,
+        115
+      ],
+      "count": 30,
+      "success": true
+    },
+    {
+      "name": "Tasks in project (exact name)",
+      "category": "project-lookup",
+      "expectedPath": "project-scoped",
+      "actualPath": "project-scoped",
+      "medianMs": 119,
+      "timings": [
+        119,
+        117,
+        121
+      ],
+      "count": 24,
+      "success": true
+    },
+    {
+      "name": "All active projects",
+      "category": "project-list",
+      "expectedPath": "omnijs-fallback",
+      "actualPath": "omnijs-fallback",
+      "medianMs": 347,
+      "timings": [
+        287,
+        364,
+        347
+      ],
+      "count": 162,
+      "success": true
+    },
+    {
+      "name": "Projects with task counts",
+      "category": "project-list",
+      "expectedPath": "omnijs-fallback",
+      "actualPath": "omnijs-fallback",
+      "medianMs": 817,
+      "timings": [
+        873,
+        817,
+        814
+      ],
+      "count": 162,
+      "success": true
+    },
+    {
+      "name": "Flagged tasks",
+      "category": "urgency",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 196,
+      "timings": [
+        221,
+        196,
+        184
+      ],
+      "count": 8,
+      "success": true
+    },
+    {
+      "name": "Tasks with due dates",
+      "category": "urgency",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 158,
+      "timings": [
+        158,
+        157,
+        166
+      ],
+      "count": 215,
+      "success": true
+    },
+    {
+      "name": "Due within 7 days",
+      "category": "urgency",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 239,
+      "timings": [
+        176,
+        329,
+        239
+      ],
+      "count": 76,
+      "success": true
+    },
+    {
+      "name": "Overdue tasks",
+      "category": "urgency",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 164,
+      "timings": [
+        185,
+        164,
+        157
+      ],
+      "count": 67,
+      "success": true
+    },
+    {
+      "name": "Name contains \"review\"",
+      "category": "search",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 142,
+      "timings": [
+        149,
+        142,
+        140
+      ],
+      "count": 66,
+      "success": true
+    },
+    {
+      "name": "Tasks with tag (two-phase)",
+      "category": "tags",
+      "expectedPath": "two-phase",
+      "actualPath": "two-phase",
+      "medianMs": 143,
+      "timings": [
+        140,
+        143,
+        150
+      ],
+      "count": 747,
+      "success": true
+    },
+    {
+      "name": "Flagged AND due date exists",
+      "category": "compound",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 157,
+      "timings": [
+        163,
+        157,
+        156
+      ],
+      "count": 2,
+      "success": true
+    },
+    {
+      "name": "Flagged OR has due date",
+      "category": "compound",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 180,
+      "timings": [
+        180,
+        159,
+        186
+      ],
+      "count": 221,
+      "success": true
+    },
+    {
+      "name": "Count all active tasks",
+      "category": "summary",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 127,
+      "timings": [
+        129,
+        127,
+        121
+      ],
+      "count": 747,
+      "success": true
+    },
+    {
+      "name": "Count flagged tasks",
+      "category": "summary",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 120,
+      "timings": [
+        164,
+        120,
+        118
+      ],
+      "count": 8,
+      "success": true
+    },
+    {
+      "name": "All active tasks (limit 10)",
+      "category": "list",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 167,
+      "timings": [
+        167,
+        168,
+        162
+      ],
+      "count": 747,
+      "success": true
+    },
+    {
+      "name": "All folders",
+      "category": "folders",
+      "expectedPath": "omnijs-fallback",
+      "actualPath": "omnijs-fallback",
+      "medianMs": 297,
+      "timings": [
+        262,
+        297,
+        331
+      ],
+      "count": 33,
+      "success": true
+    },
+    {
+      "name": "Tasks with projectName (chain)",
+      "category": "chain",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 210,
+      "timings": [
+        238,
+        210,
+        191
+      ],
+      "count": 8,
+      "success": true
+    },
+    {
+      "name": "Due date between now and +14d",
+      "category": "date-range",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 149,
+      "timings": [
+        162,
+        141,
+        149
+      ],
+      "count": 21,
+      "success": true
+    },
+    {
+      "name": "Modified in last 3 days",
+      "category": "recent",
+      "expectedPath": "broad",
+      "actualPath": "broad",
+      "medianMs": 168,
+      "timings": [
+        168,
+        201,
+        164
+      ],
+      "count": 63,
+      "success": true
+    }
+  ]
+}
