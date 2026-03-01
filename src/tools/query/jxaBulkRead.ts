@@ -133,8 +133,8 @@ interface BulkReadConfig {
 export function generateBulkReadScript(plan: ExecutionPlan, includeCompleted = false): string {
   const varsToRead = new Set(plan.bulkVars);
 
-  // Two-phase needs id for phase 2 lookups
-  const includeId = plan.path === 'two-phase';
+  // Two-phase and project-scoped need id for phase 2 lookups
+  const includeId = plan.path === 'two-phase' || plan.path === 'project-scoped';
   if (includeId) varsToRead.add('id');
 
   return generateScript({
@@ -209,6 +209,15 @@ function generateScript(config: BulkReadConfig): string {
       chainProps.push({ name: varName, def });
     }
     // per-item and expensive vars are not bulk-read
+  }
+
+  // id is always bulk-readable via items.id() even when classified per-item
+  // (the per-item classification reflects that other per-item operations need
+  // an ID-based .whose() lookup, not that id itself can't be bulk-read).
+  // Two-phase needs IDs from bulk read for phase 2 lookups.
+  if (config.includeId && !directProps.some(p => p.name === 'id')) {
+    const idDef = registry['id'];
+    if (idDef) directProps.push({ name: 'id', bulk: idDef.bulk || 'id', def: idDef });
   }
 
   // Determine the source collection expression

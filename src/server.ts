@@ -11,8 +11,8 @@ import * as listTagsTool from './tools/definitions/listTags.js';
 import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
 import * as addTaskTool from './tools/definitions/addTask.js';
 import * as addProjectTool from './tools/definitions/addProject.js';
-import * as editItemTool from './tools/definitions/editItem.js';
-import * as moveItemTool from './tools/definitions/moveItem.js';
+import * as editTool from './tools/definitions/edit.js';
+import * as moveTool from './tools/definitions/move.js';
 import * as removeTool from './tools/definitions/removeItem.js';
 
 // Create an MCP server
@@ -72,17 +72,17 @@ register("add_project",
   addProjectTool.handler);
 
 // Mutative tools (not destructive, idempotent)
-register("edit_item",
-  "Edit a task or project in OmniFocus",
-  editItemTool.schema,
+register("edit",
+  "Edit tasks or projects in OmniFocus. Target by id, ids, or query expression. Supports set (properties), addTags, removeTags, mark (status), and offset (shift dates). Query targeting defaults to dryRun: true.",
+  editTool.schema,
   { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  editItemTool.handler);
+  editTool.handler);
 
-register("move_item",
-  "Move a task to a different project (or inbox), or a project to a different folder",
-  moveItemTool.schema,
+register("move",
+  "Move tasks to a project/inbox, or projects to a folder. Target by id, ids, or query expression. Name-based destinations error on ambiguity. Query targeting defaults to dryRun: true.",
+  moveTool.schema,
   { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  moveItemTool.handler);
+  moveTool.handler);
 
 // Destructive tools (idempotent — removing an already-removed item is a no-op)
 register("remove",
