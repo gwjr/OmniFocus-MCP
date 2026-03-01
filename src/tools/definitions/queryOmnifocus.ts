@@ -1,10 +1,11 @@
 import { z } from 'zod';
 import { queryOmnifocus, QueryOmnifocusParams } from '../primitives/queryOmnifocus.js';
+import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 export const schema = z.object({
   entity: z.enum(['tasks', 'projects', 'folders']).describe("Type of entity to query. Choose 'tasks' for individual tasks, 'projects' for projects, or 'folders' for folder organization"),
-  
-  filters: z.object({
+
+  filters: coerceJson('filters', z.object({
     projectId: z.string().optional().describe("Filter tasks by exact project ID (use when you know the specific project ID)"),
     projectName: z.string().optional().describe("Filter tasks by project name. CASE-INSENSITIVE PARTIAL MATCHING - 'review' matches 'Weekly Review', 'Review Documents', etc. Special value: 'inbox' returns inbox tasks"),
     folderId: z.string().optional().describe("Filter projects by exact folder ID (use when you know the specific folder ID)"),
@@ -16,9 +17,9 @@ export const schema = z.object({
     plannedWithin: z.number().optional().describe("Returns tasks planned from TODAY through N days in future. Example: 7 = tasks planned within next week (today + 6 days)"),
     hasNote: z.boolean().optional().describe("Filter by note presence. true = items with non-empty notes (whitespace ignored), false = items with no notes or only whitespace"),
     untimely: z.boolean().optional().describe("Filter by whether any date (due or planned) is in the past. true = items with at least one past date, false = items with no past dates. Broader than 'Overdue' status which only considers due dates")
-  }).optional().describe("Optional filters to narrow results. ALL filters combine with AND logic (must match all). Within array filters (tags, status) OR logic applies"),
-  
-  fields: z.array(z.string()).optional().describe("Specific fields to return (reduces response size). TASK FIELDS: id, name, note, flagged, taskStatus, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, sequential, completedByChildren, inInbox, modificationDate (or modified), creationDate (or added). PROJECT FIELDS: id, name, status, note, folderName, folderID, sequential, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, completedByChildren, containsSingletonActions, taskCount, activeTaskCount, tasks, modificationDate, creationDate. FOLDER FIELDS: id, name, path, parentFolderID, status, projectCount, projects, subfolders. NOTE: Date fields use 'added' and 'modified' in OmniFocus API"),
+  }).optional().describe("Optional filters to narrow results. ALL filters combine with AND logic (must match all). Within array filters (tags, status) OR logic applies")),
+
+  fields: coerceJson('fields', z.array(z.string()).optional().describe("Specific fields to return (reduces response size). TASK FIELDS: id, name, note, flagged, taskStatus, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, sequential, completedByChildren, inInbox, modificationDate (or modified), creationDate (or added). PROJECT FIELDS: id, name, status, note, folderName, folderID, sequential, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, completedByChildren, containsSingletonActions, taskCount, activeTaskCount, tasks, modificationDate, creationDate. FOLDER FIELDS: id, name, path, parentFolderID, status, projectCount, projects, subfolders. NOTE: Date fields use 'added' and 'modified' in OmniFocus API")),
   
   limit: z.number().optional().describe("Maximum number of items to return. Useful for large result sets. Default: no limit"),
   
@@ -35,30 +36,30 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
   try {
     // Call the queryOmniFocus function
     const result = await queryOmnifocus(args as QueryOmnifocusParams);
-    
+
     if (result.success) {
       // Format response based on whether it's a summary or full results
       if (args.summary) {
         return {
           content: [{
             type: "text" as const,
-            text: `Found ${result.count} ${args.entity} matching your criteria.`
+            text: appendCoercionWarnings(`Found ${result.count} ${args.entity} matching your criteria.`)
           }]
         };
       } else {
         // Format the results in a compact, readable format
         const items = result.items || [];
         let output = formatQueryResults(items, args.entity, args.filters);
-        
+
         // Add metadata about the query
         if (items.length === args.limit) {
           output += `\n\n⚠️ Results limited to ${args.limit} items. More may be available.`;
         }
-        
+
         return {
           content: [{
             type: "text" as const,
-            text: output
+            text: appendCoercionWarnings(output)
           }]
         };
       }
@@ -66,7 +67,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `Query failed: ${result.error}`
+          text: appendCoercionWarnings(`Query failed: ${result.error}`)
         }],
         isError: true
       };
@@ -77,7 +78,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     return {
       content: [{
         type: "text" as const,
-        text: `Error executing query: ${error.message}`
+        text: appendCoercionWarnings(`Error executing query: ${error.message}`)
       }],
       isError: true
     };

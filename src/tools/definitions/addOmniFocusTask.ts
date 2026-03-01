@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { addOmniFocusTask, AddOmniFocusTaskParams } from '../primitives/addOmniFocusTask.js';
+import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 export const schema = z.object({
   name: z.string().describe("The name of the task"),
@@ -9,7 +10,7 @@ export const schema = z.object({
   plannedDate: z.string().optional().describe("The planned date of the task in ISO format (YYYY-MM-DD or full ISO date) - indicates intention to work on this task on this date"),
   flagged: z.boolean().optional().describe("Whether the task is flagged or not"),
   estimatedMinutes: z.number().optional().describe("Estimated time to complete the task, in minutes"),
-  tags: z.array(z.string()).optional().describe("Tags to assign to the task"),
+  tags: coerceJson('tags', z.array(z.string()).optional().describe("Tags to assign to the task")),
   projectName: z.string().optional().describe("The name of the project to add the task to (will add to inbox if not specified)"),
   // Hierarchy support
   parentTaskId: z.string().optional().describe("ID of the parent task (preferred for accuracy)"),
@@ -53,7 +54,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `✅ Task "${args.name}" created successfully ${locationText}${dueDateText}${tagText}.${placementWarning}`
+          text: appendCoercionWarnings(`✅ Task "${args.name}" created successfully ${locationText}${dueDateText}${tagText}.${placementWarning}`)
         }]
       };
     } else {
@@ -61,7 +62,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `Failed to create task: ${result.error}`
+          text: appendCoercionWarnings(`Failed to create task: ${result.error}`)
         }],
         isError: true
       };
@@ -72,7 +73,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     return {
       content: [{
         type: "text" as const,
-        text: `Error creating task: ${error.message}`
+        text: appendCoercionWarnings(`Error creating task: ${error.message}`)
       }],
       isError: true
     };

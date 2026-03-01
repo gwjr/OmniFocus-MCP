@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { batchAddItems, BatchAddItemsParams } from '../primitives/batchAddItems.js';
+import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 export const schema = z.object({
-  items: z.array(z.object({
+  items: coerceJson('items', z.array(z.object({
     type: z.enum(['task', 'project']).describe("Type of item to add ('task' or 'project')"),
     name: z.string().describe("The name of the item"),
     note: z.string().optional().describe("Additional notes for the item"),
@@ -24,8 +25,7 @@ export const schema = z.object({
     // Project-specific properties
     folderName: z.string().optional().describe("For projects: The name of the folder to add the project to"),
     sequential: z.boolean().optional().describe("For projects: Whether tasks in the project should be sequential")
-  })).describe("Array of items (tasks or projects) to add")
-  ,
+  })).describe("Array of items (tasks or projects) to add")),
   createSequentially: z.boolean().optional().describe("Process parents before children; when false, best-effort order will still try to resolve parents first")
 });
 
@@ -60,7 +60,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `${message}\n\n${details}`
+          text: appendCoercionWarnings(`${message}\n\n${details}`)
         }]
       };
     } else {
@@ -79,7 +79,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `Failed to process batch operation.\\n\\n${failureDetails}`
+          text: appendCoercionWarnings(`Failed to process batch operation.\\n\\n${failureDetails}`)
         }],
         isError: true
       };
@@ -90,7 +90,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     return {
       content: [{
         type: "text" as const,
-        text: `Error processing batch operation: ${error.message}`
+        text: appendCoercionWarnings(`Error processing batch operation: ${error.message}`)
       }],
       isError: true
     };

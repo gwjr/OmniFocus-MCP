@@ -1,12 +1,13 @@
 import { z } from 'zod';
 import { batchRemoveItems, BatchRemoveItemsParams } from '../primitives/batchRemoveItems.js';
+import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 export const schema = z.object({
-  items: z.array(z.object({
+  items: coerceJson('items', z.array(z.object({
     id: z.string().optional().describe("The ID of the task or project to remove"),
     name: z.string().optional().describe("The name of the task or project to remove (as fallback if ID not provided)"),
     itemType: z.enum(['task', 'project']).describe("Type of item to remove ('task' or 'project')")
-  })).describe("Array of items (tasks or projects) to remove")
+  })).describe("Array of items (tasks or projects) to remove"))
 });
 
 export async function handler(args: z.infer<typeof schema>, extra: any) {
@@ -52,7 +53,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `${message}\n\n${details}`
+          text: appendCoercionWarnings(`${message}\n\n${details}`)
         }]
       };
     } else {
@@ -60,7 +61,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `Failed to process batch removal: ${result.error}`
+          text: appendCoercionWarnings(`Failed to process batch removal: ${result.error}`)
         }],
         isError: true
       };
@@ -71,7 +72,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     return {
       content: [{
         type: "text" as const,
-        text: `Error processing batch removal: ${error.message}`
+        text: appendCoercionWarnings(`Error processing batch removal: ${error.message}`)
       }],
       isError: true
     };

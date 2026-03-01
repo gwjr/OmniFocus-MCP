@@ -1,14 +1,15 @@
 import { z } from 'zod';
 import { getPerspectiveView } from '../primitives/getPerspectiveView.js';
+import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 export const schema = z.object({
   perspectiveName: z.string().describe("Name of the perspective to view (e.g., 'Inbox', 'Projects', 'Flagged', or custom perspective name)"),
-  
+
   limit: z.number().optional().describe("Maximum number of items to return. Default: 100"),
-  
+
   includeMetadata: z.boolean().optional().describe("Include additional metadata like project names, tags, dates. Default: true"),
-  
-  fields: z.array(z.string()).optional().describe("Specific fields to include in the response. Reduces response size. Available fields: id, name, note, flagged, dueDate, deferDate, completionDate, taskStatus, projectName, tagNames, estimatedMinutes")
+
+  fields: coerceJson('fields', z.array(z.string()).optional().describe("Specific fields to include in the response. Reduces response size. Available fields: id, name, note, flagged, dueDate, deferDate, completionDate, taskStatus, projectName, tagNames, estimatedMinutes"))
 });
 
 export async function handler(args: z.infer<typeof schema>, extra: any) {
@@ -98,14 +99,14 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: output
+          text: appendCoercionWarnings(output)
         }]
       };
     } else {
       return {
         content: [{
           type: "text" as const,
-          text: `Failed to get perspective view: ${result.error}`
+          text: appendCoercionWarnings(`Failed to get perspective view: ${result.error}`)
         }],
         isError: true
       };
@@ -116,7 +117,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     return {
       content: [{
         type: "text" as const,
-        text: `Error getting perspective view: ${error.message}`
+        text: appendCoercionWarnings(`Error getting perspective view: ${error.message}`)
       }],
       isError: true
     };

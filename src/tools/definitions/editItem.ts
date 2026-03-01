@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { editItem, EditItemParams } from '../primitives/editItem.js';
+import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 export const schema = z.object({
   id: z.string().optional().describe("The ID of the task or project to edit"),
@@ -17,9 +18,9 @@ export const schema = z.object({
 
   // Task-specific fields
   newStatus: z.enum(['incomplete', 'completed', 'dropped']).optional().describe("New status for tasks (incomplete, completed, dropped)"),
-  addTags: z.array(z.string()).optional().describe("Tags to add to the task"),
-  removeTags: z.array(z.string()).optional().describe("Tags to remove from the task"),
-  replaceTags: z.array(z.string()).optional().describe("Tags to replace all existing tags with"),
+  addTags: coerceJson('addTags', z.array(z.string()).optional().describe("Tags to add to the task")),
+  removeTags: coerceJson('removeTags', z.array(z.string()).optional().describe("Tags to remove from the task")),
+  replaceTags: coerceJson('replaceTags', z.array(z.string()).optional().describe("Tags to replace all existing tags with")),
   
   // Project-specific fields
   newSequential: z.boolean().optional().describe("Whether the project should be sequential"),
@@ -55,13 +56,13 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `✅ ${itemTypeLabel} "${result.name}" updated successfully${changedText}.`
+          text: appendCoercionWarnings(`✅ ${itemTypeLabel} "${result.name}" updated successfully${changedText}.`)
         }]
       };
     } else {
       // Item editing failed
       let errorMsg = `Failed to update ${args.itemType}`;
-      
+
       if (result.error) {
         if (result.error.includes("Item not found")) {
           errorMsg = `${args.itemType.charAt(0).toUpperCase() + args.itemType.slice(1)} not found`;
@@ -72,11 +73,11 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
           errorMsg += `: ${result.error}`;
         }
       }
-      
+
       return {
         content: [{
           type: "text" as const,
-          text: errorMsg
+          text: appendCoercionWarnings(errorMsg)
         }],
         isError: true
       };
@@ -84,11 +85,11 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
   } catch (err: unknown) {
     const error = err as Error;
     console.error(`Tool execution error: ${error.message}`);
-    
+
     return {
       content: [{
         type: "text" as const,
-        text: `Error updating ${args.itemType}: ${error.message}`
+        text: appendCoercionWarnings(`Error updating ${args.itemType}: ${error.message}`)
       }],
       isError: true
     };

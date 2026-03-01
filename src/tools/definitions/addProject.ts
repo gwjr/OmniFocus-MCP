@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { addProject, AddProjectParams } from '../primitives/addProject.js';
+import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 export const schema = z.object({
   name: z.string().describe("The name of the project"),
@@ -8,7 +9,7 @@ export const schema = z.object({
   deferDate: z.string().optional().describe("The defer date of the project in ISO format (YYYY-MM-DD or full ISO date)"),
   flagged: z.boolean().optional().describe("Whether the project is flagged or not"),
   estimatedMinutes: z.number().optional().describe("Estimated time to complete the project, in minutes"),
-  tags: z.array(z.string()).optional().describe("Tags to assign to the project"),
+  tags: coerceJson('tags', z.array(z.string()).optional().describe("Tags to assign to the project")),
   folderName: z.string().optional().describe("The name of the folder to add the project to (will add to root if not specified)"),
   sequential: z.boolean().optional().describe("Whether tasks in the project should be sequential (default: false)")
 });
@@ -39,7 +40,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `✅ Project "${args.name}" created successfully ${locationText}${dueDateText}${tagText}${sequentialText}.`
+          text: appendCoercionWarnings(`✅ Project "${args.name}" created successfully ${locationText}${dueDateText}${tagText}${sequentialText}.`)
         }]
       };
     } else {
@@ -47,7 +48,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: `Failed to create project: ${result.error}`
+          text: appendCoercionWarnings(`Failed to create project: ${result.error}`)
         }],
         isError: true
       };
@@ -58,7 +59,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     return {
       content: [{
         type: "text" as const,
-        text: `Error creating project: ${error.message}`
+        text: appendCoercionWarnings(`Error creating project: ${error.message}`)
       }],
       isError: true
     };
