@@ -9,11 +9,16 @@ import { existsSync } from 'fs';
 
 const execAsync = promisify(exec);
 
+let _seq = 0;
+function uniqueTempFile(prefix: string): string {
+  return join(tmpdir(), `${prefix}_${Date.now()}_${_seq++}.js`);
+}
+
 // Helper function to execute OmniFocus scripts
 export async function executeJXA(script: string): Promise<any[]> {
   try {
     // Write the script to a temporary file in the system temp directory
-    const tempFile = join(tmpdir(), `jxa_script_${Date.now()}.js`);
+    const tempFile = uniqueTempFile('jxa_script');
     
     // Write the script to the temporary file
     writeFileSync(tempFile, script);
@@ -77,7 +82,7 @@ export async function executeOmniFocusScript(scriptPath: string, args?: any): Pr
     const scriptContent = readFileSync(actualPath, 'utf8');
     
     // Create a temporary file for our JXA wrapper script
-    const tempFile = join(tmpdir(), `jxa_wrapper_${Date.now()}.js`);
+    const tempFile = uniqueTempFile('jxa_wrapper');
     
     // Escape the script content properly for use in JXA
     const escapedScript = scriptContent.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$/g, '\\$');

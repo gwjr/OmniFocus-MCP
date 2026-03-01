@@ -48,6 +48,9 @@ export const taskVars: VarRegistry = {
   modificationDate:     date(v => `${v}.modified`,                                                            'modificationDate',     'modificationDate',      'easy'),
   creationDate:         date(v => `${v}.added`,                                                               'creationDate',         'creationDate',          'easy'),
   estimatedMinutes:     num(v  => `${v}.estimatedMinutes`,                                                    'estimatedMinutes',     'estimatedMinutes',      'easy'),
+  blocked:              bool(v => `${v}.blocked`,                                                             'blocked',              'blocked',               'easy'),
+  effectivelyCompleted: bool(v => `${v}.effectivelyCompleted`,                                                'effectivelyCompleted', 'effectivelyCompleted',  'easy'),
+  effectivelyDropped:   bool(v => `${v}.effectivelyDropped`,                                                  'effectivelyDropped',   'effectivelyDropped',    'easy'),
   completed:            bool(v => `(${v}.taskStatus === Task.Status.Completed)`,                              'completed',            null,                    'per-item'),
   dropped:              bool(v => `(${v}.taskStatus === Task.Status.Dropped)`,                                'dropped',              null,                    'per-item'),
 

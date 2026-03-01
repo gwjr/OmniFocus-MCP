@@ -9,6 +9,7 @@ import * as viewTool from './tools/definitions/view.js';
 import * as listProjectsTool from './tools/definitions/listProjects.js';
 import * as listTagsTool from './tools/definitions/listTags.js';
 import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
+import * as showForecastTool from './tools/definitions/showForecast.js';
 import * as addTaskTool from './tools/definitions/addTask.js';
 import * as addProjectTool from './tools/definitions/addProject.js';
 import * as editTool from './tools/definitions/edit.js';
@@ -57,6 +58,12 @@ register("list_perspectives",
   listPerspectivesTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   listPerspectivesTool.handler);
+
+register("show_forecast",
+  "Show OmniFocus Forecast view: task counts per day by due, planned, and deferred date across a date range, with today's flagged and tagged counts.",
+  showForecastTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  showForecastTool.handler);
 
 // Additive tools (not destructive, not idempotent)
 register("add_task",
