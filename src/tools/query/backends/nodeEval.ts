@@ -275,12 +275,23 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
   // ── Container Scoping ───────────────────────────────────────────────
 
   container(
-    type: 'project' | 'folder',
+    type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,
     _fromEntity: EntityType,
     toEntity: EntityType,
     fold: (node: LoweredExpr, entity: EntityType) => RowFn
   ): RowFn {
+    // Tag containers require structural traversal not available in bulk-read rows.
+    // The planner routes these to OmniJS fallback.
+    if (type === 'tag') {
+      throw new Error('Tag container evaluation is not supported in NodeEval — use OmniJS fallback');
+    }
+
+    // Project/folder containers are not valid for tags entity
+    if (_fromEntity === 'tags') {
+      throw new Error(`"container" with "${type}" is not valid for tags`);
+    }
+
     if (type === 'project') {
       // For project containers, construct a virtual row from the task's project fields
       const predicate = fold(subExpr, toEntity);

@@ -93,7 +93,7 @@ class VarCollectorBackend implements ExprBackend<Set<string>> {
   }
 
   container(
-    _type: 'project' | 'folder',
+    _type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,
     _fromEntity: EntityType,
     toEntity: EntityType,

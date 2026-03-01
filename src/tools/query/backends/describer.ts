@@ -233,7 +233,7 @@ class DescriberBackend implements ExprBackend<string> {
   }
 
   container(
-    type: 'project' | 'folder',
+    type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,
     _fromEntity: EntityType,
     toEntity: EntityType,

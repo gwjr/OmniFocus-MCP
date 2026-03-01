@@ -100,6 +100,35 @@ describe('varCollector', () => {
     assert.deepEqual(vars, new Set(['name']));
   });
 
+  it('collects tag entity vars', () => {
+    const vars = collectVars(
+      { and: [{ gt: [{ var: 'availableTaskCount' }, 0] }, { eq: [{ var: 'hidden' }, false] }] },
+      'tags'
+    );
+    assert.deepEqual(vars, new Set(['availableTaskCount', 'hidden']));
+  });
+
+  it('collects tag name from contains', () => {
+    const vars = collectVars({ contains: [{ var: 'name' }, 'Work'] }, 'tags');
+    assert.deepEqual(vars, new Set(['name']));
+  });
+
+  it('collects tag per-item var (parentName)', () => {
+    const vars = collectVars(
+      { contains: [{ var: 'parentName' }, 'Context'] },
+      'tags'
+    );
+    assert.deepEqual(vars, new Set(['parentName']));
+  });
+
+  it('collects from tag container — switches entity to tags', () => {
+    const vars = collectVars(
+      { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
+      'tags'
+    );
+    assert.deepEqual(vars, new Set(['name']));
+  });
+
   it('collects from startsWith/endsWith', () => {
     const vars = collectVars({
       and: [

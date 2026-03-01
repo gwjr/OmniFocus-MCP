@@ -323,6 +323,36 @@ describe('container (container scoping, compact syntax)', () => {
     );
   });
 
+  it('compiles container("tag", expr) for tags entity', () => {
+    const r = compile(
+      { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
+      'tags'
+    );
+    assert.match(r.condition, /\.parent/);
+    assert.match(r.condition, /while/);
+  });
+
+  it('rejects container("tag") for tasks entity', () => {
+    assert.throws(
+      () => compile({ container: ['tag', { eq: [{ var: 'name' }, 'x'] }] }, 'tasks'),
+      CompileError
+    );
+  });
+
+  it('rejects container("project") for tags entity', () => {
+    assert.throws(
+      () => compile({ container: ['project', { eq: [{ var: 'name' }, 'x'] }] }, 'tags'),
+      CompileError
+    );
+  });
+
+  it('rejects container("folder") for tags entity', () => {
+    assert.throws(
+      () => compile({ container: ['folder', { eq: [{ var: 'name' }, 'x'] }] }, 'tags'),
+      CompileError
+    );
+  });
+
   it('uses correct var registry inside container', () => {
     const r = compile(
       { container: ['project', { eq: [{ var: 'status' }, 'Active'] }] },

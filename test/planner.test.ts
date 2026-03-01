@@ -165,6 +165,67 @@ describe('planner — project-scoped extraction', () => {
   });
 });
 
+describe('planner — tags entity', () => {
+  it('tags with easy vars only → broad', () => {
+    const plan = planExecution(
+      { gt: [{ var: 'availableTaskCount' }, 0] },
+      'tags'
+    );
+    assert.equal(plan.path, 'broad');
+  });
+
+  it('tags with no where → broad', () => {
+    const plan = planExecution(undefined, 'tags');
+    assert.equal(plan.path, 'broad');
+  });
+
+  it('tags with per-item var (parentName) → two-phase', () => {
+    const plan = planExecution(
+      { contains: [{ var: 'parentName' }, 'Work'] },
+      'tags'
+    );
+    assert.equal(plan.path, 'two-phase');
+    assert.ok(plan.perItemVars?.has('parentName'));
+  });
+
+  it('tags with expensive var (note) in where → omnijs-fallback', () => {
+    const plan = planExecution(
+      { contains: [{ var: 'note' }, 'important'] },
+      'tags'
+    );
+    assert.equal(plan.path, 'omnijs-fallback');
+  });
+
+  it('tags with tag container → omnijs-fallback', () => {
+    const plan = planExecution(
+      { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
+      'tags'
+    );
+    assert.equal(plan.path, 'omnijs-fallback');
+  });
+
+  it('tags with tag container nested in and → omnijs-fallback', () => {
+    const plan = planExecution(
+      { and: [
+        { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
+        { gt: [{ var: 'availableTaskCount' }, 0] }
+      ]},
+      'tags'
+    );
+    assert.equal(plan.path, 'omnijs-fallback');
+  });
+
+  it('tags with per-item var in select only → two-phase', () => {
+    const plan = planExecution(
+      { contains: [{ var: 'name' }, 'Work'] },
+      'tags',
+      ['name', 'parentName']
+    );
+    assert.equal(plan.path, 'two-phase');
+    assert.ok(plan.perItemVars?.has('parentName'));
+  });
+});
+
 describe('planner — expensive in select only', () => {
   it('expensive var in select only → two-phase (not fallback)', () => {
     const plan = planExecution(

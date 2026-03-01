@@ -16,7 +16,7 @@ import { lowerExpr, LowerError } from '../query/lower.js';
 import { planFromAst, type ExecutionPlan, type ExecutionPath } from '../query/planner.js';
 import { generateBulkReadScript, generatePerItemReadScript } from '../query/jxaBulkRead.js';
 import type { LoweredExpr } from '../query/fold.js';
-import { getVarRegistry } from '../query/variables.js';
+import { getVarRegistry, type EntityType } from '../query/variables.js';
 
 // ── Query Logging ──────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ function logQuery(entry: {
 // ── Types ───────────────────────────────────────────────────────────────
 
 export interface QueryOmnifocusParams {
-  entity: 'tasks' | 'projects' | 'folders';
+  entity: EntityType;
   where?: unknown;
   select?: string[];
   limit?: number;
@@ -172,7 +172,7 @@ async function executeViaDirectJxa(
 
     if (ids.length > 0) {
       const t2 = Date.now();
-      const detailScript = generatePerItemReadScript(ids, plan.perItemVars);
+      const detailScript = generatePerItemReadScript(ids, plan.perItemVars, plan.entity);
       const detailResult = await executeJXA(detailScript);
       phase2Ms = Date.now() - t2;
       perItemCount = ids.length;
@@ -209,7 +209,7 @@ async function executeViaDirectJxa(
 
   // Node-side sort
   if (params.sort) {
-    applySort(rows, params.sort);
+    applySort(rows, params.sort, params.entity);
   }
 
   // Count before limiting
@@ -288,9 +288,9 @@ async function executeViaOmniJs(
 
 // ── Node-side Sort ──────────────────────────────────────────────────────
 
-function applySort(rows: Row[], sort: { by: string; direction?: 'asc' | 'desc' }): void {
+function applySort(rows: Row[], sort: { by: string; direction?: 'asc' | 'desc' }, entity: EntityType = 'tasks'): void {
   const order = sort.direction === 'desc' ? -1 : 1;
-  const registry = getVarRegistry('tasks');
+  const registry = getVarRegistry(entity);
   const def = registry[sort.by];
   const key = def?.nodeKey ?? sort.by;
 
@@ -390,11 +390,13 @@ function generateOmniJsScript(
         items = flattenedProjects;
       } else if (entityType === "folders") {
         items = flattenedFolders;
+      } else if (entityType === "tags") {
+        items = flattenedTags;
       }
 
       // Apply filters
       let filtered = items.filter(item => {
-        // Skip completed/dropped unless explicitly requested
+        // Skip completed/dropped/hidden unless explicitly requested
         if (!${includeCompleted}) {
           if (entityType === "tasks") {
             if (item.taskStatus === Task.Status.Completed ||
@@ -404,6 +406,10 @@ function generateOmniJsScript(
           } else if (entityType === "projects") {
             if (item.status === Project.Status.Done ||
                 item.status === Project.Status.Dropped) {
+              return false;
+            }
+          } else if (entityType === "tags") {
+            if (item.effectivelyHidden) {
               return false;
             }
           }
@@ -543,6 +549,19 @@ function generateFieldMapping(entity: string, fields?: string[]): string {
           path: item.container ? item.container.name + "/" + item.name : item.name
         };
       `;
+    } else if (entity === 'tags') {
+      return `
+        return {
+          id: item.id.primaryKey,
+          name: item.name || "",
+          allowsNextAction: item.allowsNextAction,
+          hidden: item.hidden,
+          effectivelyHidden: item.effectivelyHidden,
+          availableTaskCount: item.availableTasks ? item.availableTasks.length : 0,
+          remainingTaskCount: item.remainingTasks ? item.remainingTasks.length : 0,
+          parentName: item.parent ? item.parent.name : null
+        };
+      `;
     }
   }
 
@@ -577,6 +596,13 @@ function generateFieldMapping(entity: string, fields?: string[]): string {
     if (field === 'path') return `path: item.container ? item.container.name + "/" + item.name : item.name`;
     if (field === 'estimatedMinutes') return `estimatedMinutes: item.estimatedMinutes || null`;
     if (field === 'note') return `note: item.note || ""`;
+    // Tag-specific fields (OmniJS uses availableTasks/remainingTasks arrays, not count properties)
+    if (field === 'availableTaskCount') return `availableTaskCount: item.availableTasks ? item.availableTasks.length : 0`;
+    if (field === 'remainingTaskCount') return `remainingTaskCount: item.remainingTasks ? item.remainingTasks.length : 0`;
+    if (field === 'parentName') return `parentName: item.parent ? item.parent.name : null`;
+    if (field === 'allowsNextAction') return `allowsNextAction: item.allowsNextAction`;
+    if (field === 'hidden') return `hidden: item.hidden`;
+    if (field === 'effectivelyHidden') return `effectivelyHidden: item.effectivelyHidden`;
     return `${field}: item.${field} !== undefined ? item.${field} : null`;
   }).join(',\n          ');
 

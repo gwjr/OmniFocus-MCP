@@ -286,6 +286,55 @@ const testCases = [
       limit: 20,
     },
   },
+
+  // ── #13: Tags entity — direct JXA ─────────────────────────────────────
+  {
+    name: 'All active tags',
+    category: 'tags-entity',
+    expected: 'broad',
+    params: {
+      entity: 'tags',
+      select: ['name', 'availableTaskCount'],
+    },
+  },
+  {
+    name: 'Tags with available tasks',
+    category: 'tags-entity',
+    expected: 'broad',
+    params: {
+      entity: 'tags',
+      where: { gt: [{ var: 'availableTaskCount' }, 0] },
+      select: ['name', 'availableTaskCount'],
+    },
+  },
+  {
+    name: 'Tags by name search',
+    category: 'tags-entity',
+    expected: 'broad',
+    params: {
+      entity: 'tags',
+      where: { contains: [{ var: 'name' }, 'w'] },
+      select: ['name', 'availableTaskCount'],
+    },
+  },
+  {
+    name: 'Tags with parent (two-phase)',
+    category: 'tags-entity',
+    expected: 'two-phase',
+    params: {
+      entity: 'tags',
+      select: ['name', 'parentName', 'availableTaskCount'],
+    },
+  },
+  {
+    name: 'Count all active tags',
+    category: 'tags-entity',
+    expected: 'broad',
+    params: {
+      entity: 'tags',
+      summary: true,
+    },
+  },
 ];
 
 // ── Runner ────────────────────────────────────────────────────────────────

@@ -127,9 +127,9 @@ export function lowerExpr(node: unknown, path = 'where'): unknown {
           }
         }
         if (opName === 'container') {
-          if (typeof loweredArgs[0] !== 'string' || (loweredArgs[0] !== 'project' && loweredArgs[0] !== 'folder')) {
+          if (typeof loweredArgs[0] !== 'string' || (loweredArgs[0] !== 'project' && loweredArgs[0] !== 'folder' && loweredArgs[0] !== 'tag')) {
             throw new LowerError(
-              'First argument to "container" must be "project" or "folder"',
+              'First argument to "container" must be "project", "folder", or "tag"',
               `${path}.container[0]`, node
             );
           }

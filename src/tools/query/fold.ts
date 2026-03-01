@@ -53,7 +53,7 @@ export interface ExprBackend<T> {
 
   // Structural scoping
   container(
-    type: 'project' | 'folder',
+    type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,
     fromEntity: EntityType,
     toEntity: EntityType,
@@ -147,12 +147,17 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
       }
 
       case 'container': {
-        // args[0] is "project" or "folder", args[1] is the sub-expression
-        const containerType = args[0] as unknown as 'project' | 'folder';
+        // args[0] is "project", "folder", or "tag"; args[1] is the sub-expression
+        const containerType = args[0] as unknown as 'project' | 'folder' | 'tag';
         const subExpr = args[1];
 
         // Determine target entity for the container scope
-        const toEntity: EntityType = containerType === 'project' ? 'projects' : 'folders';
+        const toEntityMap: Record<string, EntityType> = {
+          project: 'projects',
+          folder: 'folders',
+          tag: 'tags',
+        };
+        const toEntity = toEntityMap[containerType];
 
         return backend.container(
           containerType,

@@ -101,13 +101,34 @@ export const folderVars: VarRegistry = {
   now:            date(_ => '_now',                                                                              'now',              null,                    'easy'),
 };
 
-export type EntityType = 'tasks' | 'projects' | 'folders';
+export const tagVars: VarRegistry = {
+  // easy: direct Apple Events bulk-readable properties
+  id:                 str(v  => `${v}.id.primaryKey`,                                                            'id',                'id',                   'per-item'),
+  name:               str(v  => `(${v}.name || "")`,                                                             'name',              'name',                 'easy'),
+  allowsNextAction:   bool(v => `${v}.allowsNextAction`,                                                         'allowsNextAction',  'allowsNextAction',     'easy'),
+  hidden:             bool(v => `${v}.hidden`,                                                                   'hidden',            'hidden',               'easy'),
+  effectivelyHidden:  bool(v => `${v}.effectivelyHidden`,                                                        'effectivelyHidden', 'effectivelyHidden',    'easy'),
+  availableTaskCount: num(v  => `(${v}.availableTasks ? ${v}.availableTasks.length : 0)`,                         'availableTaskCount','availableTaskCount',   'easy'),
+  remainingTaskCount: num(v  => `(${v}.remainingTasks ? ${v}.remainingTasks.length : 0)`,                         'remainingTaskCount','remainingTaskCount',   'easy'),
+
+  // per-item: requires per-item access
+  parentName:         str(v  => `(${v}.parent ? ${v}.parent.name : null)`,                                        'parentName',        null,                   'per-item'),
+
+  // expensive
+  note:               str(v  => `(${v}.note || "")`,                                                              'note',              null,                   'expensive'),
+
+  // special
+  now:                date(_ => '_now',                                                                            'now',               null,                   'easy'),
+};
+
+export type EntityType = 'tasks' | 'projects' | 'folders' | 'tags';
 
 export function getVarRegistry(entity: EntityType): VarRegistry {
   switch (entity) {
     case 'tasks':    return taskVars;
     case 'projects': return projectVars;
     case 'folders':  return folderVars;
+    case 'tags':     return tagVars;
   }
 }
 

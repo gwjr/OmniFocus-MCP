@@ -5,13 +5,13 @@ import { lowerExpr } from '../dist/tools/query/lower.js';
 import type { LoweredExpr } from '../dist/tools/query/fold.js';
 
 // Helper: compile compact syntax to a predicate
-function predicate(where: unknown, entity: 'tasks' | 'projects' | 'folders' = 'tasks', stubVars?: Set<string>): RowFn {
+function predicate(where: unknown, entity: 'tasks' | 'projects' | 'folders' | 'tags' = 'tasks', stubVars?: Set<string>): RowFn {
   const ast = lowerExpr(where) as LoweredExpr;
   return compileNodePredicate(ast, entity, stubVars ? { stubVars } : undefined);
 }
 
 // Helper: evaluate and return boolean
-function evalRow(where: unknown, row: Row, entity: 'tasks' | 'projects' | 'folders' = 'tasks', stubVars?: Set<string>): boolean {
+function evalRow(where: unknown, row: Row, entity: 'tasks' | 'projects' | 'folders' | 'tags' = 'tasks', stubVars?: Set<string>): boolean {
   return !!predicate(where, entity, stubVars)(row);
 }
 
@@ -404,6 +404,97 @@ describe('nodeEval — stubVars (two-phase)', () => {
         stubs
       ),
       false  // name doesn't match, even though tags is true
+    );
+  });
+});
+
+describe('nodeEval — tag entity', () => {
+  it('reads tag name variable', () => {
+    const fn = predicate({ var: 'name' }, 'tags');
+    // Raw variable access returns the value as-is; normalization happens in comparison ops
+    assert.equal(fn({ name: 'Work' }), 'Work');
+  });
+
+  it('reads allowsNextAction boolean', () => {
+    assert.equal(evalRow({ eq: [{ var: 'allowsNextAction' }, true] }, { allowsNextAction: true }, 'tags'), true);
+    assert.equal(evalRow({ eq: [{ var: 'allowsNextAction' }, false] }, { allowsNextAction: false }, 'tags'), true);
+  });
+
+  it('reads hidden boolean', () => {
+    assert.equal(evalRow({ eq: [{ var: 'hidden' }, true] }, { hidden: true }, 'tags'), true);
+    assert.equal(evalRow({ eq: [{ var: 'hidden' }, false] }, { hidden: false }, 'tags'), true);
+  });
+
+  it('compares availableTaskCount', () => {
+    assert.equal(
+      evalRow({ gt: [{ var: 'availableTaskCount' }, 0] }, { availableTaskCount: 5 }, 'tags'),
+      true
+    );
+    assert.equal(
+      evalRow({ gt: [{ var: 'availableTaskCount' }, 0] }, { availableTaskCount: 0 }, 'tags'),
+      false
+    );
+  });
+
+  it('filters by name contains', () => {
+    assert.equal(
+      evalRow({ contains: [{ var: 'name' }, 'work'] }, { name: 'Work Projects' }, 'tags'),
+      true
+    );
+    assert.equal(
+      evalRow({ contains: [{ var: 'name' }, 'personal'] }, { name: 'Work Projects' }, 'tags'),
+      false
+    );
+  });
+
+  it('combined filter: active tags with tasks', () => {
+    assert.equal(
+      evalRow(
+        { and: [{ eq: [{ var: 'hidden' }, false] }, { gt: [{ var: 'availableTaskCount' }, 0] }] },
+        { hidden: false, availableTaskCount: 3 },
+        'tags'
+      ),
+      true
+    );
+    assert.equal(
+      evalRow(
+        { and: [{ eq: [{ var: 'hidden' }, false] }, { gt: [{ var: 'availableTaskCount' }, 0] }] },
+        { hidden: true, availableTaskCount: 3 },
+        'tags'
+      ),
+      false
+    );
+  });
+});
+
+describe('nodeEval — tag container', () => {
+  it('throws for tag container (structural traversal needs OmniJS)', () => {
+    assert.throws(
+      () => predicate(
+        { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
+        'tags'
+      ),
+      /not supported in NodeEval/
+    );
+  });
+
+  it('throws for project container on tags entity', () => {
+    assert.throws(
+      () => predicate(
+        { container: ['project', { contains: [{ var: 'name' }, 'PHS'] }] },
+        'tags'
+      ),
+      /not valid for tags/
+    );
+  });
+
+  it('throws for folder container on tags entity', () => {
+    assert.throws(
+      () => predicate(
+        { container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] },
+        'tags'
+      ),
+      /not valid for tags/
     );
   });
 });

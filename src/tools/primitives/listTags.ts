@@ -1,4 +1,4 @@
-import { executeOmniFocusScript } from '../../utils/scriptExecution.js';
+import { queryOmnifocus } from './queryOmnifocus.js';
 
 export interface ListTagsParams {
   includeActive?: boolean;
@@ -26,22 +26,40 @@ export async function listTags(params: ListTagsParams = {}): Promise<ListTagsRes
   const { includeActive = true, includeOnHold = false, includeDropped = false } = params;
 
   try {
-    const result = await executeOmniFocusScript('@listTags.js');
+    // Include hidden tags if we need on-hold or dropped
+    const includeCompleted = includeOnHold || includeDropped;
 
-    if (result.error) {
-      return {
-        success: false,
-        error: result.error
-      };
+    const result = await queryOmnifocus({
+      entity: 'tags',
+      select: ['id', 'name', 'hidden', 'availableTaskCount', 'parentName'],
+      includeCompleted,
+    });
+
+    if (!result.success) {
+      return { success: false, error: result.error };
     }
 
-    let tags: TagInfo[] = result.tags || [];
+    // Map query results to TagInfo format
+    let tags: TagInfo[] = (result.items || []).map(item => {
+      // Derive status from hidden property
+      // Apple Events doesn't expose Tag.Status directly; hidden maps to OnHold
+      const status = item.hidden ? 'OnHold' : 'Active';
+      return {
+        id: item.id,
+        name: item.name,
+        status,
+        parent: item.parentName || null,
+        taskCount: item.availableTaskCount ?? 0,
+        active: !item.hidden,
+      };
+    });
 
     // Filter by status
     tags = tags.filter(t => {
       if (t.status === 'Active' && includeActive) return true;
       if (t.status === 'OnHold' && includeOnHold) return true;
-      if (t.status === 'Dropped' && includeDropped) return true;
+      // Note: Dropped tags cannot be distinguished from OnHold via Apple Events
+      // (both have hidden=true). Dropped filtering requires OmniJS.
       return false;
     });
 

@@ -55,12 +55,17 @@ export function planFromAst(
   entity: EntityType,
   selectVars?: string[]
 ): ExecutionPlan {
-  // Rule 1: Non-task entities → OmniJS fallback
+  // Rule 1: Projects/folders → OmniJS fallback (not enough bulk properties)
   if (entity === 'projects' || entity === 'folders') {
     return fallbackPlan(ast, entity);
   }
 
-  // Rule 2: folder container at any depth → OmniJS fallback
+  // Rule 2: Tags with any container → OmniJS fallback (structural parent-chain traversal needed)
+  if (entity === 'tags' && containsAnyContainer(ast)) {
+    return fallbackPlan(ast, entity);
+  }
+
+  // Rule 3: folder container at any depth → OmniJS fallback
   if (containsFolderContainer(ast)) {
     return fallbackPlan(ast, entity);
   }
@@ -72,7 +77,7 @@ export function planFromAst(
   // Check var costs
   const costMap = classifyVars(neededVars, registry);
 
-  // Rule 3: expensive vars in the where clause → OmniJS fallback
+  // Rule 4: expensive vars in the where clause → OmniJS fallback
   if (costMap.expensive.size > 0) {
     return fallbackPlan(ast, entity);
   }
@@ -256,7 +261,25 @@ export function extractContainerScope(ast: LoweredExpr): ContainerExtraction | n
   return null;
 }
 
-// ── Folder Container Detection ──────────────────────────────────────────
+// ── Container Detection ─────────────────────────────────────────────────
+
+/**
+ * Check if an AST contains any container node at any depth.
+ */
+function containsAnyContainer(ast: LoweredExpr): boolean {
+  if (typeof ast !== 'object' || ast === null) return false;
+  if (Array.isArray(ast)) return ast.some(containsAnyContainer);
+
+  const obj = ast as Record<string, unknown>;
+
+  if ('op' in obj) {
+    const node = obj as { op: string; args: LoweredExpr[] };
+    if (node.op === 'container') return true;
+    return node.args.some(containsAnyContainer);
+  }
+
+  return false;
+}
 
 /**
  * Check if an AST contains a folder container at any depth.

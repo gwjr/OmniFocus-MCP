@@ -215,12 +215,37 @@ class JxaCompilerBackend implements ExprBackend<string> {
   // ── Container Scoping ───────────────────────────────────────────────
 
   container(
-    type: 'project' | 'folder',
+    type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,
     fromEntity: EntityType,
     toEntity: EntityType,
     fold: (node: LoweredExpr, entity: EntityType) => string
   ): string {
+    // Tag containers: only valid for tags entity, walk parent tag chain
+    if (type === 'tag') {
+      if (fromEntity !== 'tags') {
+        throw new CompileError(`"container" with "tag" is not valid for entity "${fromEntity}"`, 'where', { op: 'container' });
+      }
+      const cVar = this.freshVar('c');
+      const saved = this._itemVar;
+      this._itemVar = cVar;
+      const compiled = fold(subExpr, toEntity);
+      this._itemVar = saved;
+      return `(function(){` +
+        `var ${cVar}=${saved}.parent;` +
+        `while(${cVar}!=null){` +
+          `if(${compiled})return true;` +
+          `${cVar}=${cVar}.parent;` +
+        `}` +
+        `return false;` +
+        `})()`;
+    }
+
+    // Project/folder containers are not valid for tags entity
+    if (fromEntity === 'tags') {
+      throw new CompileError(`"container" with "${type}" is not valid for entity "tags"`, 'where', { op: 'container' });
+    }
+
     if (fromEntity === 'tasks') {
       if (type === 'project') {
         const cVar = this.freshVar('c');

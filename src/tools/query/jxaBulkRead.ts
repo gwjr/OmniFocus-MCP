@@ -1,11 +1,11 @@
 /**
  * JXA Bulk-Read Script Generator.
  *
- * Generates direct JXA Apple Events scripts that bulk-read task properties
+ * Generates direct JXA Apple Events scripts that bulk-read entity properties
  * without going through OmniJS evaluateJavascript. This avoids the ~880ms
  * OmniJS overhead.
  *
- * Properties are read via Apple Events bulk accessors like tasks.name(),
+ * Properties are read via Apple Events bulk accessors like items.name(),
  * which return arrays in parallel alignment. An alignment check is included
  * to detect mismatches.
  */
@@ -14,6 +14,79 @@ import { getVarRegistry, type EntityType, type VarDef } from './variables.js';
 import type { ExecutionPlan } from './planner.js';
 import type { LoweredExpr } from './fold.js';
 import { escapeJxaString } from './backends/jxaCompiler.js';
+
+// ── Entity Configuration ────────────────────────────────────────────────
+
+interface EntityJxaConfig {
+  /** Apple Events collection path (relative to doc) */
+  collection: string;
+  /** Active-item filter: bulk property name and what "active" means (pass = keep) */
+  activeFilter: { bulkProperty: string; keepWhen: 'false' | 'true' } | null;
+}
+
+const entityConfigs: Record<EntityType, EntityJxaConfig> = {
+  tasks: {
+    collection: 'doc.flattenedTasks',
+    activeFilter: { bulkProperty: 'completed', keepWhen: 'false' },
+  },
+  tags: {
+    collection: 'doc.flattenedTags',
+    activeFilter: { bulkProperty: 'effectivelyHidden', keepWhen: 'false' },
+  },
+  // Projects and folders go through OmniJS fallback, but configs are here for completeness
+  projects: {
+    collection: 'doc.flattenedProjects',
+    activeFilter: null,
+  },
+  folders: {
+    collection: 'doc.flattenedFolders',
+    activeFilter: null,
+  },
+};
+
+/**
+ * Per-item accessor overrides by entity.
+ * Keys are variable names, values generate JXA accessor code for `item`.
+ * Properties not listed here fall through to the generic accessor.
+ */
+const perItemOverrides: Record<EntityType, Record<string, string>> = {
+  tasks: {
+    tags:       'item.tags().map(function(t) { return t.name().toLowerCase(); })',
+    status:     '(function() { var s = item.completed() ? "Completed" : item.flagged() ? "Flagged" : "Available"; return s; })()',
+    inInbox:    'item.inInbox()',
+    sequential: 'item.sequential()',
+    hasChildren:'item.tasks().length > 0',
+    childCount: 'item.tasks().length',
+    parentId:   '(function() { var p = item.parentTask(); return p ? p.id().toString() : null; })()',
+    id:         'item.id().toString()',
+    note:       '(item.note() || "")',
+    completed:  'item.completed()',
+    dropped:    '(item.dropped ? item.dropped() : false)',
+  },
+  tags: {
+    parentName: '(function() { var c = item.container(); return c ? c.name() : null; })()',
+    id:         'item.id().toString()',
+    note:       '(item.note() || "")',
+  },
+  projects: {},
+  folders: {},
+};
+
+/**
+ * Chain property bulk-read lines by entity.
+ * Chain properties use chained bulk accessors (e.g. items.containingProject.name())
+ * which are ~20x faster than items.containingProject() + map(name()).
+ */
+const chainAccessors: Record<EntityType, Record<string, string>> = {
+  tasks: {
+    projectName: '  var projectNameArr = items.containingProject.name();',
+    projectId:   `  var _projIds = items.containingProject.id();
+  var projectIdArr = _projIds.map(function(v) { return v ? v.toString() : null; });`,
+  },
+  tags: {},
+  projects: {},
+  folders: {},
+};
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -24,14 +97,16 @@ interface BulkReadConfig {
   includeId: boolean;
   /** Project scope predicate for narrowing the source collection */
   projectScope?: LoweredExpr;
-  /** Whether to include completed/dropped tasks */
+  /** Whether to include completed/dropped/hidden items */
   includeCompleted: boolean;
+  /** Entity type */
+  entity: EntityType;
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
 
 /**
- * Generate a JXA script for phase 1 bulk-read of task properties.
+ * Generate a JXA script for phase 1 bulk-read of entity properties.
  */
 export function generateBulkReadScript(plan: ExecutionPlan, includeCompleted = false): string {
   const varsToRead = new Set(plan.bulkVars);
@@ -44,24 +119,26 @@ export function generateBulkReadScript(plan: ExecutionPlan, includeCompleted = f
     vars: varsToRead,
     includeId,
     projectScope: plan.projectScope,
-    includeCompleted
+    includeCompleted,
+    entity: plan.entity
   });
 }
 
 /**
  * Generate a JXA script for phase 2 per-item reads by ID.
  */
-export function generatePerItemReadScript(ids: string[], perItemVars: Set<string>): string {
-  const registry = getVarRegistry('tasks');
+export function generatePerItemReadScript(ids: string[], perItemVars: Set<string>, entity: EntityType = 'tasks'): string {
+  const registry = getVarRegistry(entity);
+  const config = entityConfigs[entity];
   const varEntries = [...perItemVars].map(name => {
     const def = registry[name];
-    if (!def) throw new Error(`Unknown variable "${name}" for per-item read`);
+    if (!def) throw new Error(`Unknown variable "${name}" for per-item read (entity: ${entity})`);
     return { name, def };
   });
 
   // Generate per-item accessor code for each var
   const accessors = varEntries.map(({ name, def }) => {
-    return `        "${name}": ${generatePerItemAccessor(name, def)}`;
+    return `        "${name}": ${generatePerItemAccessor(name, def, entity)}`;
   });
 
   const idsJson = JSON.stringify(ids);
@@ -75,9 +152,9 @@ export function generatePerItemReadScript(ids: string[], perItemVars: Set<string
   var results = [];
 
   for (var i = 0; i < ids.length; i++) {
-    var matches = doc.flattenedTasks.whose({id: ids[i]});
+    var matches = ${config.collection}.whose({id: ids[i]});
     if (matches.length === 0) continue;
-    var task = matches[0];
+    var item = matches[0];
     results.push({
       id: ids[i],
 ${accessors.join(',\n')}
@@ -91,7 +168,9 @@ ${accessors.join(',\n')}
 // ── Internal ────────────────────────────────────────────────────────────
 
 function generateScript(config: BulkReadConfig): string {
-  const registry = getVarRegistry('tasks');
+  const registry = getVarRegistry(config.entity);
+  const entityConfig = entityConfigs[config.entity];
+  const entityChains = chainAccessors[config.entity];
 
   // Group vars by their bulk-read method
   const directProps: { name: string; bulk: string; def: VarDef }[] = [];
@@ -117,40 +196,30 @@ function generateScript(config: BulkReadConfig): string {
     if (scopeJxa) {
       sourceExpr = `doc.flattenedProjects.whose(${scopeJxa})[0].flattenedTasks`;
     } else {
-      // Scope can't be expressed as .whose() — fall back to broad read
-      sourceExpr = `doc.flattenedTasks`;
+      sourceExpr = entityConfig.collection;
     }
   } else {
-    sourceExpr = `doc.flattenedTasks`;
+    sourceExpr = entityConfig.collection;
   }
 
   // Generate bulk read lines for direct properties
   const readLines = directProps.map(({ name, bulk, def }) => {
     const isDate = def.type === 'date';
     if (isDate) {
-      return `  var ${name}Arr = tasks.${bulk}();
+      return `  var ${name}Arr = items.${bulk}();
   var ${name}Iso = ${name}Arr.map(function(v) { return v ? v.toISOString() : null; });`;
     }
     if (name === 'id') {
-      return `  var idArr = tasks.id();
+      return `  var idArr = items.id();
   var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });`;
     }
-    return `  var ${name}Arr = tasks.${bulk}();`;
+    return `  var ${name}Arr = items.${bulk}();`;
   });
 
-  // Chain properties use chained bulk accessors (tasks.containingProject.name())
-  // which are ~20x faster than tasks.containingProject() + map(name()).
-  // Benchmarked: chained = ~250ms, map = ~4700ms for 2124 tasks.
-  const chainLines = chainProps.map(({ name }) => {
-    if (name === 'projectName') {
-      return `  var projectNameArr = tasks.containingProject.name();`;
-    }
-    if (name === 'projectId') {
-      return `  var _projIds = tasks.containingProject.id();
-  var projectIdArr = _projIds.map(function(v) { return v ? v.toString() : null; });`;
-    }
-    return '';
-  }).filter(Boolean);
+  // Chain properties — entity-specific chained bulk accessors
+  const chainLines = chainProps
+    .map(({ name }) => entityChains[name] || '')
+    .filter(Boolean);
 
   // Build alignment check
   const allArrayNames = [
@@ -158,28 +227,26 @@ function generateScript(config: BulkReadConfig): string {
     ...chainProps.map(p => `${p.name}Arr`)
   ];
 
-  // Build row construction
-  const rowProps = [
-    ...directProps.map(({ name, def }) => {
-      if (def.type === 'date') return `"${name}": ${name}Iso[i]`;
-      if (name === 'id') return `"id": idKeys[i]`;
-      return `"${name}": ${name}Arr[i]`;
-    }),
-    ...chainProps.map(({ name }) => `"${name}": ${name}Arr[i]`)
-  ];
-
-  // Include completed filter
-  const completedFilter = config.includeCompleted ? '' : `
-  // Filter out completed/dropped tasks
-  var statusArr = tasks.completed();
-  var len = statusArr.length;
+  // Active-item filter
+  let activeFilter: string;
+  if (config.includeCompleted || !entityConfig.activeFilter) {
+    activeFilter = '';
+  } else {
+    const { bulkProperty, keepWhen } = entityConfig.activeFilter;
+    const condition = keepWhen === 'false' ? `!_filterArr[j]` : `_filterArr[j]`;
+    activeFilter = `
+  // Filter to active items only
+  var _filterArr = items.${bulkProperty}();
+  var len = _filterArr.length;
   var activeIndices = [];
   for (var j = 0; j < len; j++) {
-    if (!statusArr[j]) activeIndices.push(j);
+    if (${condition}) activeIndices.push(j);
   }`;
+  }
 
-  const indexVar = config.includeCompleted ? 'i' : 'activeIndices[i]';
-  const loopLen = config.includeCompleted ? `${allArrayNames[0] || 'idKeys'}.length` : 'activeIndices.length';
+  const useFilter = activeFilter !== '';
+  const indexVar = useFilter ? 'activeIndices[i]' : 'i';
+  const loopLen = useFilter ? 'activeIndices.length' : `${allArrayNames[0] || 'idKeys'}.length`;
 
   // Build the row construction with correct indexing
   const rowPropsIndexed = [
@@ -196,7 +263,7 @@ function generateScript(config: BulkReadConfig): string {
   app.includeStandardAdditions = true;
   var doc = app.defaultDocument;
 
-  var tasks = ${sourceExpr};
+  var items = ${sourceExpr};
 
   // Bulk-read properties via Apple Events
 ${readLines.join('\n')}
@@ -210,7 +277,7 @@ ${chainLines.join('\n')}
       return JSON.stringify({error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens});
     }
   }
-${completedFilter}
+${activeFilter}
 
   // Build row objects
   var rows = [];
@@ -257,36 +324,18 @@ function isVarNode(node: LoweredExpr, expectedName?: string): boolean {
   return true;
 }
 
-function generatePerItemAccessor(name: string, def: VarDef): string {
-  // Generate the JXA accessor for per-item reads
-  switch (name) {
-    case 'tags':
-      return 'task.tags().map(function(t) { return t.name().toLowerCase(); })';
-    case 'status':
-      return '(function() { var s = task.completed() ? "Completed" : task.flagged() ? "Flagged" : "Available"; return s; })()';
-    case 'inInbox':
-      return 'task.inInbox()';
-    case 'sequential':
-      return 'task.sequential()';
-    case 'hasChildren':
-      return 'task.tasks().length > 0';
-    case 'childCount':
-      return 'task.tasks().length';
-    case 'parentId':
-      return '(function() { var p = task.parentTask(); return p ? p.id().toString() : null; })()';
-    case 'id':
-      return 'task.id().toString()';
-    case 'note':
-      return '(task.note() || "")';
-    case 'completed':
-      return 'task.completed()';
-    case 'dropped':
-      return '(task.dropped ? task.dropped() : false)';
-    default:
-      // For date properties, serialize to ISO
-      if (def.type === 'date') {
-        return `(function() { var v = task.${def.bulk || name}(); return v ? v.toISOString() : null; })()`;
-      }
-      return `task.${def.bulk || name}()`;
+/**
+ * Generate a JXA accessor expression for a per-item read.
+ * Uses entity-specific overrides, falling back to generic accessor based on VarDef.
+ */
+function generatePerItemAccessor(name: string, def: VarDef, entity: EntityType = 'tasks'): string {
+  // Check entity-specific overrides first
+  const overrides = perItemOverrides[entity];
+  if (overrides[name]) return overrides[name];
+
+  // Generic fallback based on VarDef
+  if (def.type === 'date') {
+    return `(function() { var v = item.${def.bulk || name}(); return v ? v.toISOString() : null; })()`;
   }
+  return `item.${def.bulk || name}()`;
 }

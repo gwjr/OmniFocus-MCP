@@ -4,16 +4,16 @@ import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 import { describeExpr, describeSort } from '../query/backends/describer.js';
 
 export const schema = z.object({
-  entity: z.enum(['tasks', 'projects', 'folders']).describe(
-    "Type of entity to query. Choose 'tasks' for individual tasks, 'projects' for projects, or 'folders' for folder organization"
+  entity: z.enum(['tasks', 'projects', 'folders', 'tags']).describe(
+    "Type of entity to query. Choose 'tasks' for individual tasks, 'projects' for projects, 'folders' for folder organization, or 'tags' for tag hierarchy"
   ),
 
   where: coerceJson('where', z.any().optional().describe(
-    `Expression tree for filtering using compact syntax. 17 operations: and, or, not, eq, neq, gt, gte, lt, lte, between, in, container, contains, startsWith, endsWith, matches. Use {opName: [args]} syntax (e.g. {contains: [{var: "name"}, "review"]}). Dates: {date: "YYYY-MM-DD"}, {offset: {date: "now", days: -3}}, {var: "now"}. Date ranges: {between: [{var: "dueDate"}, {var: "now"}, {offset: {date: "now", days: 7}}]}. Tags: {contains: [{var: "tags"}, "tagName"]}. Container scoping: {container: ["project", expr]}. Project name: {contains: [{var: "projectName"}, "text"]}.`
+    `Expression tree for filtering using compact syntax. 17 operations: and, or, not, eq, neq, gt, gte, lt, lte, between, in, container, contains, startsWith, endsWith, matches. Use {opName: [args]} syntax (e.g. {contains: [{var: "name"}, "review"]}). Dates: {date: "YYYY-MM-DD"}, {offset: {date: "now", days: -3}}, {var: "now"}. Date ranges: {between: [{var: "dueDate"}, {var: "now"}, {offset: {date: "now", days: 7}}]}. Tags: {contains: [{var: "tags"}, "tagName"]}. Container scoping: {container: ["project"|"folder"|"tag", expr]} — "project" for tasks, "folder" for tasks/projects/folders, "tag" for tags (ancestor walk). Project name: {contains: [{var: "projectName"}, "text"]}.`
   )),
 
   select: coerceJson('select', z.array(z.string()).optional().describe(
-    "Specific fields to return (reduces response size). TASK FIELDS: id, name, note, flagged, taskStatus, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, sequential, completedByChildren, inInbox, modificationDate, creationDate. PROJECT FIELDS: id, name, status, note, folderName, folderID, sequential, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, completedByChildren, containsSingletonActions, taskCount, activeTaskCount, tasks, modificationDate, creationDate. FOLDER FIELDS: id, name, path, parentFolderID, status, projectCount, projects, subfolders"
+    "Specific fields to return (reduces response size). COMMON (all entities): id, name. SHARED: note (tasks/projects/tags), dueDate/deferDate/effectiveDueDate/effectiveDeferDate/modificationDate/creationDate/sequential/completedByChildren (tasks/projects), status (projects/folders). TASK-ONLY: flagged, taskStatus, plannedDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, inInbox. PROJECT-ONLY: folderName, folderID, containsSingletonActions, taskCount, activeTaskCount, tasks. FOLDER-ONLY: path, parentFolderID, projectCount, projects, subfolders. TAG-ONLY: allowsNextAction, hidden, effectivelyHidden, availableTaskCount, remainingTaskCount, parentName"
   )),
 
   limit: z.number().optional().describe(
@@ -109,6 +109,7 @@ function singularEntity(entity: string): string {
   if (entity === 'tasks') return 'task';
   if (entity === 'projects') return 'project';
   if (entity === 'folders') return 'folder';
+  if (entity === 'tags') return 'tag';
   return entity;
 }
 
@@ -131,6 +132,7 @@ function formatItems(items: any[], entity: string): string {
     case 'tasks':    return formatTasks(items);
     case 'projects': return formatProjects(items);
     case 'folders':  return formatFolders(items);
+    case 'tags':     return formatTags(items);
     default:         return '';
   }
 }
@@ -231,6 +233,33 @@ function formatFolders(folders: any[]): string {
     const path = folder.path ? ` 📍 ${folder.path}` : '';
 
     return `F: ${folder.name}${projectCount}${path}`;
+  }).join('\n');
+}
+
+function formatTags(tags: any[]): string {
+  return tags.map(tag => {
+    const parts = [];
+
+    const parent = tag.parentName ? `${tag.parentName} > ` : '';
+    parts.push(`T: ${parent}${tag.name || 'Unnamed'}`);
+
+    if (tag.availableTaskCount !== undefined) {
+      parts.push(`(${tag.availableTaskCount} tasks)`);
+    }
+
+    if (tag.hidden) {
+      parts.push('[On Hold]');
+    }
+
+    if (tag.allowsNextAction === false) {
+      parts.push('[no next action]');
+    }
+
+    if (tag.note) {
+      return parts.join(' ') + `\n  Note: ${tag.note}`;
+    }
+
+    return parts.join(' ');
   }).join('\n');
 }
 

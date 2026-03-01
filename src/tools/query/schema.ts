@@ -6,7 +6,7 @@
  */
 
 import { operations } from './operations.js';
-import { taskVars, projectVars, folderVars, type VarRegistry } from './variables.js';
+import { taskVars, projectVars, folderVars, tagVars, type VarRegistry } from './variables.js';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -20,6 +20,7 @@ export function generateWhereSchema(): JsonSchema {
     ...Object.keys(taskVars),
     ...Object.keys(projectVars),
     ...Object.keys(folderVars),
+    ...Object.keys(tagVars),
   ])].sort();
 
   // The expression schema is recursive — use a $defs reference
@@ -134,8 +135,8 @@ export function generateQueryInputSchema(): JsonSchema {
     properties: {
       entity: {
         type: 'string',
-        enum: ['tasks', 'projects', 'folders'],
-        description: "Type of entity to query. Choose 'tasks' for individual tasks, 'projects' for projects, or 'folders' for folder organization"
+        enum: ['tasks', 'projects', 'folders', 'tags'],
+        description: "Type of entity to query. Choose 'tasks' for individual tasks, 'projects' for projects, 'folders' for folder organization, or 'tags' for tag hierarchy"
       },
       where: {
         ...whereSchema,
@@ -152,13 +153,14 @@ OPERATIONS (16):
 - Logical: {and: [expr, expr, ...]}, {or: [expr, expr, ...]}, {not: [expr]}
 - Comparison: {eq: [a, b]}, {neq: [a, b]}, {gt: [a, b]}, {gte: [a, b]}, {lt: [a, b]}, {lte: [a, b]}
 - Value-in-array: {in: [expr, [values]]} e.g. {in: [{var: "status"}, ["Available", "Next"]]}
-- Container scoping: {within: ["project"|"folder", expr]} — filter by ancestor
+- Container scoping: {container: ["project"|"folder"|"tag", expr]} — filter by ancestor
 - String (case-insensitive): {contains: [expr, "pattern"]}, {startsWith: [expr, "pat"]}, {endsWith: [expr, "pat"]}, {matches: [expr, "regex"]}
 - Tags: {contains: [{var: "tags"}, "tagName"]} — tag membership (tasks only)
 
 TASK VARS: id, name, note, flagged, status, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, modificationDate, creationDate, estimatedMinutes, projectId, parentId, inInbox, sequential, hasChildren, childCount, tags, now
 PROJECT VARS: id, name, note, status, flagged, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, modificationDate, creationDate, estimatedMinutes, sequential, folderId, taskCount, activeTaskCount, now
 FOLDER VARS: id, name, status, parentFolderId, projectCount, path, now
+TAG VARS: id, name, note, allowsNextAction, hidden, effectivelyHidden, availableTaskCount, remainingTaskCount, parentName, now
 
 Status values — Task: Available, Blocked, Completed, Dropped, DueSoon, Next, Overdue — Project: Active, Done, Dropped, OnHold — Folder: Active, Dropped
 
@@ -168,12 +170,13 @@ EXAMPLES:
 - Tasks in project "litigation": {within: ["project", {contains: [{var: "name"}, "litigation"]}]}
 - Tasks with tag "work": {contains: [{var: "tags"}, "work"]}
 - Overdue or due soon: {in: [{var: "status"}, ["Overdue", "DueSoon"]]}
-- Tasks modified in last 3 days: {gt: [{var: "modificationDate"}, {offset: {date: "now", days: -3}}]}`
+- Tasks modified in last 3 days: {gt: [{var: "modificationDate"}, {offset: {date: "now", days: -3}}]}
+- Child tags under "Work": entity: "tags", where: {container: ["tag", {contains: [{var: "name"}, "Work"]}]}`
       },
       select: {
         type: 'array',
         items: { type: 'string' },
-        description: "Specific fields to return (reduces response size). TASK FIELDS: id, name, note, flagged, taskStatus, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, sequential, completedByChildren, inInbox, modificationDate, creationDate. PROJECT FIELDS: id, name, status, note, folderName, folderID, sequential, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, completedByChildren, containsSingletonActions, taskCount, activeTaskCount, tasks, modificationDate, creationDate. FOLDER FIELDS: id, name, path, parentFolderID, status, projectCount, projects, subfolders"
+        description: "Specific fields to return (reduces response size). COMMON (all entities): id, name. SHARED: note (tasks/projects/tags), dueDate/deferDate/effectiveDueDate/effectiveDeferDate/modificationDate/creationDate/sequential/completedByChildren (tasks/projects), status (projects/folders). TASK-ONLY: flagged, taskStatus, plannedDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, inInbox. PROJECT-ONLY: folderName, folderID, containsSingletonActions, taskCount, activeTaskCount, tasks. FOLDER-ONLY: path, parentFolderID, projectCount, projects, subfolders. TAG-ONLY: allowsNextAction, hidden, effectivelyHidden, availableTaskCount, remainingTaskCount, parentName"
       },
       limit: {
         type: 'number',

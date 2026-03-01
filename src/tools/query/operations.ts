@@ -36,7 +36,7 @@ export const operations: Record<string, OpMeta> = {
   in:           { minArgs: 2, maxArgs: 2,  description: 'Value in array ({in: [valueExpr, [array]]})' },
 
   // Container scoping
-  container:    { minArgs: 2, maxArgs: 2,  description: 'Container scoping ({container: ["project"|"folder", expr]})' },
+  container:    { minArgs: 2, maxArgs: 2,  description: 'Container scoping ({container: ["project"|"folder"|"tag", expr]})' },
 
   // String (case-insensitive) — contains is polymorphic (string or array)
   contains:     { minArgs: 2, maxArgs: 2,  description: 'String/array contains (case-insensitive)' },
