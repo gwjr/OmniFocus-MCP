@@ -5,8 +5,25 @@ import { lowerExpr } from '../dist/tools/query/lower.js';
 import type { LoweredExpr } from '../dist/tools/query/fold.js';
 
 describe('planner — path selection', () => {
-  it('projects entity → omnijs-fallback', () => {
+  it('projects entity with easy vars → broad', () => {
     const plan = planExecution({ contains: [{ var: 'name' }, 'test'] }, 'projects');
+    assert.equal(plan.path, 'broad');
+  });
+
+  it('projects entity with per-item var (folderId) → two-phase', () => {
+    const plan = planExecution(
+      { contains: [{ var: 'folderName' }, 'Legal'] },
+      'projects'
+    );
+    assert.equal(plan.path, 'two-phase');
+    assert.ok(plan.perItemVars?.has('folderName'));
+  });
+
+  it('projects entity with folder container → omnijs-fallback', () => {
+    const plan = planExecution(
+      { container: ['folder', { contains: [{ var: 'name' }, 'Legal'] }] },
+      'projects'
+    );
     assert.equal(plan.path, 'omnijs-fallback');
   });
 

@@ -66,22 +66,31 @@ const testCases = [
 
   // ── #2: Active project enumeration ────────────────────────────────────
   {
-    name: 'All active projects',
+    name: 'All active projects (broad)',
     category: 'project-list',
-    expected: 'omnijs-fallback',
+    expected: 'broad',
     params: {
       entity: 'projects',
-      select: ['name', 'status', 'folderName'],
+      select: ['name', 'status'],
     },
   },
   {
     name: 'Projects with task counts',
     category: 'project-list',
-    expected: 'omnijs-fallback',
+    expected: 'broad',
     params: {
       entity: 'projects',
       select: ['name', 'status', 'taskCount', 'activeTaskCount', 'modificationDate'],
       sort: { by: 'modificationDate', direction: 'desc' },
+    },
+  },
+  {
+    name: 'Projects with folder (two-phase)',
+    category: 'project-list',
+    expected: 'two-phase',
+    params: {
+      entity: 'projects',
+      select: ['name', 'status', 'folderName'],
     },
   },
 

@@ -55,8 +55,8 @@ export function planFromAst(
   entity: EntityType,
   selectVars?: string[]
 ): ExecutionPlan {
-  // Rule 1: Projects/folders → OmniJS fallback (not enough bulk properties)
-  if (entity === 'projects' || entity === 'folders') {
+  // Rule 1: Folders → OmniJS fallback (insufficient bulk properties for direct JXA)
+  if (entity === 'folders') {
     return fallbackPlan(ast, entity);
   }
 

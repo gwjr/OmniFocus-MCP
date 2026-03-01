@@ -72,22 +72,32 @@ export const taskVars: VarRegistry = {
 };
 
 export const projectVars: VarRegistry = {
-  id:                 str(v  => `${v}.id.primaryKey`,                                                          'id',               'id',                    'per-item'),
+  // easy: bulk Apple Events readable properties
+  id:                 str(v  => `${v}.id.primaryKey`,                                                          'id',               'id',                    'easy'),
   name:               str(v  => `(${v}.name || "")`,                                                           'name',             'name',                  'easy'),
-  status:             enm(v  => `projectStatusMap[${v}.status]`,                                                'status',           null,                    'per-item'),
+  status:             enm(v  => `projectStatusMap[${v}.status]`,                                                'status',           'effectiveStatus',       'easy'),
   flagged:            bool(v => `${v}.flagged`,                                                                 'flagged',          'flagged',               'easy'),
+  completed:          bool(v => `(${v}.status === Project.Status.Done)`,                                        'completed',        'completed',             'easy'),
   dueDate:            date(v => `${v}.dueDate`,                                                                 'dueDate',          'dueDate',               'easy'),
   deferDate:          date(v => `${v}.deferDate`,                                                               'deferDate',        'deferDate',             'easy'),
   effectiveDueDate:   date(v => `${v}.effectiveDueDate`,                                                        'effectiveDueDate', 'effectiveDueDate',      'easy'),
   effectiveDeferDate: date(v => `${v}.effectiveDeferDate`,                                                      'effectiveDeferDate','effectiveDeferDate',   'easy'),
-  modificationDate:   date(v => `${v}.task.modified`,                                                           'modificationDate', null,                    'per-item'),
-  creationDate:       date(v => `${v}.task.added`,                                                              'creationDate',     null,                    'per-item'),
+  completionDate:     date(v => `${v}.completionDate`,                                                          'completionDate',   'completionDate',        'easy'),
+  modificationDate:   date(v => `${v}.task.modified`,                                                           'modificationDate', 'modificationDate',      'easy'),
+  creationDate:       date(v => `${v}.task.added`,                                                              'creationDate',     'creationDate',          'easy'),
   estimatedMinutes:   num(v  => `${v}.estimatedMinutes`,                                                        'estimatedMinutes', 'estimatedMinutes',      'easy'),
-  sequential:         bool(v => `${v}.sequential`,                                                              'sequential',       null,                    'per-item'),
+  sequential:         bool(v => `${v}.sequential`,                                                              'sequential',       'sequential',            'easy'),
+  taskCount:          num(v  => `(${v}.tasks ? ${v}.tasks.length : 0)`,                                         'taskCount',        'numberOfTasks',         'easy'),
+  activeTaskCount:    num(v  => `(${v}.tasks ? ${v}.tasks.filter(t => t.taskStatus !== Task.Status.Completed && t.taskStatus !== Task.Status.Dropped).length : 0)`, 'activeTaskCount', 'numberOfAvailableTasks', 'easy'),
+
+  // per-item: parentFolder requires per-item (can't chain through nullable)
   folderId:           str(v  => `(${v}.parentFolder ? ${v}.parentFolder.id.primaryKey : null)`,                 'folderId',         null,                    'per-item'),
-  taskCount:          num(v  => `(${v}.tasks ? ${v}.tasks.length : 0)`,                                         'taskCount',        null,                    'per-item'),
-  activeTaskCount:    num(v  => `(${v}.tasks ? ${v}.tasks.filter(t => t.taskStatus !== Task.Status.Completed && t.taskStatus !== Task.Status.Dropped).length : 0)`, 'activeTaskCount', null, 'per-item'),
+  folderName:         str(v  => `(${v}.parentFolder ? ${v}.parentFolder.name : null)`,                          'folderName',       null,                    'per-item'),
+
+  // expensive
   note:               str(v  => `(${v}.note || "")`,                                                            'note',             null,                    'expensive'),
+
+  // special
   now:                date(_ => '_now',                                                                          'now',              null,                    'easy'),
 };
 

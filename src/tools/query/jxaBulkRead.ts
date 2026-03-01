@@ -20,8 +20,12 @@ import { escapeJxaString } from './backends/jxaCompiler.js';
 interface EntityJxaConfig {
   /** Apple Events collection path (relative to doc) */
   collection: string;
-  /** Active-item filter: bulk property name and what "active" means (pass = keep) */
-  activeFilter: { bulkProperty: string; keepWhen: 'false' | 'true' } | null;
+  /** Active-item filter: bulk property name and condition for keeping an item */
+  activeFilter: {
+    bulkProperty: string;
+    /** 'false'/'true' for boolean check, 'active' for project status string match */
+    keepWhen: 'false' | 'true' | 'active';
+  } | null;
 }
 
 const entityConfigs: Record<EntityType, EntityJxaConfig> = {
@@ -33,10 +37,9 @@ const entityConfigs: Record<EntityType, EntityJxaConfig> = {
     collection: 'doc.flattenedTags',
     activeFilter: { bulkProperty: 'effectivelyHidden', keepWhen: 'false' },
   },
-  // Projects and folders go through OmniJS fallback, but configs are here for completeness
   projects: {
     collection: 'doc.flattenedProjects',
-    activeFilter: null,
+    activeFilter: { bulkProperty: 'status', keepWhen: 'active' },
   },
   folders: {
     collection: 'doc.flattenedFolders',
@@ -68,7 +71,12 @@ const perItemOverrides: Record<EntityType, Record<string, string>> = {
     id:         'item.id().toString()',
     note:       '(item.note() || "")',
   },
-  projects: {},
+  projects: {
+    folderId:   '(function() { var f = item.parentFolder(); return f ? f.id().toString() : null; })()',
+    folderName: '(function() { var f = item.parentFolder(); return f ? f.name() : null; })()',
+    id:         'item.id().toString()',
+    note:       '(item.note() || "")',
+  },
   folders: {},
 };
 
@@ -202,6 +210,9 @@ function generateScript(config: BulkReadConfig): string {
     sourceExpr = entityConfig.collection;
   }
 
+  // Apple Events status mapping: raw descriptors → user-facing strings
+  const PROJECT_STATUS_MAP = '{"active status":"Active","done status":"Done","on hold status":"OnHold","dropped status":"Dropped"}';
+
   // Generate bulk read lines for direct properties
   const readLines = directProps.map(({ name, bulk, def }) => {
     const isDate = def.type === 'date';
@@ -212,6 +223,12 @@ function generateScript(config: BulkReadConfig): string {
     if (name === 'id') {
       return `  var idArr = items.id();
   var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });`;
+    }
+    // Project status: map Apple Events descriptor strings to user-facing values
+    if (name === 'status' && config.entity === 'projects') {
+      return `  var _rawStatusArr = items.${bulk}();
+  var _statusMap = ${PROJECT_STATUS_MAP};
+  var statusArr = _rawStatusArr.map(function(v) { return _statusMap[String(v)] || String(v); });`;
     }
     return `  var ${name}Arr = items.${bulk}();`;
   });
@@ -233,8 +250,21 @@ function generateScript(config: BulkReadConfig): string {
     activeFilter = '';
   } else {
     const { bulkProperty, keepWhen } = entityConfig.activeFilter;
-    const condition = keepWhen === 'false' ? `!_filterArr[j]` : `_filterArr[j]`;
-    activeFilter = `
+    if (keepWhen === 'active') {
+      // Project status: Apple Events returns strings like "active status", "done status", etc.
+      // Keep only items whose status starts with "active" (covers "active status")
+      activeFilter = `
+  // Filter to active projects only
+  var _filterArr = items.${bulkProperty}();
+  var len = _filterArr.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    var _s = String(_filterArr[j]);
+    if (_s.indexOf("active") === 0 || _s.indexOf("on hold") === 0) activeIndices.push(j);
+  }`;
+    } else {
+      const condition = keepWhen === 'false' ? `!_filterArr[j]` : `_filterArr[j]`;
+      activeFilter = `
   // Filter to active items only
   var _filterArr = items.${bulkProperty}();
   var len = _filterArr.length;
@@ -242,6 +272,7 @@ function generateScript(config: BulkReadConfig): string {
   for (var j = 0; j < len; j++) {
     if (${condition}) activeIndices.push(j);
   }`;
+    }
   }
 
   const useFilter = activeFilter !== '';
