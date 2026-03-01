@@ -16,6 +16,7 @@ import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
 import * as getPerspectiveViewTool from './tools/definitions/getPerspectiveView.js';
 import * as moveItemTool from './tools/definitions/moveItem.js';
 import * as listTagsTool from './tools/definitions/listTags.js';
+import * as showForecastTool from './tools/definitions/showForecast.js';
 
 // Create an MCP server
 const server = new McpServer({
@@ -59,6 +60,12 @@ register("list_tags",
   listTagsTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   listTagsTool.handler);
+
+register("show_forecast",
+  "Show OmniFocus Forecast view: task counts per day by due, planned, and deferred date across a date range, with today's flagged and tagged counts.",
+  showForecastTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  showForecastTool.handler);
 
 // Additive tools (not destructive, not idempotent)
 register("add_omnifocus_task",
