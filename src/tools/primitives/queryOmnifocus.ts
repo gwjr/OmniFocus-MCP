@@ -13,10 +13,46 @@ import { executeJXA, executeOmniFocusScript } from '../../utils/scriptExecution.
 import { compileWhere, CompileError } from '../query/backends/jxaCompiler.js';
 import { compileNodePredicate, type Row, type RowFn } from '../query/backends/nodeEval.js';
 import { lowerExpr, LowerError } from '../query/lower.js';
-import { planFromAst, type ExecutionPlan } from '../query/planner.js';
+import { planFromAst, type ExecutionPlan, type ExecutionPath } from '../query/planner.js';
 import { generateBulkReadScript, generatePerItemReadScript } from '../query/jxaBulkRead.js';
 import type { LoweredExpr } from '../query/fold.js';
 import { getVarRegistry } from '../query/variables.js';
+
+// ── Query Logging ──────────────────────────────────────────────────────
+
+function logQuery(entry: {
+  where: unknown;
+  entity: string;
+  strategy: ExecutionPath;
+  totalMs: number;
+  phase1Ms?: number;
+  phase2Ms?: number;
+  bulkRows?: number;
+  filteredRows?: number;
+  resultCount: number;
+  perItemCount?: number;
+  thresholdFallback?: boolean;
+  error?: string;
+}): void {
+  const where = entry.where != null ? JSON.stringify(entry.where) : '(none)';
+  const phases = [
+    entry.phase1Ms != null ? `bulk=${entry.phase1Ms}ms` : null,
+    entry.phase2Ms != null ? `per-item=${entry.phase2Ms}ms` : null,
+  ].filter(Boolean).join(' ');
+  const counts = [
+    entry.bulkRows != null ? `read=${entry.bulkRows}` : null,
+    entry.filteredRows != null ? `filtered=${entry.filteredRows}` : null,
+    entry.perItemCount != null ? `per-item=${entry.perItemCount}` : null,
+    `result=${entry.resultCount}`,
+  ].filter(Boolean).join(' ');
+  const flags = entry.thresholdFallback ? ' [threshold→fallback]' : '';
+  const err = entry.error ? ` ERROR: ${entry.error}` : '';
+
+  console.error(
+    `[query] ${entry.entity} ${entry.strategy} ${entry.totalMs}ms | ${phases ? phases + ' | ' : ''}${counts}${flags}${err}`
+  );
+  console.error(`[query]   where: ${where}`);
+}
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -40,6 +76,7 @@ interface QueryResult {
 // ── Main Entry Point ────────────────────────────────────────────────────
 
 export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<QueryResult> {
+  const t0 = Date.now();
   try {
     // Phase 0: Lower the where clause
     let ast: LoweredExpr;
@@ -47,6 +84,7 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       ast = (params.where != null ? lowerExpr(params.where) : true) as LoweredExpr;
     } catch (e) {
       if (e instanceof LowerError) {
+        logQuery({ where: params.where, entity: params.entity, strategy: 'omnijs-fallback', totalMs: Date.now() - t0, resultCount: 0, error: e.message });
         return { success: false, error: e.message };
       }
       throw e;
@@ -57,16 +95,14 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
     // Route to appropriate execution path
     if (plan.path === 'omnijs-fallback') {
-      return executeViaOmniJs(params, ast);
+      return executeViaOmniJs(params, ast, t0);
     }
 
-    return executeViaDirectJxa(params, plan, ast);
+    return executeViaDirectJxa(params, plan, ast, t0);
   } catch (error) {
-    console.error('Error querying OmniFocus:', error);
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error occurred'
-    };
+    const msg = error instanceof Error ? error.message : 'Unknown error occurred';
+    logQuery({ where: params.where, entity: params.entity, strategy: 'omnijs-fallback', totalMs: Date.now() - t0, resultCount: 0, error: msg });
+    return { success: false, error: msg };
   }
 }
 
@@ -75,21 +111,28 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 async function executeViaDirectJxa(
   params: QueryOmnifocusParams,
   plan: ExecutionPlan,
-  ast: LoweredExpr
+  ast: LoweredExpr,
+  t0: number
 ): Promise<QueryResult> {
   // Phase 1: Direct JXA bulk-read
+  const t1 = Date.now();
   const jxaScript = generateBulkReadScript(plan, params.includeCompleted ?? false);
   const rawResult = await executeJXA(jxaScript);
+  const phase1Ms = Date.now() - t1;
 
   // Check for alignment errors
   if (rawResult && typeof rawResult === 'object' && 'error' in rawResult) {
+    logQuery({ where: params.where, entity: params.entity, strategy: plan.path, totalMs: Date.now() - t0, phase1Ms, resultCount: 0, error: `alignment: ${(rawResult as any).error}` });
     return { success: false, error: `Bulk read error: ${(rawResult as any).error}` };
   }
 
   let rows = rawResult as Row[];
   if (!Array.isArray(rows)) {
+    logQuery({ where: params.where, entity: params.entity, strategy: plan.path, totalMs: Date.now() - t0, phase1Ms, resultCount: 0, error: 'bad format' });
     return { success: false, error: 'Unexpected bulk read result format' };
   }
+
+  const bulkRows = rows.length;
 
   // Phase 1 filter: Node-side evaluation
   if (ast !== true) {
@@ -102,28 +145,37 @@ async function executeViaDirectJxa(
       rows = rows.filter(row => !!predicate(row));
     } catch (e) {
       // If NodeEval fails (e.g. unsupported operation), fall back to OmniJS
-      console.error('NodeEval failed, falling back to OmniJS:', e);
-      return executeViaOmniJs(params, ast);
+      logQuery({ where: params.where, entity: params.entity, strategy: plan.path, totalMs: Date.now() - t0, phase1Ms, bulkRows, resultCount: 0, error: `NodeEval failed: ${e}` });
+      return executeViaOmniJs(params, ast, t0);
     }
   }
+
+  const filteredRows = rows.length;
 
   // Phase 2: Per-item reads for two-phase plan
   // Benchmarking shows per-item ID lookups cost ~200ms each via JXA .whose({id}).
   // If the phase 1 pre-filter leaves too many items, fall back to OmniJS which
   // handles everything in-process (~6s total, vs N*200ms for large N).
   const PER_ITEM_THRESHOLD = 20;
+  let phase2Ms: number | undefined;
+  let perItemCount: number | undefined;
+  let thresholdFallback = false;
 
   if ((plan.path === 'two-phase' || plan.path === 'project-scoped') && plan.perItemVars && plan.perItemVars.size > 0) {
     const ids = rows.map(r => r.id as string).filter(Boolean);
 
     if (ids.length > PER_ITEM_THRESHOLD) {
-      // Too many items for per-item reads — fall back to OmniJS
-      return executeViaOmniJs(params, ast);
+      thresholdFallback = true;
+      logQuery({ where: params.where, entity: params.entity, strategy: plan.path, totalMs: Date.now() - t0, phase1Ms, bulkRows, filteredRows, resultCount: ids.length, thresholdFallback: true });
+      return executeViaOmniJs(params, ast, t0);
     }
 
     if (ids.length > 0) {
+      const t2 = Date.now();
       const detailScript = generatePerItemReadScript(ids, plan.perItemVars);
       const detailResult = await executeJXA(detailScript);
+      phase2Ms = Date.now() - t2;
+      perItemCount = ids.length;
 
       if (Array.isArray(detailResult)) {
         // Merge details into rows
@@ -149,6 +201,7 @@ async function executeViaDirectJxa(
         const exactPredicate = compileNodePredicate(plan.filterAst, plan.entity);
         rows = rows.filter(row => !!exactPredicate(row));
       } catch (e) {
+        // Log but continue with phase-1 filtered results
         console.error('Exact re-filter failed:', e);
       }
     }
@@ -167,6 +220,8 @@ async function executeViaDirectJxa(
     rows = rows.slice(0, params.limit);
   }
 
+  logQuery({ where: params.where, entity: params.entity, strategy: plan.path, totalMs: Date.now() - t0, phase1Ms, phase2Ms, bulkRows, filteredRows, resultCount: totalCount, perItemCount });
+
   // Summary mode
   if (params.summary) {
     return { success: true, count: totalCount };
@@ -182,8 +237,11 @@ async function executeViaDirectJxa(
 
 async function executeViaOmniJs(
   params: QueryOmnifocusParams,
-  ast: LoweredExpr
+  ast: LoweredExpr,
+  t0?: number
 ): Promise<QueryResult> {
+  const startMs = t0 ?? Date.now();
+
   // Compile the where clause to JXA for OmniJS execution
   let whereCondition: string | null = null;
   let preambleCode: string[] = [];
@@ -195,6 +253,7 @@ async function executeViaOmniJs(
       preambleCode = result.preamble;
     } catch (e) {
       if (e instanceof CompileError) {
+        logQuery({ where: params.where, entity: params.entity, strategy: 'omnijs-fallback', totalMs: Date.now() - startMs, resultCount: 0, error: e.message });
         return { success: false, error: e.message };
       }
       throw e;
@@ -211,9 +270,14 @@ async function executeViaOmniJs(
 
   fs.unlinkSync(tempFile);
 
+  const count = result.count ?? result.items?.length ?? 0;
+
   if (result.error) {
+    logQuery({ where: params.where, entity: params.entity, strategy: 'omnijs-fallback', totalMs: Date.now() - startMs, resultCount: count, error: result.error });
     return { success: false, error: result.error };
   }
+
+  logQuery({ where: params.where, entity: params.entity, strategy: 'omnijs-fallback', totalMs: Date.now() - startMs, resultCount: count });
 
   return {
     success: true,
