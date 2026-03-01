@@ -4,18 +4,16 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // Import tool definitions
-import * as dumpDatabaseTool from './tools/definitions/dumpDatabase.js';
-import * as addOmniFocusTaskTool from './tools/definitions/addOmniFocusTask.js';
-import * as addProjectTool from './tools/definitions/addProject.js';
-import * as removeItemTool from './tools/definitions/removeItem.js';
-import * as editItemTool from './tools/definitions/editItem.js';
-import * as batchAddItemsTool from './tools/definitions/batchAddItems.js';
-import * as batchRemoveItemsTool from './tools/definitions/batchRemoveItems.js';
-import * as queryOmniFocusTool from './tools/definitions/queryOmnifocus.js';
-import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
-import * as getPerspectiveViewTool from './tools/definitions/getPerspectiveView.js';
-import * as moveItemTool from './tools/definitions/moveItem.js';
+import * as queryTool from './tools/definitions/queryOmnifocus.js';
+import * as viewTool from './tools/definitions/view.js';
+import * as listProjectsTool from './tools/definitions/listProjects.js';
 import * as listTagsTool from './tools/definitions/listTags.js';
+import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
+import * as addTaskTool from './tools/definitions/addTask.js';
+import * as addProjectTool from './tools/definitions/addProject.js';
+import * as editItemTool from './tools/definitions/editItem.js';
+import * as moveItemTool from './tools/definitions/moveItem.js';
+import * as removeTool from './tools/definitions/removeItem.js';
 
 // Create an MCP server
 const server = new McpServer({
@@ -30,17 +28,29 @@ function register(name: string, description: string, schema: any, annotations: a
 }
 
 // Read-only tools
-register("dump_database",
-  "Gets the current state of your OmniFocus database",
-  dumpDatabaseTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  dumpDatabaseTool.handler);
-
-register("query_omnifocus",
+register("query",
   "Query OmniFocus, filtering tasks, projects, or folders with an expression tree.",
-  queryOmniFocusTool.schema,
+  queryTool.schema,
   { readOnlyHint: true, openWorldHint: false },
-  queryOmniFocusTool.handler);
+  queryTool.handler);
+
+register("view",
+  "View tasks in a project, folder, tag, or perspective. Syntactic sugar over the query tool. Use project/folder/tag for container views, perspective for saved views (Flagged, Inbox), or inbox: true.",
+  viewTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  viewTool.handler);
+
+register("list_projects",
+  "List all projects grouped by folder. Returns a folder→project tree with status, flags, due dates, and task counts.",
+  listProjectsTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  listProjectsTool.handler);
+
+register("list_tags",
+  "List all tags in OmniFocus with task counts. Returns tag names, hierarchy (parent/child), status, and number of active tasks per tag. Use this to discover available tags before filtering by them in the query tool.",
+  listTagsTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  listTagsTool.handler);
 
 register("list_perspectives",
   "List all available perspectives in OmniFocus, including built-in perspectives (Inbox, Projects, Tags, etc.) and custom perspectives (Pro feature)",
@@ -48,36 +58,18 @@ register("list_perspectives",
   { readOnlyHint: true, openWorldHint: false },
   listPerspectivesTool.handler);
 
-register("get_perspective_view",
-  "Get the items visible in a specific OmniFocus perspective. Shows what tasks and projects are displayed when viewing that perspective",
-  getPerspectiveViewTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  getPerspectiveViewTool.handler);
-
-register("list_tags",
-  "List all tags in OmniFocus with task counts. Returns tag names, hierarchy (parent/child), status, and number of active tasks per tag. Use this to discover available tags before filtering by them in query_omnifocus.",
-  listTagsTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  listTagsTool.handler);
-
 // Additive tools (not destructive, not idempotent)
-register("add_omnifocus_task",
-  "Add a new task to OmniFocus",
-  addOmniFocusTaskTool.schema,
+register("add_task",
+  "Add one or more tasks to OmniFocus",
+  addTaskTool.schema,
   { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  addOmniFocusTaskTool.handler);
+  addTaskTool.handler);
 
 register("add_project",
-  "Add a new project to OmniFocus",
+  "Add one or more projects to OmniFocus",
   addProjectTool.schema,
   { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   addProjectTool.handler);
-
-register("batch_add_items",
-  "Add multiple tasks or projects to OmniFocus in a single operation",
-  batchAddItemsTool.schema,
-  { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-  batchAddItemsTool.handler);
 
 // Mutative tools (not destructive, idempotent)
 register("edit_item",
@@ -93,17 +85,11 @@ register("move_item",
   moveItemTool.handler);
 
 // Destructive tools (idempotent — removing an already-removed item is a no-op)
-register("remove_item",
+register("remove",
   "Remove a task or project from OmniFocus",
-  removeItemTool.schema,
+  removeTool.schema,
   { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  removeItemTool.handler);
-
-register("batch_remove_items",
-  "Remove multiple tasks or projects from OmniFocus in a single operation",
-  batchRemoveItemsTool.schema,
-  { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-  batchRemoveItemsTool.handler);
+  removeTool.handler);
 
 // Start the MCP server
 const transport = new StdioServerTransport();

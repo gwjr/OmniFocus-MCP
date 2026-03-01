@@ -242,6 +242,11 @@ async function executeViaOmniJs(
 ): Promise<QueryResult> {
   const startMs = t0 ?? Date.now();
 
+  // Perspectives use a dedicated OmniJS script (no expression compilation)
+  if (params.entity === 'perspectives') {
+    return executePerspectivesQuery(params, startMs);
+  }
+
   // Compile the where clause to JXA for OmniJS execution
   let whereCondition: string | null = null;
   let preambleCode: string[] = [];
@@ -284,6 +289,105 @@ async function executeViaOmniJs(
     items: params.summary ? undefined : result.items,
     count: result.count
   };
+}
+
+// ── Perspectives Query ───────────────────────────────────────────────────
+
+async function executePerspectivesQuery(
+  params: QueryOmnifocusParams,
+  t0: number
+): Promise<QueryResult> {
+  const script = `(() => {
+    try {
+      var items = [];
+
+      // Built-in perspectives
+      var builtIns = [
+        { obj: Perspective.BuiltIn.Inbox, name: "Inbox" },
+        { obj: Perspective.BuiltIn.Projects, name: "Projects" },
+        { obj: Perspective.BuiltIn.Tags, name: "Tags" },
+        { obj: Perspective.BuiltIn.Forecast, name: "Forecast" },
+        { obj: Perspective.BuiltIn.Flagged, name: "Flagged" },
+        { obj: Perspective.BuiltIn.Review, name: "Review" }
+      ];
+      builtIns.forEach(function(p) {
+        items.push({
+          id: "builtin_" + p.name.toLowerCase(),
+          name: p.name,
+          type: "builtin"
+        });
+      });
+
+      // Custom perspectives
+      try {
+        var customs = Perspective.Custom.all;
+        if (customs && customs.length > 0) {
+          customs.forEach(function(p) {
+            items.push({
+              id: p.identifier || ("custom_" + p.name.toLowerCase().replace(/\\s+/g, "_")),
+              name: p.name,
+              type: "custom"
+            });
+          });
+        }
+      } catch (e) {
+        // Custom perspectives not available (Standard edition)
+      }
+
+      return JSON.stringify({ items: items, count: items.length, error: null });
+    } catch (error) {
+      return JSON.stringify({ error: error.toString(), items: [], count: 0 });
+    }
+  })()`;
+
+  const tempFile = `/tmp/omnifocus_perspectives_${Date.now()}.js`;
+  const fs = await import('fs');
+  fs.writeFileSync(tempFile, script);
+
+  const result = await executeOmniFocusScript(tempFile);
+  fs.unlinkSync(tempFile);
+
+  const count = result.count ?? result.items?.length ?? 0;
+
+  if (result.error) {
+    logQuery({ where: params.where, entity: 'perspectives', strategy: 'omnijs-fallback', totalMs: Date.now() - t0, resultCount: count, error: result.error });
+    return { success: false, error: result.error };
+  }
+
+  let items = result.items || [];
+
+  // Node-side filtering by name if where clause provided
+  if (params.where != null) {
+    try {
+      const predicate = compileNodePredicate(
+        (params.where != null ? lowerExpr(params.where) : true) as LoweredExpr,
+        'perspectives'
+      );
+      items = items.filter((row: any) => !!predicate(row));
+    } catch (e) {
+      // If filter fails, return all perspectives
+      console.error('Perspectives filter failed:', e);
+    }
+  }
+
+  if (params.sort) {
+    applySort(items, params.sort, 'perspectives');
+  }
+
+  const totalCount = items.length;
+
+  if (params.limit) {
+    items = items.slice(0, params.limit);
+  }
+
+  logQuery({ where: params.where, entity: 'perspectives', strategy: 'omnijs-fallback', totalMs: Date.now() - t0, resultCount: totalCount });
+
+  if (params.summary) {
+    return { success: true, count: totalCount };
+  }
+
+  const finalItems = params.select ? selectFields(items, params.select) : items;
+  return { success: true, items: finalItems, count: totalCount };
 }
 
 // ── Node-side Sort ──────────────────────────────────────────────────────

@@ -6,7 +6,7 @@
  */
 
 import { operations } from './operations.js';
-import { taskVars, projectVars, folderVars, tagVars, type VarRegistry } from './variables.js';
+import { taskVars, projectVars, folderVars, tagVars, perspectiveVars, type VarRegistry } from './variables.js';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -21,6 +21,7 @@ export function generateWhereSchema(): JsonSchema {
     ...Object.keys(projectVars),
     ...Object.keys(folderVars),
     ...Object.keys(tagVars),
+    ...Object.keys(perspectiveVars),
   ])].sort();
 
   // The expression schema is recursive — use a $defs reference
@@ -135,7 +136,7 @@ export function generateQueryInputSchema(): JsonSchema {
     properties: {
       entity: {
         type: 'string',
-        enum: ['tasks', 'projects', 'folders', 'tags'],
+        enum: ['tasks', 'projects', 'folders', 'tags', 'perspectives'],
         description: "Type of entity to query. Choose 'tasks' for individual tasks, 'projects' for projects, 'folders' for folder organization, or 'tags' for tag hierarchy"
       },
       where: {

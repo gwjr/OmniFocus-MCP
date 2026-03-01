@@ -45,6 +45,10 @@ const entityConfigs: Record<EntityType, EntityJxaConfig> = {
     collection: 'doc.flattenedFolders',
     activeFilter: null,
   },
+  perspectives: {
+    collection: '', // perspectives don't use bulk-read; always OmniJS fallback
+    activeFilter: null,
+  },
 };
 
 /**
@@ -72,12 +76,15 @@ const perItemOverrides: Record<EntityType, Record<string, string>> = {
     note:       '(item.note() || "")',
   },
   projects: {
-    folderId:   '(function() { var f = item.parentFolder(); return f ? f.id().toString() : null; })()',
     folderName: '(function() { var f = item.parentFolder(); return f ? f.name() : null; })()',
     id:         'item.id().toString()',
     note:       '(item.note() || "")',
   },
-  folders: {},
+  folders: {
+    status:       '(function() { try { var s = item.status(); return {"active status":"Active","dropped status":"Dropped"}[String(s)] || String(s); } catch(e) { return "Active"; } })()',
+    projectCount: '(function() { try { return item.projects().length; } catch(e) { return 0; } })()',
+  },
+  perspectives: {},
 };
 
 /**
@@ -92,8 +99,15 @@ const chainAccessors: Record<EntityType, Record<string, string>> = {
   var projectIdArr = _projIds.map(function(v) { return v ? v.toString() : null; });`,
   },
   tags: {},
-  projects: {},
-  folders: {},
+  projects: {
+    folderId:   `  var _folderIds = items.container.id();
+  var folderIdArr = _folderIds.map(function(v) { return v ? v.toString() : null; });`,
+  },
+  folders: {
+    parentFolderId: `  var _containerIds = items.container.id();
+  var parentFolderIdArr = _containerIds.map(function(v) { return v ? v.toString() : null; });`,
+  },
+  perspectives: {},
 };
 
 // ── Types ───────────────────────────────────────────────────────────────

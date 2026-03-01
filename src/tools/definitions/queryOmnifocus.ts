@@ -4,7 +4,7 @@ import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 import { describeExpr, describeSort } from '../query/backends/describer.js';
 
 export const schema = z.object({
-  entity: z.enum(['tasks', 'projects', 'folders', 'tags']).describe(
+  entity: z.enum(['tasks', 'projects', 'folders', 'tags', 'perspectives']).describe(
     "Type of entity to query. Choose 'tasks' for individual tasks, 'projects' for projects, 'folders' for folder organization, or 'tags' for tag hierarchy"
   ),
 
@@ -110,6 +110,7 @@ function singularEntity(entity: string): string {
   if (entity === 'projects') return 'project';
   if (entity === 'folders') return 'folder';
   if (entity === 'tags') return 'tag';
+  if (entity === 'perspectives') return 'perspective';
   return entity;
 }
 
@@ -129,11 +130,12 @@ function buildQueryDescription(args: z.infer<typeof schema>): string {
 
 function formatItems(items: any[], entity: string): string {
   switch (entity) {
-    case 'tasks':    return formatTasks(items);
-    case 'projects': return formatProjects(items);
-    case 'folders':  return formatFolders(items);
-    case 'tags':     return formatTags(items);
-    default:         return '';
+    case 'tasks':        return formatTasks(items);
+    case 'projects':     return formatProjects(items);
+    case 'folders':      return formatFolders(items);
+    case 'tags':         return formatTags(items);
+    case 'perspectives': return formatPerspectives(items);
+    default:             return '';
   }
 }
 
@@ -261,6 +263,25 @@ function formatTags(tags: any[]): string {
 
     return parts.join(' ');
   }).join('\n');
+}
+
+function formatPerspectives(perspectives: any[]): string {
+  const builtIn = perspectives.filter(p => p.type === 'builtin');
+  const custom = perspectives.filter(p => p.type === 'custom');
+  let output = '';
+
+  if (builtIn.length > 0) {
+    output += '### Built-in\n';
+    output += builtIn.map(p => `  ${p.name}`).join('\n');
+  }
+
+  if (custom.length > 0) {
+    if (builtIn.length > 0) output += '\n\n';
+    output += '### Custom\n';
+    output += custom.map(p => `  ${p.name}`).join('\n');
+  }
+
+  return output;
 }
 
 function formatDate(dateStr: string): string {

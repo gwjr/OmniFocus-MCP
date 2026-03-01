@@ -55,17 +55,17 @@ export function planFromAst(
   entity: EntityType,
   selectVars?: string[]
 ): ExecutionPlan {
-  // Rule 1: Folders → OmniJS fallback (insufficient bulk properties for direct JXA)
-  if (entity === 'folders') {
+  // Rule 0: Perspectives → OmniJS fallback (no Apple Events bulk properties)
+  if (entity === 'perspectives') {
     return fallbackPlan(ast, entity);
   }
 
-  // Rule 2: Tags with any container → OmniJS fallback (structural parent-chain traversal needed)
+  // Rule 1: Tags with any container → OmniJS fallback (structural parent-chain traversal needed)
   if (entity === 'tags' && containsAnyContainer(ast)) {
     return fallbackPlan(ast, entity);
   }
 
-  // Rule 3: folder container at any depth → OmniJS fallback
+  // Rule 2: folder container at any depth → OmniJS fallback
   if (containsFolderContainer(ast)) {
     return fallbackPlan(ast, entity);
   }
@@ -77,7 +77,7 @@ export function planFromAst(
   // Check var costs
   const costMap = classifyVars(neededVars, registry);
 
-  // Rule 4: expensive vars in the where clause → OmniJS fallback
+  // Rule 3: expensive vars in the where clause → OmniJS fallback
   if (costMap.expensive.size > 0) {
     return fallbackPlan(ast, entity);
   }

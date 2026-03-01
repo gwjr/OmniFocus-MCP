@@ -10,7 +10,16 @@ describe('planner — path selection', () => {
     assert.equal(plan.path, 'broad');
   });
 
-  it('projects entity with per-item var (folderId) → two-phase', () => {
+  it('projects entity with chain var (folderId) → broad', () => {
+    const plan = planExecution(
+      { eq: [{ var: 'folderId' }, 'abc123'] },
+      'projects'
+    );
+    assert.equal(plan.path, 'broad');
+    assert.ok(plan.bulkVars.has('folderId'));
+  });
+
+  it('projects entity with per-item var (folderName) → two-phase', () => {
     const plan = planExecution(
       { contains: [{ var: 'folderName' }, 'Legal'] },
       'projects'
@@ -27,9 +36,27 @@ describe('planner — path selection', () => {
     assert.equal(plan.path, 'omnijs-fallback');
   });
 
-  it('folders entity → omnijs-fallback', () => {
-    const plan = planExecution({ eq: [{ var: 'name' }, 'Legal'] }, 'folders');
-    assert.equal(plan.path, 'omnijs-fallback');
+  it('folders entity with easy vars → broad', () => {
+    const plan = planExecution({ contains: [{ var: 'name' }, 'Legal'] }, 'folders');
+    assert.equal(plan.path, 'broad');
+  });
+
+  it('folders entity with per-item var (status) → two-phase', () => {
+    const plan = planExecution(
+      { eq: [{ var: 'status' }, 'Active'] },
+      'folders'
+    );
+    assert.equal(plan.path, 'two-phase');
+    assert.ok(plan.perItemVars?.has('status'));
+  });
+
+  it('folders entity with chain var (parentFolderId) → broad', () => {
+    const plan = planExecution(
+      { eq: [{ var: 'parentFolderId' }, 'abc123'] },
+      'folders'
+    );
+    assert.equal(plan.path, 'broad');
+    assert.ok(plan.bulkVars.has('parentFolderId'));
   });
 
   it('folder container at any depth → omnijs-fallback', () => {
@@ -283,6 +310,21 @@ describe('planner — bulkVars population', () => {
     assert.ok(plan.bulkVars.has('name'));
     assert.ok(plan.bulkVars.has('dueDate'));
     assert.ok(plan.bulkVars.has('flagged'));
+  });
+});
+
+describe('planner — perspectives entity', () => {
+  it('perspectives with no where → omnijs-fallback', () => {
+    const plan = planExecution(undefined, 'perspectives');
+    assert.equal(plan.path, 'omnijs-fallback');
+  });
+
+  it('perspectives with where clause → omnijs-fallback', () => {
+    const plan = planExecution(
+      { contains: [{ var: 'name' }, 'Flagged'] },
+      'perspectives'
+    );
+    assert.equal(plan.path, 'omnijs-fallback');
   });
 });
 

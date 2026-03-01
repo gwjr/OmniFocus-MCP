@@ -90,8 +90,12 @@ export const projectVars: VarRegistry = {
   taskCount:          num(v  => `(${v}.tasks ? ${v}.tasks.length : 0)`,                                         'taskCount',        'numberOfTasks',         'easy'),
   activeTaskCount:    num(v  => `(${v}.tasks ? ${v}.tasks.filter(t => t.taskStatus !== Task.Status.Completed && t.taskStatus !== Task.Status.Dropped).length : 0)`, 'activeTaskCount', 'numberOfAvailableTasks', 'easy'),
 
-  // per-item: parentFolder requires per-item (can't chain through nullable)
-  folderId:           str(v  => `(${v}.parentFolder ? ${v}.parentFolder.id.primaryKey : null)`,                 'folderId',         null,                    'per-item'),
+  // chain: chained bulk via container.id() (Apple Events)
+  // Note: root-level projects have the document as container, not a folder — callers
+  // must cross-reference against known folder IDs and treat non-folder containers as null.
+  folderId:           str(v  => `(${v}.parentFolder ? ${v}.parentFolder.id.primaryKey : null)`,                 'folderId',         'container',             'chain'),
+
+  // per-item: container.name() returns null for folders, so folderName must use per-item
   folderName:         str(v  => `(${v}.parentFolder ? ${v}.parentFolder.name : null)`,                          'folderName',       null,                    'per-item'),
 
   // expensive
@@ -102,13 +106,24 @@ export const projectVars: VarRegistry = {
 };
 
 export const folderVars: VarRegistry = {
-  id:             str(v  => `${v}.id.primaryKey`,                                                               'id',               'id',                    'per-item'),
+  // easy: bulk Apple Events readable
+  id:             str(v  => `${v}.id.primaryKey`,                                                               'id',               'id',                    'easy'),
   name:           str(v  => `(${v}.name || "")`,                                                                'name',             'name',                  'easy'),
+
+  // chain: chained bulk via container
+  parentFolderId: str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                                 'parentFolderId',   'container',             'chain'),
+
+  // per-item: no bulk accessor
   status:         enm(v  => `folderStatusMap[${v}.status]`,                                                     'status',           null,                    'per-item'),
-  parentFolderId: str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                                 'parentFolderId',   null,                    'per-item'),
   projectCount:   num(v  => `(${v}.projects ? ${v}.projects.length : 0)`,                                       'projectCount',     null,                    'per-item'),
-  path:           str(v  => `(${v}.container ? ${v}.container.name + "/" + ${v}.name : ${v}.name)`,             'path',             null,                    'per-item'),
+
+  // special
   now:            date(_ => '_now',                                                                              'now',              null,                    'easy'),
+};
+
+export const perspectiveVars: VarRegistry = {
+  id:   str(v => `${v}.id.primaryKey`, 'id',   'id',   'easy'),
+  name: str(v => `(${v}.name || "")`,  'name', 'name', 'easy'),
 };
 
 export const tagVars: VarRegistry = {
@@ -131,14 +146,15 @@ export const tagVars: VarRegistry = {
   now:                date(_ => '_now',                                                                            'now',               null,                   'easy'),
 };
 
-export type EntityType = 'tasks' | 'projects' | 'folders' | 'tags';
+export type EntityType = 'tasks' | 'projects' | 'folders' | 'tags' | 'perspectives';
 
 export function getVarRegistry(entity: EntityType): VarRegistry {
   switch (entity) {
-    case 'tasks':    return taskVars;
-    case 'projects': return projectVars;
-    case 'folders':  return folderVars;
-    case 'tags':     return tagVars;
+    case 'tasks':        return taskVars;
+    case 'projects':     return projectVars;
+    case 'folders':      return folderVars;
+    case 'tags':         return tagVars;
+    case 'perspectives': return perspectiveVars;
   }
 }
 
