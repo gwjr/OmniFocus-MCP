@@ -314,7 +314,7 @@ try
     
     // Handle tag operations
     if (params.replaceTags && params.replaceTags.length > 0) {
-      const tagsList = params.replaceTags.map(tag => `"${escapeForAppleScript(tag)}"`).join(", ");
+      const tagsList = params.replaceTags.map(tag => `"${escapeForAppleScript(tag.toLowerCase())}"`).join(", ");
       script += `
         -- Replace all tags
         set tagNames to {${tagsList}}
@@ -343,7 +343,7 @@ try
     } else {
       // Add tags if specified
       if (params.addTags && params.addTags.length > 0) {
-        const tagsList = params.addTags.map(tag => `"${escapeForAppleScript(tag)}"`).join(", ");
+        const tagsList = params.addTags.map(tag => `"${escapeForAppleScript(tag.toLowerCase())}"`).join(", ");
         script += `
         -- Add tags
         set tagNames to {${tagsList}}
@@ -365,7 +365,7 @@ try
       
       // Remove tags if specified
       if (params.removeTags && params.removeTags.length > 0) {
-        const tagsList = params.removeTags.map(tag => `"${escapeForAppleScript(tag)}"`).join(", ");
+        const tagsList = params.removeTags.map(tag => `"${escapeForAppleScript(tag.toLowerCase())}"`).join(", ");
         script += `
         -- Remove tags
         set tagNames to {${tagsList}}

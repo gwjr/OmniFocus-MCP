@@ -37,7 +37,7 @@ register("dump_database",
   dumpDatabaseTool.handler);
 
 register("query_omnifocus",
-  "Efficiently query OmniFocus database with powerful filters. Get specific tasks, projects, or folders without loading the entire database. Supports filtering by project, tags, status, due dates, and more. Much faster than dump_database for targeted queries.",
+  "Query OmniFocus, filtering tasks, projects, or folders with an expression tree.",
   queryOmniFocusTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   queryOmniFocusTool.handler);

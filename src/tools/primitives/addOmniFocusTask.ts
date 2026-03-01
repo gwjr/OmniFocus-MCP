@@ -36,7 +36,7 @@ function generateAppleScript(params: AddOmniFocusTaskParams): string {
   const plannedDate = params.plannedDate || '';
   const flagged = params.flagged === true;
   const estimatedMinutes = params.estimatedMinutes?.toString() || '';
-  const tags = params.tags || [];
+  const tags = (params.tags || []).map(t => t.toLowerCase());
   const projectName = escapeForAppleScript(params.projectName);
   const parentTaskId = escapeForAppleScript(params.parentTaskId);
   const parentTaskName = escapeForAppleScript(params.parentTaskName);

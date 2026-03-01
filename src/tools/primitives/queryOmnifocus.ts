@@ -1,24 +1,31 @@
-import { executeOmniFocusScript } from '../../utils/scriptExecution.js';
+/**
+ * Query OmniFocus — Execution Router.
+ *
+ * Wires the full pipeline:
+ *   1. Lower compact syntax → AST
+ *   2. Plan execution strategy (planner)
+ *   3. Execute via direct JXA bulk-read + Node-side filter (fast path)
+ *      OR via OmniJS evaluateJavascript (fallback)
+ *   4. Sort, limit, select in Node
+ */
+
+import { executeJXA, executeOmniFocusScript } from '../../utils/scriptExecution.js';
+import { compileWhere, CompileError } from '../query/backends/jxaCompiler.js';
+import { compileNodePredicate, type Row, type RowFn } from '../query/backends/nodeEval.js';
+import { lowerExpr, LowerError } from '../query/lower.js';
+import { planFromAst, type ExecutionPlan } from '../query/planner.js';
+import { generateBulkReadScript, generatePerItemReadScript } from '../query/jxaBulkRead.js';
+import type { LoweredExpr } from '../query/fold.js';
+import { getVarRegistry } from '../query/variables.js';
+
+// ── Types ───────────────────────────────────────────────────────────────
 
 export interface QueryOmnifocusParams {
   entity: 'tasks' | 'projects' | 'folders';
-  filters?: {
-    projectId?: string;
-    projectName?: string;
-    folderId?: string;
-    tags?: string[];
-    status?: string[];
-    flagged?: boolean;
-    dueWithin?: number;
-    deferredUntil?: number;
-    plannedWithin?: number;
-    hasNote?: boolean;
-    untimely?: boolean;
-  };
-  fields?: string[];
+  where?: unknown;
+  select?: string[];
   limit?: number;
-  sortBy?: string;
-  sortOrder?: 'asc' | 'desc';
+  sort?: { by: string; direction?: 'asc' | 'desc' };
   includeCompleted?: boolean;
   summary?: boolean;
 }
@@ -30,34 +37,30 @@ interface QueryResult {
   error?: string;
 }
 
+// ── Main Entry Point ────────────────────────────────────────────────────
+
 export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<QueryResult> {
   try {
-    // Create JXA script for the query
-    const jxaScript = generateQueryScript(params);
-    
-    // Write script to temp file and execute
-    const tempFile = `/tmp/omnifocus_query_${Date.now()}.js`;
-    const fs = await import('fs');
-    fs.writeFileSync(tempFile, jxaScript);
-    
-    // Execute the script
-    const result = await executeOmniFocusScript(tempFile);
-    
-    // Clean up temp file
-    fs.unlinkSync(tempFile);
-    
-    if (result.error) {
-      return {
-        success: false,
-        error: result.error
-      };
+    // Phase 0: Lower the where clause
+    let ast: LoweredExpr;
+    try {
+      ast = (params.where != null ? lowerExpr(params.where) : true) as LoweredExpr;
+    } catch (e) {
+      if (e instanceof LowerError) {
+        return { success: false, error: e.message };
+      }
+      throw e;
     }
-    
-    return {
-      success: true,
-      items: params.summary ? undefined : result.items,
-      count: result.count
-    };
+
+    // Phase 0.5: Plan the execution strategy
+    const plan = planFromAst(ast, params.entity, params.select);
+
+    // Route to appropriate execution path
+    if (plan.path === 'omnijs-fallback') {
+      return executeViaOmniJs(params, ast);
+    }
+
+    return executeViaDirectJxa(params, plan, ast);
   } catch (error) {
     console.error('Error querying OmniFocus:', error);
     return {
@@ -67,50 +70,256 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
   }
 }
 
-function generateQueryScript(params: QueryOmnifocusParams): string {
-  const { entity, filters = {}, fields, limit, sortBy, sortOrder, includeCompleted = false, summary = false } = params;
-  
-  // Build the JXA script based on the entity type and filters
+// ── Direct JXA Path (fast) ──────────────────────────────────────────────
+
+async function executeViaDirectJxa(
+  params: QueryOmnifocusParams,
+  plan: ExecutionPlan,
+  ast: LoweredExpr
+): Promise<QueryResult> {
+  // Phase 1: Direct JXA bulk-read
+  const jxaScript = generateBulkReadScript(plan, params.includeCompleted ?? false);
+  const rawResult = await executeJXA(jxaScript);
+
+  // Check for alignment errors
+  if (rawResult && typeof rawResult === 'object' && 'error' in rawResult) {
+    return { success: false, error: `Bulk read error: ${(rawResult as any).error}` };
+  }
+
+  let rows = rawResult as Row[];
+  if (!Array.isArray(rows)) {
+    return { success: false, error: 'Unexpected bulk read result format' };
+  }
+
+  // Phase 1 filter: Node-side evaluation
+  if (ast !== true) {
+    try {
+      const predicate = compileNodePredicate(
+        plan.filterAst,
+        plan.entity,
+        plan.stubVars ? { stubVars: plan.stubVars } : undefined
+      );
+      rows = rows.filter(row => !!predicate(row));
+    } catch (e) {
+      // If NodeEval fails (e.g. unsupported operation), fall back to OmniJS
+      console.error('NodeEval failed, falling back to OmniJS:', e);
+      return executeViaOmniJs(params, ast);
+    }
+  }
+
+  // Phase 2: Per-item reads for two-phase plan
+  // Benchmarking shows per-item ID lookups cost ~200ms each via JXA .whose({id}).
+  // If the phase 1 pre-filter leaves too many items, fall back to OmniJS which
+  // handles everything in-process (~6s total, vs N*200ms for large N).
+  const PER_ITEM_THRESHOLD = 20;
+
+  if ((plan.path === 'two-phase' || plan.path === 'project-scoped') && plan.perItemVars && plan.perItemVars.size > 0) {
+    const ids = rows.map(r => r.id as string).filter(Boolean);
+
+    if (ids.length > PER_ITEM_THRESHOLD) {
+      // Too many items for per-item reads — fall back to OmniJS
+      return executeViaOmniJs(params, ast);
+    }
+
+    if (ids.length > 0) {
+      const detailScript = generatePerItemReadScript(ids, plan.perItemVars);
+      const detailResult = await executeJXA(detailScript);
+
+      if (Array.isArray(detailResult)) {
+        // Merge details into rows
+        const detailMap = new Map<string, Row>();
+        for (const detail of detailResult) {
+          if (detail && typeof detail === 'object' && 'id' in detail) {
+            detailMap.set(detail.id as string, detail as Row);
+          }
+        }
+
+        for (const row of rows) {
+          const detail = detailMap.get(row.id as string);
+          if (detail) {
+            for (const [key, value] of Object.entries(detail)) {
+              if (key !== 'id') row[key] = value;
+            }
+          }
+        }
+      }
+
+      // Re-evaluate with full data (no stubs)
+      try {
+        const exactPredicate = compileNodePredicate(plan.filterAst, plan.entity);
+        rows = rows.filter(row => !!exactPredicate(row));
+      } catch (e) {
+        console.error('Exact re-filter failed:', e);
+      }
+    }
+  }
+
+  // Node-side sort
+  if (params.sort) {
+    applySort(rows, params.sort);
+  }
+
+  // Count before limiting
+  const totalCount = rows.length;
+
+  // Apply limit
+  if (params.limit) {
+    rows = rows.slice(0, params.limit);
+  }
+
+  // Summary mode
+  if (params.summary) {
+    return { success: true, count: totalCount };
+  }
+
+  // Select fields (or return all available)
+  const items = params.select ? selectFields(rows, params.select) : rows;
+
+  return { success: true, items, count: totalCount };
+}
+
+// ── OmniJS Fallback Path ────────────────────────────────────────────────
+
+async function executeViaOmniJs(
+  params: QueryOmnifocusParams,
+  ast: LoweredExpr
+): Promise<QueryResult> {
+  // Compile the where clause to JXA for OmniJS execution
+  let whereCondition: string | null = null;
+  let preambleCode: string[] = [];
+
+  if (params.where != null) {
+    try {
+      const result = compileWhere(params.where, params.entity);
+      whereCondition = result.condition;
+      preambleCode = result.preamble;
+    } catch (e) {
+      if (e instanceof CompileError) {
+        return { success: false, error: e.message };
+      }
+      throw e;
+    }
+  }
+
+  const jxaScript = generateOmniJsScript(params, whereCondition, preambleCode);
+
+  const tempFile = `/tmp/omnifocus_query_${Date.now()}.js`;
+  const fs = await import('fs');
+  fs.writeFileSync(tempFile, jxaScript);
+
+  const result = await executeOmniFocusScript(tempFile);
+
+  fs.unlinkSync(tempFile);
+
+  if (result.error) {
+    return { success: false, error: result.error };
+  }
+
+  return {
+    success: true,
+    items: params.summary ? undefined : result.items,
+    count: result.count
+  };
+}
+
+// ── Node-side Sort ──────────────────────────────────────────────────────
+
+function applySort(rows: Row[], sort: { by: string; direction?: 'asc' | 'desc' }): void {
+  const order = sort.direction === 'desc' ? -1 : 1;
+  const registry = getVarRegistry('tasks');
+  const def = registry[sort.by];
+  const key = def?.nodeKey ?? sort.by;
+
+  rows.sort((a, b) => {
+    let aVal = a[key] as any;
+    let bVal = b[key] as any;
+
+    if (aVal == null && bVal == null) return 0;
+    if (aVal == null) return 1;
+    if (bVal == null) return -1;
+
+    // Date strings → compare as timestamps
+    if (typeof aVal === 'string' && typeof bVal === 'string') {
+      const at = Date.parse(aVal);
+      const bt = Date.parse(bVal);
+      if (!isNaN(at) && !isNaN(bt)) return (at - bt) * order;
+      return aVal.localeCompare(bVal) * order;
+    }
+
+    if (typeof aVal === 'number' && typeof bVal === 'number') {
+      return (aVal - bVal) * order;
+    }
+
+    return 0;
+  });
+}
+
+// ── Field Selection ─────────────────────────────────────────────────────
+
+function selectFields(rows: Row[], fields: string[]): Row[] {
+  return rows.map(row => {
+    const selected: Row = {};
+    for (const field of fields) {
+      if (field in row) {
+        selected[field] = row[field];
+      }
+    }
+    return selected;
+  });
+}
+
+// ── OmniJS Script Generator (preserved from original) ───────────────────
+
+function generateOmniJsScript(
+  params: QueryOmnifocusParams,
+  whereCondition: string | null,
+  preambleCode: string[]
+): string {
+  const { entity, select, limit, sort, includeCompleted = false, summary = false } = params;
+
   return `(() => {
     try {
-      const startTime = new Date();
-      
       // Helper function to format dates
       function formatDate(date) {
         if (!date) return null;
         return date.toISOString();
       }
-      
-      // Helper to check date filters
-      function checkDateFilter(itemDate, daysFromNow) {
-        if (!itemDate) return false;
-        const futureDate = new Date();
-        futureDate.setDate(futureDate.getDate() + daysFromNow);
-        return itemDate <= futureDate;
-      }
-      
+
       // Status mappings
       const taskStatusMap = {
         [Task.Status.Available]: "Available",
-        [Task.Status.Blocked]: "Blocked", 
+        [Task.Status.Blocked]: "Blocked",
         [Task.Status.Completed]: "Completed",
         [Task.Status.Dropped]: "Dropped",
         [Task.Status.DueSoon]: "DueSoon",
         [Task.Status.Next]: "Next",
         [Task.Status.Overdue]: "Overdue"
       };
-      
+
       const projectStatusMap = {
         [Project.Status.Active]: "Active",
         [Project.Status.Done]: "Done",
         [Project.Status.Dropped]: "Dropped",
         [Project.Status.OnHold]: "OnHold"
       };
-      
+
+      const folderStatusMap = {
+        [Folder.Status.Active]: "Active",
+        [Folder.Status.Dropped]: "Dropped"
+      };
+
+      // Expression preamble (date constants, regex patterns, helpers)
+      var _now = new Date();
+      var _eq = function(a, b) {
+        if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+        return a === b;
+      };
+      ${preambleCode.join('\n      ')}
+
       // Get the appropriate collection based on entity type
       let items = [];
       const entityType = "${entity}";
-      
+
       if (entityType === "tasks") {
         items = flattenedTasks;
       } else if (entityType === "projects") {
@@ -118,36 +327,33 @@ function generateQueryScript(params: QueryOmnifocusParams): string {
       } else if (entityType === "folders") {
         items = flattenedFolders;
       }
-      
+
       // Apply filters
       let filtered = items.filter(item => {
         // Skip completed/dropped unless explicitly requested
         if (!${includeCompleted}) {
           if (entityType === "tasks") {
-            if (item.taskStatus === Task.Status.Completed || 
+            if (item.taskStatus === Task.Status.Completed ||
                 item.taskStatus === Task.Status.Dropped) {
               return false;
             }
           } else if (entityType === "projects") {
-            if (item.status === Project.Status.Done || 
+            if (item.status === Project.Status.Done ||
                 item.status === Project.Status.Dropped) {
               return false;
             }
           }
         }
-        
-        // Apply specific filters
-        ${generateFilterConditions(entity, filters)}
-        
-        return true;
+
+        ${whereCondition ? `return (${whereCondition});` : 'return true;'}
       });
-      
+
       // Apply sorting if specified
-      ${sortBy ? generateSortLogic(sortBy, sortOrder, entity) : ''}
-      
+      ${sort ? generateSortLogic(sort.by, sort.direction, entity) : ''}
+
       // Apply limit if specified
       ${limit ? `filtered = filtered.slice(0, ${limit});` : ''}
-      
+
       // If summary mode, just return count
       if (${summary}) {
         return JSON.stringify({
@@ -155,18 +361,18 @@ function generateQueryScript(params: QueryOmnifocusParams): string {
           error: null
         });
       }
-      
+
       // Transform items to return only requested fields
       const results = filtered.map(item => {
-        ${generateFieldMapping(entity, fields)}
+        ${generateFieldMapping(entity, select)}
       });
-      
+
       return JSON.stringify({
         items: results,
         count: results.length,
         error: null
       });
-      
+
     } catch (error) {
       return JSON.stringify({
         error: "Script execution error: " + error.toString(),
@@ -177,137 +383,8 @@ function generateQueryScript(params: QueryOmnifocusParams): string {
   })();`;
 }
 
-function generateFilterConditions(entity: string, filters: any): string {
-  const conditions: string[] = [];
-  
-  if (entity === 'tasks') {
-    if (filters.projectName) {
-      conditions.push(`
-        if (item.containingProject) {
-          const projectName = item.containingProject.name.toLowerCase();
-          if (!projectName.includes("${filters.projectName.toLowerCase()}")) return false;
-        } else if ("${filters.projectName.toLowerCase()}" !== "inbox") {
-          return false;
-        }
-      `);
-    }
-    
-    if (filters.projectId) {
-      conditions.push(`
-        if (!item.containingProject || 
-            item.containingProject.id.primaryKey !== "${filters.projectId}") {
-          return false;
-        }
-      `);
-    }
-    
-    if (filters.tags && filters.tags.length > 0) {
-      const tagCondition = filters.tags.map((tag: string) => 
-        `item.tags.some(t => t.name === "${tag}")`
-      ).join(' || ');
-      conditions.push(`if (!(${tagCondition})) return false;`);
-    }
-    
-    if (filters.status && filters.status.length > 0) {
-      const statusCondition = filters.status.map((status: string) => 
-        `taskStatusMap[item.taskStatus] === "${status}"`
-      ).join(' || ');
-      conditions.push(`if (!(${statusCondition})) return false;`);
-    }
-    
-    if (filters.flagged !== undefined) {
-      conditions.push(`if (item.flagged !== ${filters.flagged}) return false;`);
-    }
-    
-    if (filters.dueWithin !== undefined) {
-      conditions.push(`
-        if (!item.dueDate || !checkDateFilter(item.dueDate, ${filters.dueWithin})) {
-          return false;
-        }
-      `);
-    }
+// ── OmniJS Helpers (preserved from original) ────────────────────────────
 
-    if (filters.plannedWithin !== undefined) {
-      conditions.push(`
-        if (!item.plannedDate || !checkDateFilter(item.plannedDate, ${filters.plannedWithin})) {
-          return false;
-        }
-      `);
-    }
-
-    if (filters.hasNote !== undefined) {
-      conditions.push(`
-        const hasNote = item.note && item.note.trim().length > 0;
-        if (hasNote !== ${filters.hasNote}) return false;
-      `);
-    }
-
-    if (filters.untimely !== undefined) {
-      if (filters.untimely) {
-        conditions.push(`
-          const now = new Date();
-          const hasPastDate = (item.dueDate && item.dueDate < now) ||
-                              (item.plannedDate && item.plannedDate < now);
-          if (!hasPastDate) return false;
-        `);
-      } else {
-        conditions.push(`
-          const now = new Date();
-          const hasPastDate = (item.dueDate && item.dueDate < now) ||
-                              (item.plannedDate && item.plannedDate < now);
-          if (hasPastDate) return false;
-        `);
-      }
-    }
-  }
-
-  if (entity === 'projects') {
-    if (filters.projectName) {
-      conditions.push(`
-        const projectName = item.name.toLowerCase();
-        if (!projectName.includes("${filters.projectName.toLowerCase()}")) return false;
-      `);
-    }
-
-    if (filters.folderId) {
-      conditions.push(`
-        if (!item.parentFolder ||
-            item.parentFolder.id.primaryKey !== "${filters.folderId}") {
-          return false;
-        }
-      `);
-    }
-
-    if (filters.status && filters.status.length > 0) {
-      const statusCondition = filters.status.map((status: string) =>
-        `projectStatusMap[item.status] === "${status}"`
-      ).join(' || ');
-      conditions.push(`if (!(${statusCondition})) return false;`);
-    }
-
-    if (filters.untimely !== undefined) {
-      if (filters.untimely) {
-        conditions.push(`
-          const now = new Date();
-          const hasPastDate = (item.dueDate && item.dueDate < now);
-          if (!hasPastDate) return false;
-        `);
-      } else {
-        conditions.push(`
-          const now = new Date();
-          const hasPastDate = (item.dueDate && item.dueDate < now);
-          if (hasPastDate) return false;
-        `);
-      }
-    }
-  }
-
-  return conditions.join('\n');
-}
-
-// Map user-facing field names to actual OmniJS property accessors.
-// Tasks use .modified/.added directly.
-// Projects don't expose dates directly — they live on the root task: .task.modified/.task.added.
 function mapFieldToProperty(field: string, entity?: string): string {
   if (entity === 'projects') {
     const projectMap: Record<string, string> = {
@@ -318,7 +395,6 @@ function mapFieldToProperty(field: string, entity?: string): string {
     };
     return projectMap[field] || field;
   }
-  // Tasks (and default)
   const taskMap: Record<string, string> = {
     modificationDate: 'modified',
     modified: 'modified',
@@ -330,21 +406,18 @@ function mapFieldToProperty(field: string, entity?: string): string {
 
 function generateSortLogic(sortBy: string, sortOrder?: string, entity?: string): string {
   const order = sortOrder === 'desc' ? -1 : 1;
-
-  // Map user-facing field names to actual OmniJS property names.
-  // Tasks use .modified/.added; Projects use .modificationDate/.creationDate.
   const jxaProp = mapFieldToProperty(sortBy, entity);
 
   return `
     filtered.sort((a, b) => {
       let aVal = a.${jxaProp};
       let bVal = b.${jxaProp};
-      
+
       // Handle null/undefined values
       if (aVal == null && bVal == null) return 0;
       if (aVal == null) return 1;
       if (bVal == null) return -1;
-      
+
       // Compare based on type
       if (typeof aVal === 'string') {
         return aVal.localeCompare(bVal) * ${order};
@@ -358,7 +431,6 @@ function generateSortLogic(sortBy: string, sortOrder?: string, entity?: string):
 }
 
 function generateFieldMapping(entity: string, fields?: string[]): string {
-  // If no specific fields requested, return common fields based on entity
   if (!fields || fields.length === 0) {
     if (entity === 'tasks') {
       return `
@@ -409,76 +481,41 @@ function generateFieldMapping(entity: string, fields?: string[]): string {
       `;
     }
   }
-  
-  // Generate mapping for specific fields
+
   const mappings = fields!.map(field => {
-    // Handle special field mappings based on entity type
-    if (field === 'id') {
-      return `id: item.id.primaryKey`;
-    } else if (field === 'taskStatus') {
-      return `taskStatus: taskStatusMap[item.taskStatus]`;
-    } else if (field === 'status') {
-      return `status: projectStatusMap[item.status]`;
-    } else if (field === 'modificationDate' || field === 'modified') {
-      return `modificationDate: formatDate(item.${mapFieldToProperty('modified', entity)})`;
-    } else if (field === 'creationDate' || field === 'added') {
-      return `creationDate: formatDate(item.${mapFieldToProperty('added', entity)})`;
-    } else if (field === 'completionDate') {
-      return `completionDate: item.completionDate ? formatDate(item.completionDate) : null`;
-    } else if (field === 'dueDate') {
-      return `dueDate: formatDate(item.dueDate)`;
-    } else if (field === 'deferDate') {
-      return `deferDate: formatDate(item.deferDate)`;
-    } else if (field === 'plannedDate') {
-      return `plannedDate: formatDate(item.plannedDate)`;
-    } else if (field === 'effectiveDueDate') {
-      return `effectiveDueDate: formatDate(item.effectiveDueDate)`;
-    } else if (field === 'effectiveDeferDate') {
-      return `effectiveDeferDate: formatDate(item.effectiveDeferDate)`;
-    } else if (field === 'effectivePlannedDate') {
-      return `effectivePlannedDate: formatDate(item.effectivePlannedDate)`;
-    } else if (field === 'tagNames') {
-      return `tagNames: item.tags ? item.tags.map(t => t.name) : []`;
-    } else if (field === 'tags') {
-      return `tags: item.tags ? item.tags.map(t => t.id.primaryKey) : []`;
-    } else if (field === 'projectName') {
-      return `projectName: item.containingProject ? item.containingProject.name : (item.inInbox ? "Inbox" : null)`;
-    } else if (field === 'projectId') {
-      return `projectId: item.containingProject ? item.containingProject.id.primaryKey : null`;
-    } else if (field === 'parentId') {
-      return `parentId: item.parent ? item.parent.id.primaryKey : null`;
-    } else if (field === 'childIds') {
-      return `childIds: item.children ? item.children.map(c => c.id.primaryKey) : []`;
-    } else if (field === 'hasChildren') {
-      return `hasChildren: item.children ? item.children.length > 0 : false`;
-    } else if (field === 'folderName') {
-      return `folderName: item.parentFolder ? item.parentFolder.name : null`;
-    } else if (field === 'folderID') {
-      return `folderID: item.parentFolder ? item.parentFolder.id.primaryKey : null`;
-    } else if (field === 'taskCount') {
-      return `taskCount: item.tasks ? item.tasks.length : 0`;
-    } else if (field === 'activeTaskCount') {
-      return `activeTaskCount: item.tasks ? item.tasks.filter(t => t.taskStatus !== Task.Status.Completed && t.taskStatus !== Task.Status.Dropped).length : 0`;
-    } else if (field === 'tasks') {
-      return `tasks: item.tasks ? item.tasks.map(t => t.id.primaryKey) : []`;
-    } else if (field === 'projectCount') {
-      return `projectCount: item.projects ? item.projects.length : 0`;
-    } else if (field === 'projects') {
-      return `projects: item.projects ? item.projects.map(p => p.id.primaryKey) : []`;
-    } else if (field === 'subfolders') {
-      return `subfolders: item.folders ? item.folders.map(f => f.id.primaryKey) : []`;
-    } else if (field === 'path') {
-      return `path: item.container ? item.container.name + "/" + item.name : item.name`;
-    } else if (field === 'estimatedMinutes') {
-      return `estimatedMinutes: item.estimatedMinutes || null`;
-    } else if (field === 'note') {
-      return `note: item.note || ""`;
-    } else {
-      // Default: try to access the field directly
-      return `${field}: item.${field} !== undefined ? item.${field} : null`;
-    }
+    if (field === 'id') return `id: item.id.primaryKey`;
+    if (field === 'taskStatus') return `taskStatus: taskStatusMap[item.taskStatus]`;
+    if (field === 'status') return `status: projectStatusMap[item.status]`;
+    if (field === 'modificationDate' || field === 'modified') return `modificationDate: formatDate(item.${mapFieldToProperty('modified', entity)})`;
+    if (field === 'creationDate' || field === 'added') return `creationDate: formatDate(item.${mapFieldToProperty('added', entity)})`;
+    if (field === 'completionDate') return `completionDate: item.completionDate ? formatDate(item.completionDate) : null`;
+    if (field === 'dueDate') return `dueDate: formatDate(item.dueDate)`;
+    if (field === 'deferDate') return `deferDate: formatDate(item.deferDate)`;
+    if (field === 'plannedDate') return `plannedDate: formatDate(item.plannedDate)`;
+    if (field === 'effectiveDueDate') return `effectiveDueDate: formatDate(item.effectiveDueDate)`;
+    if (field === 'effectiveDeferDate') return `effectiveDeferDate: formatDate(item.effectiveDeferDate)`;
+    if (field === 'effectivePlannedDate') return `effectivePlannedDate: formatDate(item.effectivePlannedDate)`;
+    if (field === 'tagNames') return `tagNames: item.tags ? item.tags.map(t => t.name) : []`;
+    if (field === 'tags') return `tags: item.tags ? item.tags.map(t => t.id.primaryKey) : []`;
+    if (field === 'projectName') return `projectName: item.containingProject ? item.containingProject.name : (item.inInbox ? "Inbox" : null)`;
+    if (field === 'projectId') return `projectId: item.containingProject ? item.containingProject.id.primaryKey : null`;
+    if (field === 'parentId') return `parentId: item.parent ? item.parent.id.primaryKey : null`;
+    if (field === 'childIds') return `childIds: item.children ? item.children.map(c => c.id.primaryKey) : []`;
+    if (field === 'hasChildren') return `hasChildren: item.children ? item.children.length > 0 : false`;
+    if (field === 'folderName') return `folderName: item.parentFolder ? item.parentFolder.name : null`;
+    if (field === 'folderID') return `folderID: item.parentFolder ? item.parentFolder.id.primaryKey : null`;
+    if (field === 'taskCount') return `taskCount: item.tasks ? item.tasks.length : 0`;
+    if (field === 'activeTaskCount') return `activeTaskCount: item.tasks ? item.tasks.filter(t => t.taskStatus !== Task.Status.Completed && t.taskStatus !== Task.Status.Dropped).length : 0`;
+    if (field === 'tasks') return `tasks: item.tasks ? item.tasks.map(t => t.id.primaryKey) : []`;
+    if (field === 'projectCount') return `projectCount: item.projects ? item.projects.length : 0`;
+    if (field === 'projects') return `projects: item.projects ? item.projects.map(p => p.id.primaryKey) : []`;
+    if (field === 'subfolders') return `subfolders: item.folders ? item.folders.map(f => f.id.primaryKey) : []`;
+    if (field === 'path') return `path: item.container ? item.container.name + "/" + item.name : item.name`;
+    if (field === 'estimatedMinutes') return `estimatedMinutes: item.estimatedMinutes || null`;
+    if (field === 'note') return `note: item.note || ""`;
+    return `${field}: item.${field} !== undefined ? item.${field} : null`;
   }).join(',\n          ');
-  
+
   return `
     return {
       ${mappings}

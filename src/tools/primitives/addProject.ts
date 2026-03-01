@@ -31,7 +31,7 @@ function generateAppleScript(params: AddProjectParams): string {
   const deferDate = params.deferDate || '';
   const flagged = params.flagged === true;
   const estimatedMinutes = params.estimatedMinutes?.toString() || '';
-  const tags = params.tags || [];
+  const tags = (params.tags || []).map(t => t.toLowerCase());
   const folderName = escapeForAppleScript(params.folderName);
   const sequential = params.sequential === true;
   
