@@ -33,7 +33,7 @@ export function compileWhere(where: unknown, entity: EntityType): CompileResult 
   // Phase 1: lower compact syntax → internal AST
   let lowered: LoweredExpr;
   try {
-    lowered = lowerExpr(where) as LoweredExpr;
+    lowered = lowerExpr(where);
   } catch (e) {
     if (e instanceof LowerError) {
       throw new CompileError(e.message, e.path, e.node);
@@ -119,10 +119,12 @@ class JxaCompilerBackend implements ExprBackend<string> {
   // ── Logical ─────────────────────────────────────────────────────────
 
   and(args: string[]): string {
+    if (args.length === 0) return 'true';
     return `(${args.join(' && ')})`;
   }
 
   or(args: string[]): string {
+    if (args.length === 0) return 'false';
     return `(${args.join(' || ')})`;
   }
 
@@ -142,8 +144,8 @@ class JxaCompilerBackend implements ExprBackend<string> {
       case 'gte':
       case 'lt':
       case 'lte': {
-        const jsOp = op === 'gt' ? '>' : op === 'gte' ? '>=' : op === 'lt' ? '<' : '<=';
-        return `(${left} != null && ${right} != null && ${left} ${jsOp} ${right})`;
+        const cmpOp = op === 'gt' ? '>0' : op === 'gte' ? '>=0' : op === 'lt' ? '<0' : '<=0';
+        return `(function(){var c=_cmp(${left},${right});return c!==null&&c${cmpOp};}())`;
       }
     }
   }
@@ -158,7 +160,7 @@ class JxaCompilerBackend implements ExprBackend<string> {
   // ── Set Membership ──────────────────────────────────────────────────
 
   inArray(value: string, array: string): string {
-    return `(${array}.indexOf(${value}) !== -1)`;
+    return `_inArr(${value},${array})`;
   }
 
   // ── String/Array Ops ────────────────────────────────────────────────
@@ -173,29 +175,29 @@ class JxaCompilerBackend implements ExprBackend<string> {
       }
       return `(${haystack}.indexOf(${needle}.toLowerCase()) !== -1)`;
     }
-    // String contains — case-insensitive
+    // String contains — case-insensitive, null-safe
     const raw = extractJxaStringLiteral(needle);
     if (raw !== null) {
-      return `(${haystack}.toLowerCase().indexOf("${escapeJxaString(raw.toLowerCase())}") !== -1)`;
+      return `(${haystack}!=null&&${haystack}.toLowerCase().indexOf("${escapeJxaString(raw.toLowerCase())}")!==-1)`;
     }
-    return `(${haystack}.toLowerCase().indexOf(${needle}.toLowerCase()) !== -1)`;
+    return `(${haystack}!=null&&${haystack}.toLowerCase().indexOf(${needle}.toLowerCase())!==-1)`;
   }
 
   startsWith(str: string, prefix: string): string {
     const raw = extractJxaStringLiteral(prefix);
     if (raw !== null) {
-      return `(${str}.toLowerCase().lastIndexOf("${escapeJxaString(raw.toLowerCase())}",0) === 0)`;
+      return `(${str}!=null&&${str}.toLowerCase().lastIndexOf("${escapeJxaString(raw.toLowerCase())}",0)===0)`;
     }
-    return `(${str}.toLowerCase().lastIndexOf(${prefix}.toLowerCase(),0) === 0)`;
+    return `(${str}!=null&&${str}.toLowerCase().lastIndexOf(${prefix}.toLowerCase(),0)===0)`;
   }
 
   endsWith(str: string, suffix: string): string {
     const raw = extractJxaStringLiteral(suffix);
     if (raw !== null) {
       const lowered = escapeJxaString(raw.toLowerCase());
-      return `(function(){var _s=${str}.toLowerCase();return _s.length>=${raw.length}&&_s.indexOf("${lowered}",_s.length-${raw.length})!==-1;})()`;
+      return `(${str}!=null&&(function(){var _s=${str}.toLowerCase();return _s.length>=${raw.length}&&_s.indexOf("${lowered}",_s.length-${raw.length})!==-1;})())`;
     }
-    return `(function(){var _s=${str}.toLowerCase(),_p=${suffix}.toLowerCase();return _s.length>=_p.length&&_s.indexOf(_p,_s.length-_p.length)!==-1;})()`;
+    return `(${str}!=null&&(function(){var _s=${str}.toLowerCase(),_p=${suffix}.toLowerCase();return _s.length>=_p.length&&_s.indexOf(_p,_s.length-_p.length)!==-1;})())`;
   }
 
   matches(str: string, pattern: string): string {
@@ -332,14 +334,18 @@ class JxaCompilerBackend implements ExprBackend<string> {
  */
 function extractJxaStringLiteral(expr: string): string | null {
   if (expr.length >= 2 && expr[0] === '"' && expr[expr.length - 1] === '"') {
-    // Unescape the JXA string to get the raw value
-    return expr.slice(1, -1)
-      .replace(/\\0/g, '\0')
-      .replace(/\\t/g, '\t')
-      .replace(/\\r/g, '\r')
-      .replace(/\\n/g, '\n')
-      .replace(/\\"/g, '"')
-      .replace(/\\\\/g, '\\');
+    // Single-pass unescape to avoid ordering issues
+    return expr.slice(1, -1).replace(/\\([\\"nrt0])/g, (_, ch) => {
+      switch (ch) {
+        case '\\': return '\\';
+        case '"': return '"';
+        case 'n': return '\n';
+        case 'r': return '\r';
+        case 't': return '\t';
+        case '0': return '\0';
+        default: return ch;
+      }
+    });
   }
   return null;
 }

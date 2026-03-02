@@ -18,37 +18,42 @@ import type { BulkScan, MembershipScan, WhoseFilter } from './planTree.js';
 
 // ── Entity Configuration ────────────────────────────────────────────────
 
+interface ActiveFilterRule {
+  bulkProperty: string;
+  /** 'false'/'true' for boolean check, 'active' for project status string match */
+  keepWhen: 'false' | 'true' | 'active';
+}
+
 interface EntityJxaConfig {
   /** Apple Events collection path (relative to doc) */
   collection: string;
-  /** Active-item filter: bulk property name and condition for keeping an item */
-  activeFilter: {
-    bulkProperty: string;
-    /** 'false'/'true' for boolean check, 'active' for project status string match */
-    keepWhen: 'false' | 'true' | 'active';
-  } | null;
+  /** Active-item filters: bulk property names and conditions for keeping an item */
+  activeFilters: ActiveFilterRule[] | null;
 }
 
 const entityConfigs: Record<EntityType, EntityJxaConfig> = {
   tasks: {
     collection: 'doc.flattenedTasks',
-    activeFilter: { bulkProperty: 'completed', keepWhen: 'false' },
+    activeFilters: [
+      { bulkProperty: 'completed', keepWhen: 'false' },
+      { bulkProperty: 'dropped', keepWhen: 'false' },
+    ],
   },
   tags: {
     collection: 'doc.flattenedTags',
-    activeFilter: { bulkProperty: 'effectivelyHidden', keepWhen: 'false' },
+    activeFilters: [{ bulkProperty: 'effectivelyHidden', keepWhen: 'false' }],
   },
   projects: {
     collection: 'doc.flattenedProjects',
-    activeFilter: { bulkProperty: 'status', keepWhen: 'active' },
+    activeFilters: [{ bulkProperty: 'status', keepWhen: 'active' }],
   },
   folders: {
     collection: 'doc.flattenedFolders',
-    activeFilter: null,
+    activeFilters: null,
   },
   perspectives: {
     collection: '', // perspectives don't use bulk-read; always OmniJS fallback
-    activeFilter: null,
+    activeFilters: null,
   },
 };
 
@@ -241,22 +246,25 @@ export function generateBulkReadFromColumns(node: BulkScan): string {
 interface RelationshipConfig {
   /** JXA property on a source item to traverse to target items */
   accessor: string;
-  /** Active-item filter on the target entity (null = no filter) */
-  activeFilter: {
-    bulkProperty: string;
-    keepWhen: 'false' | 'active';
-  } | null;
+  /** Active-item filters on the target entity (null = no filter) */
+  activeFilters: ActiveFilterRule[] | null;
 }
 
 const relationships: Record<string, Record<string, RelationshipConfig>> = {
   tags: {
-    tasks: { accessor: 'tasks', activeFilter: { bulkProperty: 'completed', keepWhen: 'false' } },
+    tasks: { accessor: 'tasks', activeFilters: [
+      { bulkProperty: 'completed', keepWhen: 'false' },
+      { bulkProperty: 'dropped', keepWhen: 'false' },
+    ] },
   },
   projects: {
-    tasks: { accessor: 'flattenedTasks', activeFilter: { bulkProperty: 'completed', keepWhen: 'false' } },
+    tasks: { accessor: 'flattenedTasks', activeFilters: [
+      { bulkProperty: 'completed', keepWhen: 'false' },
+      { bulkProperty: 'dropped', keepWhen: 'false' },
+    ] },
   },
   folders: {
-    projects: { accessor: 'flattenedProjects', activeFilter: { bulkProperty: 'status', keepWhen: 'active' } },
+    projects: { accessor: 'flattenedProjects', activeFilters: [{ bulkProperty: 'status', keepWhen: 'active' }] },
   },
 };
 
@@ -282,18 +290,24 @@ export function generateMembershipScript(node: MembershipScan): string {
     throw new Error(`No collection path for entity: ${node.sourceEntity}`);
   }
 
-  // Active filter on target entity items
+  // Active filter on target entity items (multi-rule)
   let activeFilterCode = '';
-  if (!node.includeCompleted && rel.activeFilter) {
-    const { bulkProperty, keepWhen } = rel.activeFilter;
-    const condition = keepWhen === 'false'
-      ? `!filterArr[j]`
-      : `String(filterArr[j]).indexOf("active") === 0 || String(filterArr[j]).indexOf("on hold") === 0`;
+  if (!node.includeCompleted && rel.activeFilters) {
+    const rules = rel.activeFilters;
+    const readLines = rules.map((r, i) =>
+      `    var _mfa${i} = items.${r.bulkProperty}();`
+    ).join('\n');
+    const conditions = rules.map((r, i) => {
+      if (r.keepWhen === 'active') {
+        return `(function(){var _s=String(_mfa${i}[j]);return _s.indexOf("active")===0||_s.indexOf("on hold")===0;})()`;
+      }
+      return r.keepWhen === 'false' ? `!_mfa${i}[j]` : `_mfa${i}[j]`;
+    }).join(' && ');
     activeFilterCode = `
-    var filterArr = items.${bulkProperty}();
+${readLines}
     var filtered = [];
     for (var j = 0; j < itemIds.length; j++) {
-      if (${condition}) filtered.push(itemIds[j]);
+      if (${conditions}) filtered.push(itemIds[j]);
     }
     itemIds = filtered;`;
   }
@@ -404,35 +418,33 @@ function generateScript(config: BulkReadConfig): string {
     ...chainProps.map(p => `${p.name}Arr`)
   ];
 
-  // Active-item filter
+  // Active-item filter (multi-rule)
   let activeFilter: string;
-  if (config.includeCompleted || !entityConfig.activeFilter) {
+  if (config.includeCompleted || !entityConfig.activeFilters) {
     activeFilter = '';
   } else {
-    const { bulkProperty, keepWhen } = entityConfig.activeFilter;
-    if (keepWhen === 'active') {
-      // Project status: Apple Events returns strings like "active status", "done status", etc.
-      // Keep only items whose status starts with "active" (covers "active status")
-      activeFilter = `
-  // Filter to active projects only
-  var _filterArr = items.${bulkProperty}();
-  var len = _filterArr.length;
-  var activeIndices = [];
-  for (var j = 0; j < len; j++) {
-    var _s = String(_filterArr[j]);
-    if (_s.indexOf("active") === 0 || _s.indexOf("on hold") === 0) activeIndices.push(j);
-  }`;
-    } else {
-      const condition = keepWhen === 'false' ? `!_filterArr[j]` : `_filterArr[j]`;
-      activeFilter = `
+    const rules = entityConfig.activeFilters;
+    // Read all filter arrays
+    const readLines = rules.map((r, i) =>
+      `  var _fa${i} = items.${r.bulkProperty}();`
+    ).join('\n');
+
+    // Build per-item condition from all rules
+    const conditions = rules.map((r, i) => {
+      if (r.keepWhen === 'active') {
+        return `(function(){var _s=String(_fa${i}[j]);return _s.indexOf("active")===0||_s.indexOf("on hold")===0;})()`;
+      }
+      return r.keepWhen === 'false' ? `!_fa${i}[j]` : `_fa${i}[j]`;
+    }).join(' && ');
+
+    activeFilter = `
   // Filter to active items only
-  var _filterArr = items.${bulkProperty}();
-  var len = _filterArr.length;
+${readLines}
+  var len = _fa0.length;
   var activeIndices = [];
   for (var j = 0; j < len; j++) {
-    if (${condition}) activeIndices.push(j);
+    if (${conditions}) activeIndices.push(j);
   }`;
-    }
   }
 
   const useFilter = activeFilter !== '';

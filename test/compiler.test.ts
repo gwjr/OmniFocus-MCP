@@ -149,15 +149,16 @@ describe('comparison operations (compact syntax)', () => {
     assert.match(r.condition, /!_eq\(/);
   });
 
-  it('compiles gt with null guards', () => {
+  it('compiles gt with _cmp helper', () => {
     const r = compile({ gt: [{ var: 'estimatedMinutes' }, 30] });
-    assert.match(r.condition, /!= null/);
-    assert.match(r.condition, />/);
+    assert.match(r.condition, /_cmp\(/);
+    assert.match(r.condition, />0/);
   });
 
-  it('compiles lt', () => {
+  it('compiles lt with _cmp helper', () => {
     const r = compile({ lt: [{ var: 'estimatedMinutes' }, 60] });
-    assert.match(r.condition, /< 60/);
+    assert.match(r.condition, /_cmp\(/);
+    assert.match(r.condition, /<0/);
   });
 
   it('compiles eq with null (replaces isNull)', () => {
@@ -172,9 +173,9 @@ describe('comparison operations (compact syntax)', () => {
 });
 
 describe('value-in-array (compact syntax)', () => {
-  it('compiles value in array', () => {
+  it('compiles value in array with _inArr', () => {
     const r = compile({ in: [{ var: 'status' }, ['Available', 'Next']] });
-    assert.match(r.condition, /indexOf/);
+    assert.match(r.condition, /_inArr\(/);
     assert.match(r.condition, /"Available"/);
     assert.match(r.condition, /"Next"/);
   });

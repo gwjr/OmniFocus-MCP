@@ -517,7 +517,21 @@ function generateOmniJsScript(
       var _now = new Date();
       var _eq = function(a, b) {
         if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+        if (typeof a === 'string' && typeof b === 'string') return a.toLowerCase() === b.toLowerCase();
         return a === b;
+      };
+      var _cmp = function(a, b) {
+        if (a == null || b == null) return null;
+        if (a instanceof Date) a = a.getTime();
+        if (b instanceof Date) b = b.getTime();
+        if (typeof a === 'number' && typeof b === 'number') return a - b;
+        if (typeof a === 'string' && typeof b === 'string') { a = a.toLowerCase(); b = b.toLowerCase(); return a < b ? -1 : a > b ? 1 : 0; }
+        return null;
+      };
+      var _inArr = function(v, arr) {
+        if (!arr || !arr.length) return false;
+        for (var i = 0; i < arr.length; i++) { if (_eq(v, arr[i])) return true; }
+        return false;
       };
       ${preambleCode.join('\n      ')}
 

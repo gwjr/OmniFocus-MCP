@@ -63,13 +63,18 @@ function toTime(v: unknown): number | null {
  * Normalize a value for comparison. Converts dates to timestamps
  * and strings to lowercase for case-insensitive comparison.
  */
+// ISO 8601 date pattern — only match actual date strings, not words like "Monday"
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}/;
+
 function normalize(v: unknown): unknown {
   if (v == null) return null;
   if (typeof v === 'number') return v;
   if (typeof v === 'string') {
-    // Try parsing as a date first (ISO 8601 strings)
-    const t = toTime(v);
-    if (t !== null) return t;
+    // Only parse as date if it looks like ISO 8601
+    if (ISO_DATE_RE.test(v)) {
+      const t = toTime(v);
+      if (t !== null) return t;
+    }
     return v.toLowerCase();
   }
   // Date objects, etc.
@@ -196,11 +201,19 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
   // ── Set Membership ──────────────────────────────────────────────────
 
   inArray(value: RowFn, array: RowFn): RowFn {
+    // Pre-normalize static arrays at compile time
+    const staticArr = tryStaticArray(array);
+    if (staticArr) {
+      const normalized = staticArr.map(normalize);
+      return (row) => {
+        const nv = normalize(value(row));
+        return normalized.includes(nv);
+      };
+    }
     return (row) => {
       const v = value(row);
       const arr = array(row);
       if (!Array.isArray(arr)) return false;
-      // Case-insensitive for strings
       const nv = normalize(v);
       return arr.some(el => normalize(el) === nv);
     };
@@ -311,5 +324,18 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
     }
 
     throw new Error(`Unknown container type: "${type}"`);
+  }
+}
+
+/**
+ * Try to extract a static array from a RowFn. If the function is a constant
+ * (always returns the same array regardless of row), return it.
+ */
+function tryStaticArray(fn: RowFn): unknown[] | null {
+  try {
+    const val = fn({});
+    return Array.isArray(val) ? val : null;
+  } catch {
+    return null;
   }
 }

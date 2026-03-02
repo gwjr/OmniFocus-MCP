@@ -35,7 +35,7 @@ const arr  = (accessor: (v: string) => string, nodeKey: string, bulk: string | n
 
 export const taskVars: VarRegistry = {
   // easy: direct Apple Events bulk-readable properties
-  id:                   str(v  => `${v}.id.primaryKey`,                                                      'id',                   'id',                    'per-item'),
+  id:                   str(v  => `${v}.id.primaryKey`,                                                      'id',                   'id',                    'easy'),
   name:                 str(v  => `(${v}.name || "")`,                                                       'name',                 'name',                  'easy'),
   flagged:              bool(v => `${v}.flagged`,                                                             'flagged',              'flagged',               'easy'),
   dueDate:              date(v => `${v}.dueDate`,                                                             'dueDate',              'dueDate',               'easy'),
@@ -51,8 +51,8 @@ export const taskVars: VarRegistry = {
   blocked:              bool(v => `${v}.blocked`,                                                             'blocked',              'blocked',               'easy'),
   effectivelyCompleted: bool(v => `${v}.effectivelyCompleted`,                                                'effectivelyCompleted', 'effectivelyCompleted',  'easy'),
   effectivelyDropped:   bool(v => `${v}.effectivelyDropped`,                                                  'effectivelyDropped',   'effectivelyDropped',    'easy'),
-  completed:            bool(v => `(${v}.taskStatus === Task.Status.Completed)`,                              'completed',            null,                    'per-item'),
-  dropped:              bool(v => `(${v}.taskStatus === Task.Status.Dropped)`,                                'dropped',              null,                    'per-item'),
+  completed:            bool(v => `(${v}.taskStatus === Task.Status.Completed)`,                              'completed',            'completed',             'easy'),
+  dropped:              bool(v => `(${v}.taskStatus === Task.Status.Dropped)`,                                'dropped',              'dropped',               'easy'),
 
   // chain: requires traversing containingProject
   projectName:          str(v  => `(${v}.containingProject ? ${v}.containingProject.name || "" : "")`,        'projectName',          'containingProject',     'chain'),
@@ -131,7 +131,7 @@ export const perspectiveVars: VarRegistry = {
 
 export const tagVars: VarRegistry = {
   // easy: direct Apple Events bulk-readable properties
-  id:                 str(v  => `${v}.id.primaryKey`,                                                            'id',                'id',                   'per-item'),
+  id:                 str(v  => `${v}.id.primaryKey`,                                                            'id',                'id',                   'easy'),
   name:               str(v  => `(${v}.name || "")`,                                                             'name',              'name',                 'easy'),
   allowsNextAction:   bool(v => `${v}.allowsNextAction`,                                                         'allowsNextAction',  'allowsNextAction',     'easy'),
   hidden:             bool(v => `${v}.hidden`,                                                                   'hidden',            'hidden',               'easy'),

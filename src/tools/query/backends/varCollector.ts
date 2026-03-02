@@ -17,7 +17,7 @@ import { lowerExpr } from '../lower.js';
  * Accepts compact syntax — lowers first.
  */
 export function collectVars(where: unknown, entity: EntityType): Set<string> {
-  const lowered = lowerExpr(where) as LoweredExpr;
+  const lowered = lowerExpr(where);
   return collectVarsFromAst(lowered, entity);
 }
 

@@ -68,7 +68,8 @@ export interface ExprBackend<T> {
  */
 export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: EntityType): T {
   // Primitives
-  if (node === null || node === undefined) return backend.literal(null);
+  if (node === null) return backend.literal(null);
+  if (node === undefined) throw new Error('Unexpected undefined in AST — check lowering');
   if (typeof node === 'string') return backend.literal(node);
   if (typeof node === 'number') return backend.literal(node);
   if (typeof node === 'boolean') return backend.literal(node);
@@ -141,9 +142,7 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
       }
 
       case 'offset': {
-        // args[0] is {date: <lowered>, days: N} from the lowering pass
-        const spec = args[0] as unknown as { date: LoweredExpr; days: number };
-        return backend.offset(foldExpr(spec.date, backend, entity), spec.days);
+        return backend.offset(f(args[0]), args[1] as number);
       }
 
       case 'container': {
