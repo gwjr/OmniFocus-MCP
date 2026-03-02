@@ -19,10 +19,12 @@ BulkScan tasks [name, dueDate, flagged] (includeCompleted:false)
   var dueDateArr = items.dueDate();
   var dueDateIso = dueDateArr.map(function(v) { return v ? v.toISOString() : null; });
   var flaggedArr = items.flagged();
+  var idArr = items.id();
+  var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });
 
 
   // Alignment check
-  var _lens = {"nameArr": nameArr.length, "dueDateArr": dueDateArr.length, "flaggedArr": flaggedArr.length};
+  var _lens = {"nameArr": nameArr.length, "dueDateArr": dueDateArr.length, "flaggedArr": flaggedArr.length, "idKeys": idKeys.length};
   var _first = _lens["nameArr"];
   for (var _k in _lens) {
     if (_lens[_k] !== _first) {
@@ -38,11 +40,22 @@ BulkScan tasks [name, dueDate, flagged] (includeCompleted:false)
   for (var j = 0; j < len; j++) {
     if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
   }
+  // Exclude project root tasks (projects appear in flattenedTasks)
+  var _projIds = doc.flattenedProjects.id();
+  var _projIdSet = {};
+  for (var _pi = 0; _pi < _projIds.length; _pi++) {
+    if (_projIds[_pi]) _projIdSet[_projIds[_pi].toString()] = true;
+  }
+  var _filtered = [];
+  for (var _fi = 0; _fi < activeIndices.length; _fi++) {
+    if (!_projIdSet[idKeys[activeIndices[_fi]]]) _filtered.push(activeIndices[_fi]);
+  }
+  activeIndices = _filtered;
 
   // Build row objects
   var rows = [];
   for (var i = 0; i < activeIndices.length; i++) {
-    rows.push({"name": nameArr[activeIndices[i]], "dueDate": dueDateIso[activeIndices[i]], "flagged": flaggedArr[activeIndices[i]]});
+    rows.push({"name": nameArr[activeIndices[i]], "dueDate": dueDateIso[activeIndices[i]], "flagged": flaggedArr[activeIndices[i]], "id": idKeys[activeIndices[i]]});
   }
 
   return rows;
@@ -71,10 +84,12 @@ Filter {"op":"eq","args":[{"var":"flagged"},true]}
   var nameArr = items.name();
   var dueDateArr = items.dueDate();
   var dueDateIso = dueDateArr.map(function(v) { return v ? v.toISOString() : null; });
+  var idArr = items.id();
+  var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });
 
 
   // Alignment check
-  var _lens = {"flaggedArr": flaggedArr.length, "nameArr": nameArr.length, "dueDateArr": dueDateArr.length};
+  var _lens = {"flaggedArr": flaggedArr.length, "nameArr": nameArr.length, "dueDateArr": dueDateArr.length, "idKeys": idKeys.length};
   var _first = _lens["flaggedArr"];
   for (var _k in _lens) {
     if (_lens[_k] !== _first) {
@@ -90,11 +105,22 @@ Filter {"op":"eq","args":[{"var":"flagged"},true]}
   for (var j = 0; j < len; j++) {
     if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
   }
+  // Exclude project root tasks (projects appear in flattenedTasks)
+  var _projIds = doc.flattenedProjects.id();
+  var _projIdSet = {};
+  for (var _pi = 0; _pi < _projIds.length; _pi++) {
+    if (_projIds[_pi]) _projIdSet[_projIds[_pi].toString()] = true;
+  }
+  var _filtered = [];
+  for (var _fi = 0; _fi < activeIndices.length; _fi++) {
+    if (!_projIdSet[idKeys[activeIndices[_fi]]]) _filtered.push(activeIndices[_fi]);
+  }
+  activeIndices = _filtered;
 
   // Build row objects
   var rows = [];
   for (var i = 0; i < activeIndices.length; i++) {
-    rows.push({"flagged": flaggedArr[activeIndices[i]], "name": nameArr[activeIndices[i]], "dueDate": dueDateIso[activeIndices[i]]});
+    rows.push({"flagged": flaggedArr[activeIndices[i]], "name": nameArr[activeIndices[i]], "dueDate": dueDateIso[activeIndices[i]], "id": idKeys[activeIndices[i]]});
   }
 
   return rows;
@@ -120,10 +146,12 @@ Filter {"op":"contains","args":[{"var":"tags"},"Work"]}
 
   // Bulk-read properties via Apple Events
   var nameArr = items.name();
+  var idArr = items.id();
+  var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });
   var tagsArr = items.tags.name();
 
   // Alignment check
-  var _lens = {"nameArr": nameArr.length, "tagsArr": tagsArr.length};
+  var _lens = {"nameArr": nameArr.length, "tagsArr": tagsArr.length, "idKeys": idKeys.length};
   var _first = _lens["nameArr"];
   for (var _k in _lens) {
     if (_lens[_k] !== _first) {
@@ -139,11 +167,22 @@ Filter {"op":"contains","args":[{"var":"tags"},"Work"]}
   for (var j = 0; j < len; j++) {
     if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
   }
+  // Exclude project root tasks (projects appear in flattenedTasks)
+  var _projIds = doc.flattenedProjects.id();
+  var _projIdSet = {};
+  for (var _pi = 0; _pi < _projIds.length; _pi++) {
+    if (_projIds[_pi]) _projIdSet[_projIds[_pi].toString()] = true;
+  }
+  var _filtered = [];
+  for (var _fi = 0; _fi < activeIndices.length; _fi++) {
+    if (!_projIdSet[idKeys[activeIndices[_fi]]]) _filtered.push(activeIndices[_fi]);
+  }
+  activeIndices = _filtered;
 
   // Build row objects
   var rows = [];
   for (var i = 0; i < activeIndices.length; i++) {
-    rows.push({"name": nameArr[activeIndices[i]], "tags": (tagsArr[activeIndices[i]] || []).map(function(t) { return t.toLowerCase(); })});
+    rows.push({"name": nameArr[activeIndices[i]], "id": idKeys[activeIndices[i]], "tags": (tagsArr[activeIndices[i]] || []).map(function(t) { return t.toLowerCase(); })});
   }
 
   return rows;
@@ -171,10 +210,12 @@ Filter {"op":"lt","args":[{"var":"dueDate"},{"type":"date","value":"2026-04-01"}
   var dueDateArr = items.dueDate();
   var dueDateIso = dueDateArr.map(function(v) { return v ? v.toISOString() : null; });
   var nameArr = items.name();
+  var idArr = items.id();
+  var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });
 
 
   // Alignment check
-  var _lens = {"dueDateArr": dueDateArr.length, "nameArr": nameArr.length};
+  var _lens = {"dueDateArr": dueDateArr.length, "nameArr": nameArr.length, "idKeys": idKeys.length};
   var _first = _lens["dueDateArr"];
   for (var _k in _lens) {
     if (_lens[_k] !== _first) {
@@ -190,11 +231,22 @@ Filter {"op":"lt","args":[{"var":"dueDate"},{"type":"date","value":"2026-04-01"}
   for (var j = 0; j < len; j++) {
     if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
   }
+  // Exclude project root tasks (projects appear in flattenedTasks)
+  var _projIds = doc.flattenedProjects.id();
+  var _projIdSet = {};
+  for (var _pi = 0; _pi < _projIds.length; _pi++) {
+    if (_projIds[_pi]) _projIdSet[_projIds[_pi].toString()] = true;
+  }
+  var _filtered = [];
+  for (var _fi = 0; _fi < activeIndices.length; _fi++) {
+    if (!_projIdSet[idKeys[activeIndices[_fi]]]) _filtered.push(activeIndices[_fi]);
+  }
+  activeIndices = _filtered;
 
   // Build row objects
   var rows = [];
   for (var i = 0; i < activeIndices.length; i++) {
-    rows.push({"dueDate": dueDateIso[activeIndices[i]], "name": nameArr[activeIndices[i]]});
+    rows.push({"dueDate": dueDateIso[activeIndices[i]], "name": nameArr[activeIndices[i]], "id": idKeys[activeIndices[i]]});
   }
 
   return rows;
@@ -257,10 +309,9 @@ Query: projects with folderName [projects]
 Path:  broad
 
 ── Strategy Tree ──────────────────────────────────────
-Filter true
-  CrossEntityJoin sourceKey:folderId lookupKey:id
-    BulkScan projects [name, id, folderId] (includeCompleted:false)
-    BulkScan folders [id, name] (includeCompleted:false)
+CrossEntityJoin sourceKey:folderId lookupKey:id
+  BulkScan projects [name, id, folderId] (includeCompleted:false)
+  BulkScan folders [id, name] (includeCompleted:false)
 
 ── JXA Script ─────────────────────────────────────────
 (function() {

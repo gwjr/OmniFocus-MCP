@@ -64,7 +64,7 @@ function assertDocElements(spec: Specifier, classCode: string): void {
 
 describe('lowerStrategy — BulkScan', () => {
 
-  it('single easy column emits Get(Elements), Get(Property), Zip', () => {
+  it('single easy column emits Get(Elements), Get(Property), Zip + project exclusion', () => {
     const strategy: StrategyNode = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -83,14 +83,23 @@ describe('lowerStrategy — BulkScan', () => {
     const spec1 = getSpecifier(plan, 1);
     assertProperty(spec1, 'pnam', 0);
 
-    // node[2] = Zip([{name:'name', ref:1}])
-    const zip = plan.nodes[2];
-    assert.equal(zip.kind, 'Zip');
-    const zipNode = zip as Extract<EventNode, { kind: 'Zip' }>;
-    assert.deepStrictEqual(zipNode.columns, [{ name: 'name', ref: 1 }]);
+    // Zip includes name and injected id columns
+    const { node: zipNode } = findOne(plan, 'Zip');
+    const zip = zipNode as Extract<EventNode, { kind: 'Zip' }>;
+    const colNames = zip.columns.map(c => c.name);
+    assert.ok(colNames.includes('name'));
+    assert.ok(colNames.includes('id'), 'id injected for project-exclusion anti-join');
 
-    // result = 2
-    assert.equal(plan.result, 2);
+    // Task BulkScans end with a project-exclusion anti-SemiJoin
+    const semiJoins = findNodes(plan, 'SemiJoin');
+    assert.ok(semiJoins.length >= 1);
+    const excludeSJ = semiJoins.find(({ node }) =>
+      (node as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ, 'should have a project-exclusion anti-SemiJoin');
+
+    // result = the anti-SemiJoin
+    assert.equal(plan.result, excludeSJ!.ref);
   });
 
   it('two columns emit two Property reads and Zip with both', () => {
@@ -111,19 +120,24 @@ describe('lowerStrategy — BulkScan', () => {
     // node[2] = Get(Property(%0, 'FCfl'))
     assertProperty(getSpecifier(plan, 2), 'FCfl', 0);
 
-    // node[3] = Zip
-    const zip = plan.nodes[3];
-    assert.equal(zip.kind, 'Zip');
-    const zipNode = zip as Extract<EventNode, { kind: 'Zip' }>;
-    assert.deepStrictEqual(zipNode.columns, [
-      { name: 'name', ref: 1 },
-      { name: 'flagged', ref: 2 },
-    ]);
+    // Zip includes name, flagged, and injected id
+    const { node: zipNode } = findOne(plan, 'Zip');
+    const zip = zipNode as Extract<EventNode, { kind: 'Zip' }>;
+    const colNames = zip.columns.map(c => c.name);
+    assert.ok(colNames.includes('name'));
+    assert.ok(colNames.includes('flagged'));
+    assert.ok(colNames.includes('id'), 'id injected for project-exclusion');
 
-    assert.equal(plan.result, 3);
+    // Result is the project-exclusion anti-SemiJoin
+    const semiJoins = findNodes(plan, 'SemiJoin');
+    const excludeSJ = semiJoins.find(({ node }) =>
+      (node as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ);
+    assert.equal(plan.result, excludeSJ!.ref);
   });
 
-  it('includeCompleted:false adds active-task Filter after Zip', () => {
+  it('includeCompleted:false adds active-task Filter after Zip, then project exclusion', () => {
     const strategy: StrategyNode = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -156,11 +170,17 @@ describe('lowerStrategy — BulkScan', () => {
     assert.ok(varNames.includes('completed'));
     assert.ok(varNames.includes('dropped'));
 
-    // result should point to the Filter
-    assert.equal(plan.result, filterRef);
+    // result should point to the project-exclusion anti-SemiJoin (after Filter)
+    const semiJoins = findNodes(plan, 'SemiJoin');
+    const excludeSJ = semiJoins.find(({ node }) =>
+      (node as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ, 'should have project-exclusion anti-SemiJoin');
+    assert.ok(excludeSJ!.ref > filterRef, 'anti-SemiJoin after Filter');
+    assert.equal(plan.result, excludeSJ!.ref);
   });
 
-  it('computedVars adds Derive node after Zip', () => {
+  it('computedVars adds Derive node after Zip, then project exclusion', () => {
     const strategy: StrategyNode = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -184,7 +204,14 @@ describe('lowerStrategy — BulkScan', () => {
       'Should have a status derivation for tasks entity'
     );
 
-    assert.equal(plan.result, deriveRef);
+    // Result is the project-exclusion anti-SemiJoin (after Derive)
+    const semiJoins = findNodes(plan, 'SemiJoin');
+    const excludeSJ = semiJoins.find(({ node }) =>
+      (node as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ);
+    assert.ok(excludeSJ!.ref > deriveRef, 'anti-SemiJoin after Derive');
+    assert.equal(plan.result, excludeSJ!.ref);
   });
 
   it('projects entity uses FCfx class code', () => {
@@ -233,7 +260,7 @@ describe('lowerStrategy — BulkScan', () => {
     assertDocElements(getSpecifier(plan, 0), 'FCff');
   });
 
-  it('computedVars + includeCompleted:false emits both Derive and Filter', () => {
+  it('computedVars + includeCompleted:false emits Derive, Filter, then project exclusion', () => {
     // Derive should come before the active filter so derived fields are
     // available to the filter predicate if needed.
     const strategy: StrategyNode = {
@@ -251,7 +278,15 @@ describe('lowerStrategy — BulkScan', () => {
 
     assert.ok(deriveRef > zipRef, 'Derive comes after Zip');
     assert.ok(filterRef > deriveRef, 'Filter comes after Derive');
-    assert.equal(plan.result, filterRef);
+
+    // Result is the project-exclusion anti-SemiJoin (after Filter)
+    const semiJoins = findNodes(plan, 'SemiJoin');
+    const excludeSJ = semiJoins.find(({ node }) =>
+      (node as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ);
+    assert.ok(excludeSJ!.ref > filterRef, 'anti-SemiJoin after Filter');
+    assert.equal(plan.result, excludeSJ!.ref);
   });
 
 });

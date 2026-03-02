@@ -171,6 +171,7 @@ export type EventNode =
   | { kind: 'SemiJoin';
       source: Ref;
       ids:    Ref;              // Ref to a string[] / Set<string>
+      exclude?: boolean;        // true = anti-join (exclude matching IDs)
     }
 
   | { kind: 'HashJoin';

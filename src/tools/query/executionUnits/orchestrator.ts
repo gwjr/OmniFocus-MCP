@@ -19,6 +19,7 @@ import type { StrategyNode } from '../strategy.js';
 import { assignRuntimes, splitExecutionUnits } from '../targetedEventPlanLowering.js';
 import { lowerStrategy } from '../strategyToEventPlan.js';
 import { cseEventPlan } from '../eventPlanCSE.js';
+import { pruneColumns } from '../eventPlanColumnPrune.js';
 import { emitJxaUnit } from './jxaUnit.js';
 import { emitOmniJsUnit } from './omniJsUnit.js';
 import { executeNodeUnit } from './nodeUnit.js';
@@ -394,7 +395,8 @@ export function compileEventPlan(node: StrategyNode): {
   units: ExecutionUnit[];
 } {
   const eventPlan = lowerStrategy(node);
-  const optimized = cseEventPlan(eventPlan);
+  const csed = cseEventPlan(eventPlan);
+  const optimized = pruneColumns(csed);
   const targeted = assignRuntimes(optimized);
   const units = splitExecutionUnits(targeted);
   return { targeted, units };

@@ -78,7 +78,7 @@ describe('JxaEmitter.propertyScan', () => {
     assert.ok(frag.body.includes('activeIndices'), 'should filter active items');
   });
 
-  it('omits active filter when includeCompleted', () => {
+  it('omits active filter when includeCompleted (project exclusion still applies)', () => {
     const node: BulkScan = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -86,7 +86,11 @@ describe('JxaEmitter.propertyScan', () => {
       includeCompleted: true,
     };
     const frag = emitter.propertyScan(node);
-    assert.ok(!frag.body.includes('activeIndices'), 'should not filter when includeCompleted');
+    // Task entities always use activeIndices for project exclusion, even
+    // without an active filter. Check that the completed/dropped filter
+    // is absent but project exclusion is present.
+    assert.ok(!frag.body.includes('!_fa0[j]'), 'should not have completed filter');
+    assert.ok(frag.body.includes('_projIdSet'), 'should have project exclusion');
   });
 
   it('includes chain properties', () => {

@@ -228,6 +228,11 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
           }
         }
 
+        // Tasks need id for project-exclusion anti-join
+        if (node.entity === 'tasks' && !colSet.has('id')) {
+          allColumns.push('id');
+        }
+
         // For each column: emit Get(Property) or Get(Property(Property)) for chains
         const colRefs: { name: string; ref: Ref }[] = [];
         for (const col of allColumns) {
@@ -286,6 +291,40 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
               entity: node.entity,
             });
           }
+        }
+
+        // Task entity: exclude project root tasks (projects ARE tasks in
+        // flattenedTasks — subtract flattenedProjects IDs to get pure tasks)
+        if (node.entity === 'tasks') {
+          // %projElems = Get(Elements(Document, flattenedProject))
+          const projElemRef = push({
+            kind: 'Get',
+            specifier: {
+              kind: 'Elements',
+              parent: { kind: 'Document' },
+              classCode: classCode('projects'),
+            },
+            effect: 'nonMutating',
+          });
+
+          // %projIds = Get(Property(projElems, id))
+          const projIdsRef = push({
+            kind: 'Get',
+            specifier: {
+              kind: 'Property',
+              parent: projElemRef,
+              propCode: 'ID  ',
+            },
+            effect: 'nonMutating',
+          });
+
+          // Anti-semi-join: exclude rows whose id is in projIds
+          current = push({
+            kind: 'SemiJoin',
+            source: current,
+            ids: projIdsRef,
+            exclude: true,
+          });
         }
 
         return current;

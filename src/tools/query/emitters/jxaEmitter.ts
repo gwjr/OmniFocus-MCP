@@ -308,9 +308,63 @@ ${filterReadLines}
   }`;
     }
 
-    const useFilter = activeFilter !== '';
-    const indexVar = useFilter ? 'activeIndices[i]' : 'i';
-    const loopLen = useFilter ? 'activeIndices.length' : `${allArrayNames[0] || 'idKeys'}.length`;
+    // Task entity: exclude project root tasks (projects ARE tasks in flattenedTasks)
+    let projectExclusion = '';
+    if (node.entity === 'tasks') {
+      // Ensure we have id for exclusion check
+      if (!needsId) {
+        needsId = true;
+        const idDef = registry['id'];
+        if (idDef && !directProps.some(p => p.name === 'id')) {
+          directProps.push({ name: 'id', appleEventsProperty: idDef.appleEventsProperty || 'id', def: idDef });
+          readLines.push(`  var idArr = items.id();\n  var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });`);
+          allArrayNames.push('idKeys');
+        }
+      }
+      projectExclusion = `
+  // Exclude project root tasks (projects appear in flattenedTasks)
+  var _projIds = doc.flattenedProjects.id();
+  var _projIdSet = {};
+  for (var _pi = 0; _pi < _projIds.length; _pi++) {
+    if (_projIds[_pi]) _projIdSet[_projIds[_pi].toString()] = true;
+  }`;
+    }
+
+    const useFilter = activeFilter !== '' || node.entity === 'tasks';
+    let indexExpr: string;
+    let loopSetup: string;
+
+    if (activeFilter !== '' && node.entity === 'tasks') {
+      // Both active filter and project exclusion
+      indexExpr = 'activeIndices[i]';
+      loopSetup = `activeIndices.length`;
+      // Re-filter activeIndices to exclude projects
+      projectExclusion += `
+  var _filtered = [];
+  for (var _fi = 0; _fi < activeIndices.length; _fi++) {
+    if (!_projIdSet[idKeys[activeIndices[_fi]]]) _filtered.push(activeIndices[_fi]);
+  }
+  activeIndices = _filtered;`;
+    } else if (node.entity === 'tasks') {
+      // Project exclusion only (no active filter — i.e. includeCompleted)
+      indexExpr = 'activeIndices[i]';
+      loopSetup = `activeIndices.length`;
+      projectExclusion += `
+  var _totalLen = idKeys.length;
+  var activeIndices = [];
+  for (var _fi = 0; _fi < _totalLen; _fi++) {
+    if (!_projIdSet[idKeys[_fi]]) activeIndices.push(_fi);
+  }`;
+    } else if (activeFilter !== '') {
+      indexExpr = 'activeIndices[i]';
+      loopSetup = 'activeIndices.length';
+    } else {
+      indexExpr = 'i';
+      loopSetup = `${allArrayNames[0] || 'idKeys'}.length`;
+    }
+
+    const indexVar = indexExpr;
+    const loopLen = loopSetup;
 
     // Build row construction
     const rowPropsIndexed = [
@@ -342,7 +396,7 @@ ${chainLines.join('\n')}
       return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
     }
   }
-${activeFilter}
+${activeFilter}${projectExclusion}
 
   // Build row objects
   var rows = [];

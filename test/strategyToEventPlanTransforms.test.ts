@@ -72,18 +72,23 @@ describe('lowerStrategy — Filter', () => {
 
     const plan = lowerStrategy(strategy);
 
-    // Plan must contain a Filter node
+    // Plan must contain a user Filter node (the BulkScan also adds a
+    // project-exclusion SemiJoin for tasks, but no extra Filter)
     const filters = findNodes(plan, 'Filter');
     assert.equal(filters.length, 1, 'expected exactly one Filter node');
 
     const filter = filters[0] as Extract<EventNode, { kind: 'Filter' }>;
     assert.deepEqual(filter.predicate, predicate);
 
-    // Filter.source should be a Ref to the Zip produced by BulkScan lowering
-    const zips = findNodes(plan, 'Zip');
-    assert.ok(zips.length >= 1, 'expected at least one Zip node from BulkScan');
-    const zipRef = plan.nodes.indexOf(zips[0]);
-    assert.equal(filter.source, zipRef);
+    // Filter.source should be the project-exclusion anti-SemiJoin ref
+    // (which is the BulkScan result for task entities)
+    const semiJoins = findNodes(plan, 'SemiJoin');
+    const excludeSJ = semiJoins.find(n =>
+      (n as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ, 'task BulkScan should produce a project-exclusion SemiJoin');
+    const excludeRef = plan.nodes.indexOf(excludeSJ!);
+    assert.equal(filter.source, excludeRef);
 
     // Result is the Filter ref
     const filterRef = plan.nodes.indexOf(filter);
@@ -146,11 +151,15 @@ describe('lowerStrategy — Sort', () => {
     assert.equal(sort.by, 'name');
     assert.equal(sort.dir, 'asc');
 
-    // Sort.source should be a Ref to the Zip from BulkScan
-    const zips = findNodes(plan, 'Zip');
-    assert.ok(zips.length >= 1);
-    const zipRef = plan.nodes.indexOf(zips[0]);
-    assert.equal(sort.source, zipRef);
+    // Sort.source should be the project-exclusion anti-SemiJoin ref
+    // (which is the BulkScan result for task entities)
+    const semiJoins = findNodes(plan, 'SemiJoin');
+    const excludeSJ = semiJoins.find(n =>
+      (n as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ, 'task BulkScan should produce a project-exclusion SemiJoin');
+    const excludeRef = plan.nodes.indexOf(excludeSJ!);
+    assert.equal(sort.source, excludeRef);
   });
 });
 
@@ -211,25 +220,32 @@ describe('lowerStrategy — SemiJoin', () => {
 
     const plan = lowerStrategy(strategy);
 
+    // Two SemiJoin nodes: one for project-exclusion (exclude:true from BulkScan)
+    // and one for the user's tag-based SemiJoin (no exclude flag)
     const semiJoins = findNodes(plan, 'SemiJoin');
-    assert.equal(semiJoins.length, 1, 'expected exactly one SemiJoin node');
+    assert.equal(semiJoins.length, 2, 'expected two SemiJoin nodes (project-exclusion + user)');
 
-    const sj = semiJoins[0] as Extract<EventNode, { kind: 'SemiJoin' }>;
+    // The user SemiJoin is the one without exclude:true
+    const userSJ = semiJoins.find(n =>
+      !(n as Extract<EventNode, { kind: 'SemiJoin' }>).exclude
+    ) as Extract<EventNode, { kind: 'SemiJoin' }>;
+    assert.ok(userSJ, 'should have a non-exclude SemiJoin');
 
-    // source should reference the Zip from BulkScan lowering
-    const zips = findNodes(plan, 'Zip');
-    assert.ok(zips.length >= 1, 'expected a Zip from BulkScan');
-    const zipRef = plan.nodes.indexOf(zips[0]);
-    assert.equal(sj.source, zipRef);
+    // source should reference the project-exclusion anti-SemiJoin
+    // (which is the BulkScan result for task entities)
+    const excludeSJ = semiJoins.find(n =>
+      (n as Extract<EventNode, { kind: 'SemiJoin' }>).exclude === true
+    );
+    assert.ok(excludeSJ, 'should have a project-exclusion anti-SemiJoin');
+    const excludeRef = plan.nodes.indexOf(excludeSJ!);
+    assert.equal(userSJ.source, excludeRef);
 
     // ids should reference the result of MembershipScan lowering
-    // (the exact node depends on how MembershipScan lowers, but it
-    // must be a valid Ref that is not the same as the source Ref)
-    assert.equal(typeof sj.ids, 'number');
-    assert.notEqual(sj.ids, sj.source);
+    assert.equal(typeof userSJ.ids, 'number');
+    assert.notEqual(userSJ.ids, userSJ.source);
 
-    // Result is the SemiJoin ref
-    const sjRef = plan.nodes.indexOf(sj);
+    // Result is the user SemiJoin ref
+    const sjRef = plan.nodes.indexOf(userSJ);
     assert.equal(plan.result, sjRef);
   });
 });

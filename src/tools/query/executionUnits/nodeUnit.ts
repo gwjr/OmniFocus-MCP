@@ -150,6 +150,14 @@ function execSemiJoin(
     ? idsRaw as Set<string>
     : new Set(idsRaw as string[]);
 
+  if (node.exclude) {
+    // Anti-join: keep rows whose id is NOT in the set
+    return source.filter(row => {
+      const id = row.id;
+      return id == null || !ids.has(id as string);
+    });
+  }
+
   return source.filter(row => {
     const id = row.id;
     return id != null && ids.has(id as string);
