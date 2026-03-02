@@ -9,6 +9,7 @@ import { type LoweredExpr } from './fold.js';
 import { getVarRegistry, type EntityType, type VarDef } from './variables.js';
 import { collectVarsFromAst } from './backends/varCollector.js';
 import { lowerExpr } from './lower.js';
+import type { PlanNode } from './planTree.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -200,6 +201,143 @@ function classifyVars(vars: Set<string>, registry: Record<string, VarDef>): Cost
   }
 
   return result;
+}
+
+// ── Plan Tree Builder ────────────────────────────────────────────────────
+
+const PER_ITEM_THRESHOLD = 20;
+
+/**
+ * Build a PlanNode tree from a pre-lowered AST.
+ * This is the new primary planning API.
+ */
+export function buildPlanTree(
+  ast: LoweredExpr,
+  entity: EntityType,
+  selectVars?: string[],
+  includeCompleted = false,
+): PlanNode {
+  // Rule 0: Perspectives → OmniJS fallback
+  if (entity === 'perspectives') {
+    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+  }
+
+  // Rule 1: Tags with any container → OmniJS fallback
+  if (entity === 'tags' && containsAnyContainer(ast)) {
+    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+  }
+
+  // Rule 2: folder container at any depth → OmniJS fallback
+  if (containsFolderContainer(ast)) {
+    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+  }
+
+  // Collect referenced variables
+  const neededVars = collectVarsFromAst(ast, entity);
+  const registry = getVarRegistry(entity);
+  const costMap = classifyVars(neededVars, registry);
+
+  // Rule 3: expensive vars in the where clause → OmniJS fallback
+  if (costMap.expensive.size > 0) {
+    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+  }
+
+  // Try to extract a project-scoped container
+  const extraction = extractContainerScope(ast);
+
+  // Compute bulk columns (nodeKeys)
+  const bulkVarNames = new Set([...costMap.easy, ...costMap.chain]);
+  const perItemVars = new Set(costMap.perItem);
+
+  // Add select vars
+  if (selectVars) {
+    for (const v of selectVars) {
+      const def = registry[v];
+      if (!def) continue;
+      if (def.cost === 'easy' || def.cost === 'chain') {
+        bulkVarNames.add(v);
+      } else if (def.cost === 'per-item' || def.cost === 'expensive') {
+        perItemVars.add(v);
+      }
+    }
+  }
+
+  const needsTwoPhase = perItemVars.size > 0;
+
+  // Build column list as nodeKeys
+  const columns = varNamesToColumns(bulkVarNames, registry);
+
+  // If two-phase, need id in columns for per-item lookups
+  if (needsTwoPhase && !columns.includes('id')) {
+    columns.push('id');
+  }
+
+  // Use the remainder filter if project-scoped, otherwise full AST
+  const filterAst = extraction ? extraction.remainder : ast;
+  const projectScope = extraction?.scope;
+
+  // Build the inner scan
+  const scan: PlanNode = {
+    kind: 'BulkScan',
+    entity,
+    columns,
+    projectScope,
+    includeCompleted,
+  };
+
+  if (!needsTwoPhase) {
+    // Simple path: BulkScan → Filter (if needed)
+    if (filterAst === true) return scan;
+    return { kind: 'Filter', source: scan, predicate: filterAst, entity };
+  }
+
+  // Two-phase path
+  const stubVars = new Set(costMap.perItem); // only where-clause per-item vars get stubbed
+
+  // OmniJS fallback for if threshold is exceeded
+  const fallback: PlanNode = {
+    kind: 'OmniJSScan',
+    entity,
+    filterAst: ast, // full AST for fallback (includes container if any)
+    includeCompleted,
+  };
+
+  // Build: Filter → PerItemEnrich → PreFilter → BulkScan
+  const preFilter: PlanNode = stubVars.size > 0
+    ? { kind: 'PreFilter', source: scan, predicate: filterAst, entity, assumeTrue: stubVars }
+    : scan;
+
+  const enrich: PlanNode = {
+    kind: 'PerItemEnrich',
+    source: preFilter,
+    perItemVars,
+    entity,
+    threshold: PER_ITEM_THRESHOLD,
+    fallback,
+  };
+
+  // Exact re-filter after enrichment (no stubs)
+  const filter: PlanNode = {
+    kind: 'Filter',
+    source: enrich,
+    predicate: filterAst,
+    entity,
+  };
+
+  return filter;
+}
+
+function varNamesToColumns(varNames: Set<string>, registry: Record<string, VarDef>): string[] {
+  const columns: string[] = [];
+  for (const name of varNames) {
+    if (name === 'now') continue;
+    const def = registry[name];
+    if (!def) continue;
+    if (!columns.includes(def.nodeKey)) {
+      columns.push(def.nodeKey);
+    }
+  }
+  return columns;
 }
 
 // ── Container Extraction ────────────────────────────────────────────────
