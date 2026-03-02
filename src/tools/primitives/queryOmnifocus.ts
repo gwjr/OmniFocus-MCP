@@ -15,6 +15,8 @@ import { executePlan } from '../query/executor.js';
 import { optimize, planPathLabel, type PlanNode } from '../query/planTree.js';
 import { tagSemiJoinPass } from '../query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../query/optimizations/normalize.js';
+import { crossEntityJoinPass } from '../query/optimizations/crossEntityJoin.js';
+import { selfJoinEliminationPass } from '../query/optimizations/selfJoinElimination.js';
 import type { LoweredExpr } from '../query/fold.js';
 import type { EntityType } from '../query/variables.js';
 import type { Row } from '../query/backends/nodeEval.js';
@@ -59,7 +61,7 @@ interface QueryResult {
 
 // ── Optimization Passes ─────────────────────────────────────────────────
 
-const PASSES = [tagSemiJoinPass, normalizePass];
+const PASSES = [tagSemiJoinPass, crossEntityJoinPass, selfJoinEliminationPass, normalizePass];
 
 // ── Main Entry Point ────────────────────────────────────────────────────
 
