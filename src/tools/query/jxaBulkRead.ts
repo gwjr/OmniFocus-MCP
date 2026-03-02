@@ -14,7 +14,7 @@ import { getVarRegistry, type EntityType, type VarDef } from './variables.js';
 import type { ExecutionPlan } from './planner.js';
 import type { LoweredExpr } from './fold.js';
 import { escapeJxaString } from './backends/jxaCompiler.js';
-import type { BulkScan, MembershipScan } from './planTree.js';
+import type { BulkScan, MembershipScan, WhoseFilter } from './planTree.js';
 
 // ── Entity Configuration ────────────────────────────────────────────────
 
@@ -99,7 +99,10 @@ const chainAccessors: Record<EntityType, Record<string, string>> = {
     projectId:   `  var _projIds = items.containingProject.id();
   var projectIdArr = _projIds.map(function(v) { return v ? v.toString() : null; });`,
   },
-  tags: {},
+  tags: {
+    parentId: `  var _containerIds = items.container.id();
+  var parentIdArr = _containerIds.map(function(v) { return v ? v.toString() : null; });`,
+  },
   projects: {
     folderId:   `  var _folderIds = items.container.id();
   var folderIdArr = _folderIds.map(function(v) { return v ? v.toString() : null; });`,
@@ -124,6 +127,8 @@ interface BulkReadConfig {
   includeCompleted: boolean;
   /** Entity type */
   entity: EntityType;
+  /** Pushed-down .whose() filters from predicate pushdown pass */
+  whoseFilters?: WhoseFilter[];
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -214,6 +219,7 @@ export function generateBulkReadFromColumns(node: BulkScan): string {
     projectScope: node.projectScope,
     includeCompleted: node.includeCompleted,
     entity: node.entity,
+    whoseFilters: node.whoseFilters,
   });
 }
 
@@ -358,6 +364,12 @@ function generateScript(config: BulkReadConfig): string {
     sourceExpr = entityConfig.collection;
   }
 
+  // Apply pushed-down .whose() filters if present
+  if (config.whoseFilters && config.whoseFilters.length > 0) {
+    const whoseObj = compileWhoseFilters(config.whoseFilters);
+    sourceExpr = `${sourceExpr}.whose(${whoseObj})`;
+  }
+
   // Apple Events status mapping: raw descriptors → user-facing strings
   const PROJECT_STATUS_MAP = '{"active status":"Active","done status":"Done","on hold status":"OnHold","dropped status":"Dropped"}';
 
@@ -494,6 +506,29 @@ function generateScopeWhose(scopeExpr: LoweredExpr): string | null {
 
   // Can't express this as a .whose() — return null to signal extraction failure
   return null;
+}
+
+/**
+ * Compile WhoseFilter predicates into a JXA .whose() object literal.
+ * Multiple filters are combined into a single object (AND semantics).
+ */
+function compileWhoseFilters(filters: WhoseFilter[]): string {
+  const parts: string[] = [];
+  for (const f of filters) {
+    const propName = escapeJxaString(f.property);
+    if (f.type === 'eq') {
+      if (typeof f.value === 'string') {
+        parts.push(`${propName}: "${escapeJxaString(f.value)}"`);
+      } else if (typeof f.value === 'boolean') {
+        parts.push(`${propName}: ${f.value}`);
+      } else {
+        parts.push(`${propName}: ${f.value}`);
+      }
+    } else if (f.type === 'contains') {
+      parts.push(`${propName}: {_contains: "${escapeJxaString(f.value)}"}`);
+    }
+  }
+  return `{${parts.join(', ')}}`;
 }
 
 function isVarNode(node: LoweredExpr, expectedName?: string): boolean {

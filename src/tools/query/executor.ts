@@ -29,7 +29,9 @@ import type {
   Limit as LimitNode,
   Project as ProjectNode,
   SemiJoin,
+  CrossEntityJoin,
 } from './planTree.js';
+import type { SelfJoinEnrich } from './optimizations/selfJoinElimination.js';
 
 // ── Execution Context ───────────────────────────────────────────────────
 
@@ -81,8 +83,10 @@ async function executeNode(node: PlanNode, ctx: ExecContext): Promise<PlanResult
     case 'PerItemEnrich':  return executePerItemEnrich(node, ctx);
     case 'Sort':           return executeSort(node, ctx);
     case 'Limit':          return executeLimit(node, ctx);
-    case 'Project':        return executeProject(node, ctx);
-    case 'SemiJoin':       return executeSemiJoin(node, ctx);
+    case 'Project':           return executeProject(node, ctx);
+    case 'SemiJoin':          return executeSemiJoin(node, ctx);
+    case 'CrossEntityJoin':   return executeCrossEntityJoin(node, ctx);
+    case 'SelfJoinEnrich':    return executeSelfJoinEnrich(node as SelfJoinEnrich, ctx);
   }
 }
 
@@ -296,6 +300,130 @@ async function executeSemiJoin(node: SemiJoin, ctx: ExecContext): Promise<PlanRe
   });
   recordTiming(ctx, 'SemiJoin', Date.now() - t);
 
+  return { kind: 'rows', rows };
+}
+
+async function executeCrossEntityJoin(node: CrossEntityJoin, ctx: ExecContext): Promise<PlanResult> {
+  // Execute source and lookup in parallel
+  const [sourceResult, lookupResult] = await Promise.all([
+    executeNode(node.source, ctx),
+    executeNode(node.lookup, ctx),
+  ]);
+
+  if (sourceResult.kind !== 'rows') throw new Error('CrossEntityJoin source must produce rows');
+  if (lookupResult.kind !== 'rows') throw new Error('CrossEntityJoin lookup must produce rows');
+
+  const t = Date.now();
+
+  // Check for count-aggregation mode: fieldMap = {'*': outputVarName}
+  if ('*' in node.fieldMap) {
+    const outputVar = node.fieldMap['*'];
+
+    // Build count map: group lookup rows by lookupKey, count per group
+    const countMap = new Map<string, number>();
+    for (const row of lookupResult.rows) {
+      const key = row[node.lookupKey];
+      if (key != null) {
+        const k = String(key);
+        countMap.set(k, (countMap.get(k) || 0) + 1);
+      }
+    }
+
+    // Merge counts into source rows
+    for (const row of sourceResult.rows) {
+      const sk = row[node.sourceKey];
+      row[outputVar] = sk != null ? (countMap.get(String(sk)) || 0) : 0;
+    }
+  } else {
+    // Direct join mode: build lookup map and merge fields
+    const lookupMap = new Map<string, Row>();
+    for (const row of lookupResult.rows) {
+      const key = row[node.lookupKey];
+      if (key != null) {
+        lookupMap.set(String(key), row);
+      }
+    }
+
+    for (const row of sourceResult.rows) {
+      const fk = row[node.sourceKey];
+      if (fk != null) {
+        const lookupRow = lookupMap.get(String(fk));
+        if (lookupRow) {
+          for (const [lookupField, outputField] of Object.entries(node.fieldMap)) {
+            row[outputField] = lookupRow[lookupField];
+          }
+        } else {
+          for (const outputField of Object.values(node.fieldMap)) {
+            row[outputField] = null;
+          }
+        }
+      } else {
+        for (const outputField of Object.values(node.fieldMap)) {
+          row[outputField] = null;
+        }
+      }
+    }
+  }
+
+  recordTiming(ctx, 'CrossEntityJoin', Date.now() - t);
+  return { kind: 'rows', rows: sourceResult.rows };
+}
+
+async function executeSelfJoinEnrich(node: SelfJoinEnrich, ctx: ExecContext): Promise<PlanResult> {
+  const sourceResult = await executeNode(node.source, ctx);
+  if (sourceResult.kind !== 'rows') throw new Error('SelfJoinEnrich source must produce rows');
+
+  const t = Date.now();
+  const rows = sourceResult.rows;
+  const isCount = node.aggregation === 'count';
+
+  if (isCount) {
+    // Count aggregation: count rows grouped by lookupKey, store as outputVar on sourceKey-matching rows
+    const outputVar = node.fieldMap['*'];
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      const groupKey = row[node.lookupKey];
+      if (groupKey != null) {
+        const key = String(groupKey);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+    }
+    for (const row of rows) {
+      const fk = row[node.sourceKey];
+      row[outputVar] = fk != null ? (counts.get(String(fk)) || 0) : 0;
+    }
+  } else {
+    // Direct lookup: build index from lookupKey → row, then enrich via sourceKey
+    const lookupMap = new Map<string, Row>();
+    for (const row of rows) {
+      const key = row[node.lookupKey];
+      if (key != null) {
+        lookupMap.set(String(key), row);
+      }
+    }
+
+    for (const row of rows) {
+      const fk = row[node.sourceKey];
+      if (fk != null) {
+        const lookupRow = lookupMap.get(String(fk));
+        if (lookupRow) {
+          for (const [lookupField, outputField] of Object.entries(node.fieldMap)) {
+            row[outputField] = lookupRow[lookupField];
+          }
+        } else {
+          for (const outputField of Object.values(node.fieldMap)) {
+            row[outputField] = null;
+          }
+        }
+      } else {
+        for (const outputField of Object.values(node.fieldMap)) {
+          row[outputField] = null;
+        }
+      }
+    }
+  }
+
+  recordTiming(ctx, 'SelfJoinEnrich', Date.now() - t);
   return { kind: 'rows', rows };
 }
 

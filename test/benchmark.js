@@ -21,6 +21,7 @@ import { lowerExpr } from '../dist/tools/query/lower.js';
 import { optimize, planPathLabel } from '../dist/tools/query/planTree.js';
 import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
+import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
 import { readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -88,9 +89,9 @@ const testCases = [
     },
   },
   {
-    name: 'Projects with folder (two-phase)',
+    name: 'Projects with folder (cross-join)',
     category: 'project-list',
-    expected: 'two-phase',
+    expected: 'broad',
     params: {
       entity: 'projects',
       select: ['name', 'status', 'folderName'],
@@ -245,7 +246,7 @@ const testCases = [
   {
     name: 'All folders',
     category: 'folders',
-    expected: 'two-phase',
+    expected: 'broad',
     params: {
       entity: 'folders',
       select: ['name', 'projectCount'],
@@ -330,9 +331,9 @@ const testCases = [
     },
   },
   {
-    name: 'Tags with parent (two-phase)',
+    name: 'Tags with parent (self-join)',
     category: 'tags-entity',
-    expected: 'two-phase',
+    expected: 'broad',
     params: {
       entity: 'tags',
       select: ['name', 'parentName', 'availableTaskCount'],
@@ -355,7 +356,7 @@ function getPlannedPath(params) {
   try {
     const ast = params.where != null ? lowerExpr(params.where) : true;
     const tree = buildPlanTree(ast, params.entity, params.select, params.includeCompleted ?? false);
-    const optimized = optimize(tree, [tagSemiJoinPass, normalizePass]);
+    const optimized = optimize(tree, [tagSemiJoinPass, crossEntityJoinPass, normalizePass]);
     return planPathLabel(optimized);
   } catch {
     return '?';

@@ -8,6 +8,7 @@
 import type { LoweredExpr } from './fold.js';
 import type { EntityType } from './variables.js';
 import type { Row } from './backends/nodeEval.js';
+import type { SelfJoinEnrich } from './optimizations/selfJoinElimination.js';
 
 // ── Result Types ─────────────────────────────────────────────────────────
 
@@ -25,7 +26,17 @@ export interface BulkScan {
   columns: string[];
   projectScope?: LoweredExpr;
   includeCompleted: boolean;
+  /** Pushed-down Apple Events .whose() predicates (optional). */
+  whoseFilters?: WhoseFilter[];
 }
+
+/**
+ * A predicate expressible as an Apple Events .whose() clause.
+ * These are pushed down from Filter nodes to reduce the scan set.
+ */
+export type WhoseFilter =
+  | { type: 'eq'; property: string; value: string | number | boolean }
+  | { type: 'contains'; property: string; value: string };
 
 export interface OmniJSScan {
   kind: 'OmniJSScan';
@@ -92,12 +103,26 @@ export interface Project {
   fields: string[];
 }
 
-// Binary node
+// Binary nodes
 
 export interface SemiJoin {
   kind: 'SemiJoin';
   source: PlanNode;
   lookup: PlanNode;
+}
+
+export interface CrossEntityJoin {
+  kind: 'CrossEntityJoin';
+  /** Source rows (e.g., projects with folderId) */
+  source: PlanNode;
+  /** Lookup rows (e.g., folders with id + name) */
+  lookup: PlanNode;
+  /** Field in source rows containing the foreign key (e.g., 'folderId') */
+  sourceKey: string;
+  /** Field in lookup rows to match against (e.g., 'id') */
+  lookupKey: string;
+  /** Map of lookup field → output field name (e.g., {'name': 'folderName'}) */
+  fieldMap: Record<string, string>;
 }
 
 // Discriminated union
@@ -111,7 +136,9 @@ export type PlanNode =
   | Sort
   | Limit
   | Project
-  | SemiJoin;
+  | SemiJoin
+  | CrossEntityJoin
+  | SelfJoinEnrich;
 
 // ── Tree Walk ────────────────────────────────────────────────────────────
 
@@ -155,13 +182,25 @@ export function walkPlan(node: PlanNode, fn: (n: PlanNode) => PlanNode): PlanNod
       rebuilt = { ...node, source: walkPlan(node.source, fn) };
       break;
 
-    // Binary node
+    // Binary nodes
     case 'SemiJoin':
       rebuilt = {
         ...node,
         source: walkPlan(node.source, fn),
         lookup: walkPlan(node.lookup, fn),
       };
+      break;
+    case 'CrossEntityJoin':
+      rebuilt = {
+        ...node,
+        source: walkPlan(node.source, fn),
+        lookup: walkPlan(node.lookup, fn),
+      };
+      break;
+
+    // Unary self-join node (no separate lookup child)
+    case 'SelfJoinEnrich':
+      rebuilt = { ...node, source: walkPlan(node.source, fn) };
       break;
   }
 
@@ -205,6 +244,8 @@ export function planPathLabel(node: PlanNode): string {
     case 'Sort':
     case 'Limit':
     case 'Project':
+    case 'CrossEntityJoin':
+    case 'SelfJoinEnrich':
       return planPathLabel(node.source);
     case 'PerItemEnrich':
       return planPathLabel(node.source) === 'project-scoped' ? 'project-scoped' : 'two-phase';

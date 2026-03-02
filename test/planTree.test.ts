@@ -5,6 +5,7 @@ import { buildPlanTree } from '../dist/tools/query/planner.js';
 import { optimize, walkPlan, planPathLabel } from '../dist/tools/query/planTree.js';
 import { tagSemiJoinPass, extractTagPredicates } from '../dist/tools/query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
+import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
 import type { LoweredExpr } from '../dist/tools/query/fold.js';
 import type { PlanNode } from '../dist/tools/query/planTree.js';
 
@@ -480,5 +481,162 @@ describe('planPathLabel after optimization', () => {
     const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
     const rewritten = optimize(tree, [tagSemiJoinPass, normalizePass]);
     assert.equal(planPathLabel(rewritten), 'semijoin');
+  });
+});
+
+// ── Self-Join Elimination Pass ───────────────────────────────────────────
+
+import { selfJoinEliminationPass } from '../dist/tools/query/optimizations/selfJoinElimination.js';
+
+describe('selfJoinEliminationPass', () => {
+  it('rewrites tags.parentName CrossEntityJoin → SelfJoinEnrich', () => {
+    const tree = plan(undefined, 'tags', ['name', 'parentName']);
+    const withCEJ = crossEntityJoinPass(tree);
+    assert.ok(findNode(withCEJ, 'CrossEntityJoin'), 'should have CrossEntityJoin before');
+
+    const rewritten = selfJoinEliminationPass(withCEJ);
+    assert.ok(findNode(rewritten, 'SelfJoinEnrich'), 'should have SelfJoinEnrich');
+    assert.equal(findNode(rewritten, 'CrossEntityJoin'), null, 'CrossEntityJoin should be gone');
+  });
+
+  it('does NOT rewrite cross-entity joins (projects.folderName)', () => {
+    const tree = plan(undefined, 'projects', ['name', 'folderName']);
+    const withCEJ = crossEntityJoinPass(tree);
+    assert.ok(findNode(withCEJ, 'CrossEntityJoin'), 'should have CrossEntityJoin');
+
+    const rewritten = selfJoinEliminationPass(withCEJ);
+    assert.ok(findNode(rewritten, 'CrossEntityJoin'), 'CrossEntityJoin should remain');
+    assert.equal(findNode(rewritten, 'SelfJoinEnrich'), null, 'should NOT have SelfJoinEnrich');
+  });
+
+  it('SelfJoinEnrich has correct sourceKey/lookupKey/fieldMap', () => {
+    const tree = plan(undefined, 'tags', ['name', 'parentName']);
+    const withCEJ = crossEntityJoinPass(tree);
+    const rewritten = selfJoinEliminationPass(withCEJ);
+    const sje = findNode(rewritten, 'SelfJoinEnrich');
+    assert.ok(sje && sje.kind === 'SelfJoinEnrich');
+    assert.equal(sje.sourceKey, 'parentId');
+    assert.equal(sje.lookupKey, 'id');
+    assert.deepEqual(sje.fieldMap, { name: 'parentName' });
+    assert.equal(sje.aggregation, null);
+  });
+
+  it('ensures only one BulkScan remains (no redundant lookup)', () => {
+    const tree = plan(undefined, 'tags', ['name', 'parentName']);
+    const withCEJ = crossEntityJoinPass(tree);
+    const rewritten = selfJoinEliminationPass(withCEJ);
+    const scanCount = countNodes(rewritten, 'BulkScan');
+    assert.equal(scanCount, 1, 'should have exactly 1 BulkScan');
+  });
+
+  it('preserves plan path label after rewrite', () => {
+    const tree = plan(undefined, 'tags', ['name', 'parentName']);
+    const rewritten = optimize(tree, [crossEntityJoinPass, selfJoinEliminationPass, normalizePass]);
+    assert.equal(planPathLabel(rewritten), 'broad');
+  });
+});
+
+// ── Cross-Entity Join Pass ───────────────────────────────────────────────
+
+describe('crossEntityJoinPass', () => {
+  it('rewrites projects.folderName → CrossEntityJoin', () => {
+    // projects with select: [name, status, folderName]
+    // folderName is per-item, triggers two-phase → PerItemEnrich
+    const tree = plan(undefined, 'projects', ['name', 'status', 'folderName']);
+    assert.ok(findNode(tree, 'PerItemEnrich'), 'original should have PerItemEnrich');
+
+    const rewritten = crossEntityJoinPass(tree);
+    const cej = findNode(rewritten, 'CrossEntityJoin');
+    assert.ok(cej, 'should have CrossEntityJoin');
+    assert.ok(cej!.kind === 'CrossEntityJoin');
+    assert.equal(cej!.sourceKey, 'folderId');
+    assert.equal(cej!.lookupKey, 'id');
+    assert.deepEqual(cej!.fieldMap, { name: 'folderName' });
+  });
+
+  it('removes PerItemEnrich when all vars resolved by join', () => {
+    const tree = plan(undefined, 'projects', ['name', 'folderName']);
+    const rewritten = optimize(tree, [crossEntityJoinPass, normalizePass]);
+    assert.equal(findNode(rewritten, 'PerItemEnrich'), null, 'PerItemEnrich should be gone');
+    assert.ok(findNode(rewritten, 'CrossEntityJoin'), 'should have CrossEntityJoin');
+  });
+
+  it('ensures folderId column added to BulkScan for projects.folderName', () => {
+    const tree = plan(undefined, 'projects', ['name', 'folderName']);
+    const rewritten = crossEntityJoinPass(tree);
+    const scan = findNode(rewritten, 'BulkScan');
+    // There should be at least one BulkScan with folderId
+    let found = false;
+    walkPlan(rewritten, n => {
+      if (n.kind === 'BulkScan' && n.entity === 'projects' && n.columns.includes('folderId')) {
+        found = true;
+      }
+      return n;
+    });
+    assert.ok(found, 'projects BulkScan should include folderId column');
+  });
+
+  it('rewrites folders.projectCount → CrossEntityJoin with count aggregation', () => {
+    const tree = plan(undefined, 'folders', ['name', 'projectCount']);
+    assert.ok(findNode(tree, 'PerItemEnrich'), 'original should have PerItemEnrich');
+
+    const rewritten = crossEntityJoinPass(tree);
+    const cej = findNode(rewritten, 'CrossEntityJoin');
+    assert.ok(cej, 'should have CrossEntityJoin');
+    assert.ok(cej!.kind === 'CrossEntityJoin');
+    assert.equal(cej!.lookupKey, 'folderId');
+    assert.deepEqual(cej!.fieldMap, { '*': 'projectCount' });
+  });
+
+  it('rewrites tags.parentName → CrossEntityJoin self-join', () => {
+    const tree = plan(undefined, 'tags', ['name', 'parentName', 'availableTaskCount']);
+    assert.ok(findNode(tree, 'PerItemEnrich'), 'original should have PerItemEnrich');
+
+    const rewritten = crossEntityJoinPass(tree);
+    const cej = findNode(rewritten, 'CrossEntityJoin');
+    assert.ok(cej, 'should have CrossEntityJoin');
+    assert.ok(cej!.kind === 'CrossEntityJoin');
+    assert.equal(cej!.sourceKey, 'parentId');
+    assert.equal(cej!.lookupKey, 'id');
+    assert.deepEqual(cej!.fieldMap, { name: 'parentName' });
+  });
+
+  it('keeps PerItemEnrich for remaining non-resolvable per-item vars', () => {
+    // projects with folderName (resolvable) + note (expensive, not resolvable)
+    const tree = plan(undefined, 'projects', ['name', 'folderName', 'note']);
+    const rewritten = crossEntityJoinPass(tree);
+    assert.ok(findNode(rewritten, 'CrossEntityJoin'), 'should have CrossEntityJoin');
+    const enrich = findNode(rewritten, 'PerItemEnrich');
+    assert.ok(enrich && enrich.kind === 'PerItemEnrich', 'should still have PerItemEnrich');
+    assert.ok(!enrich.perItemVars.has('folderName'), 'folderName should be removed');
+    assert.ok(enrich.perItemVars.has('note'), 'note should remain');
+  });
+
+  it('does not rewrite tasks entity (no joins registered)', () => {
+    // Tasks with status (per-item) — no cross-entity join available
+    const tree = plan({ eq: [{ var: 'status' }, 'Available'] }, 'tasks');
+    const rewritten = crossEntityJoinPass(tree);
+    assert.equal(findNode(rewritten, 'CrossEntityJoin'), null, 'should NOT have CrossEntityJoin');
+  });
+
+  it('lookup BulkScan for folders includes id and name', () => {
+    const tree = plan(undefined, 'projects', ['name', 'folderName']);
+    const rewritten = crossEntityJoinPass(tree);
+    // Find the folders BulkScan (the lookup)
+    let folderScan: PlanNode | null = null;
+    walkPlan(rewritten, n => {
+      if (n.kind === 'BulkScan' && n.entity === 'folders') folderScan = n;
+      return n;
+    });
+    assert.ok(folderScan && folderScan.kind === 'BulkScan');
+    assert.ok(folderScan.columns.includes('id'), 'should read id');
+    assert.ok(folderScan.columns.includes('name'), 'should read name');
+  });
+
+  it('path label changes from two-phase to broad after rewrite', () => {
+    const tree = plan(undefined, 'projects', ['name', 'status', 'folderName']);
+    assert.equal(planPathLabel(tree), 'two-phase');
+    const rewritten = optimize(tree, [crossEntityJoinPass, normalizePass]);
+    assert.equal(planPathLabel(rewritten), 'broad');
   });
 });

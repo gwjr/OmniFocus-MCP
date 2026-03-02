@@ -139,6 +139,9 @@ export const tagVars: VarRegistry = {
   availableTaskCount: num(v  => `(${v}.availableTasks ? ${v}.availableTasks.length : 0)`,                         'availableTaskCount','availableTaskCount',   'easy'),
   remainingTaskCount: num(v  => `(${v}.remainingTasks ? ${v}.remainingTasks.length : 0)`,                         'remainingTaskCount','remainingTaskCount',   'easy'),
 
+  // chain: chained bulk via container.id() (parent tag ID)
+  parentId:           str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                                'parentId',          'container',            'chain'),
+
   // per-item: requires per-item access
   parentName:         str(v  => `(${v}.parent ? ${v}.parent.name : null)`,                                        'parentName',        null,                   'per-item'),
 
