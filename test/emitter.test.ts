@@ -295,18 +295,17 @@ describe('compileQuery', () => {
     assert.equal(entry.resultType, 'rows');
   });
 
-  it('SemiJoin (BulkScan + MembershipScan) → batchScript, 2 slots', () => {
-    const tree = optimizedPlan({ contains: [{ var: 'tags' }, 'waiting'] });
+  it('CrossEntityJoin (2 BulkScans from different entities) → batchScript, 2 slots', () => {
+    const tree = optimizedPlan(undefined, 'projects', ['name', 'status', 'folderName']);
     const compiled = compileQuery(tree, emitter);
 
     assert.ok(compiled.batchScript, 'should have batch script');
     assert.equal(compiled.standaloneScript, null, 'no standalone for multi-leaf');
     assert.equal(compiled.slotMap.size, 2, 'should have 2 slots');
 
-    // Check slot types
+    // Check slot types — both BulkScan but for different entities
     const entries = [...compiled.slotMap.entries()];
-    const kinds = entries.map(([n]) => n.kind).sort();
-    assert.deepEqual(kinds, ['BulkScan', 'MembershipScan']);
+    assert.ok(entries.every(([n]) => n.kind === 'BulkScan'), 'both should be BulkScan');
   });
 
   it('OmniJS-only (0 JXA leaves) → no scripts, empty slotMap', () => {
@@ -319,15 +318,19 @@ describe('compileQuery', () => {
   });
 
   it('does not collect leaves inside PerItemEnrich fallback', () => {
-    // A two-phase query with per-item vars that doesn't get rewritten by semi-join
-    // (e.g., status is per-item, no tags involved)
-    const tree = optimizedPlan({ eq: [{ var: 'status' }, 'Available'] });
+    // projects.folderName is per-item → two-phase with PerItemEnrich
+    // crossEntityJoinPass resolves it, but raw plan (before optimization) has PerItemEnrich
+    const rawTree = plan(
+      { contains: [{ var: 'name' }, 'Legal'] },
+      'projects',
+      ['name', 'folderName']
+    );
 
     // Should have PerItemEnrich with BulkScan source and OmniJSScan fallback
-    const enrich = findNode(tree, 'PerItemEnrich');
+    const enrich = findNode(rawTree, 'PerItemEnrich');
     assert.ok(enrich, 'should have PerItemEnrich');
 
-    const compiled = compileQuery(tree, emitter);
+    const compiled = compileQuery(rawTree, emitter);
 
     // The source BulkScan should be in slotMap
     assert.equal(compiled.slotMap.size, 1, 'only source BulkScan, not fallback');
@@ -337,17 +340,6 @@ describe('compileQuery', () => {
     // Should be standalone (only 1 leaf)
     assert.ok(compiled.standaloneScript, 'should have standalone script');
     assert.equal(compiled.batchScript, null, 'no batch needed');
-  });
-
-  it('CrossEntityJoin (2 BulkScans) → batchScript, 2 slots', () => {
-    const tree = optimizedPlan(undefined, 'projects', ['name', 'folderName']);
-    const compiled = compileQuery(tree, emitter);
-
-    assert.ok(compiled.batchScript, 'should have batch script');
-    assert.equal(compiled.slotMap.size, 2, 'should have 2 slots');
-
-    const entries = [...compiled.slotMap.entries()];
-    assert.ok(entries.every(([n]) => n.kind === 'BulkScan'), 'both should be BulkScan');
   });
 
   it('SelfJoinEnrich (1 BulkScan) → standaloneScript, 1 slot', () => {
@@ -360,7 +352,8 @@ describe('compileQuery', () => {
   });
 
   it('batch script is valid JXA structure', () => {
-    const tree = optimizedPlan({ contains: [{ var: 'tags' }, 'waiting'] });
+    // CrossEntityJoin produces a multi-leaf plan (2 BulkScans)
+    const tree = optimizedPlan(undefined, 'projects', ['name', 'folderName']);
     const compiled = compileQuery(tree, emitter);
 
     assert.ok(compiled.batchScript);

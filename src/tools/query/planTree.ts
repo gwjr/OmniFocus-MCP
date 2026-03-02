@@ -28,6 +28,8 @@ export interface BulkScan {
   includeCompleted: boolean;
   /** Pushed-down Apple Events .whose() predicates (optional). */
   whoseFilters?: WhoseFilter[];
+  /** Computed vars to derive in Node after scan (e.g., tasks.status from bulk booleans). */
+  computedVars?: Set<string>;
 }
 
 /**

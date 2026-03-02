@@ -14,7 +14,7 @@ import { compileWhere, CompileError } from './backends/jxaCompiler.js';
 import { compileNodePredicate, type Row, type RowFn } from './backends/nodeEval.js';
 import { lowerExpr } from './lower.js';
 import type { LoweredExpr } from './fold.js';
-import { getVarRegistry, type EntityType } from './variables.js';
+import { getVarRegistry, computedVarDeps, type EntityType } from './variables.js';
 import {
   generateBulkReadFromColumns,
   generatePerItemReadScript,
@@ -145,7 +145,7 @@ async function executeBulkScan(node: BulkScan, ctx: ExecContext): Promise<PlanRe
   if (slot && ctx.batchResults) {
     const rawResult = ctx.batchResults[slot.index];
     recordTiming(ctx, 'BulkScan(cached)', 0);
-    return parseBulkScanResult(rawResult);
+    return parseBulkScanResult(rawResult, node);
   }
 
   const t = Date.now();
@@ -153,10 +153,10 @@ async function executeBulkScan(node: BulkScan, ctx: ExecContext): Promise<PlanRe
   const rawResult = await executeJXA(script);
   recordTiming(ctx, 'BulkScan', Date.now() - t);
 
-  return parseBulkScanResult(rawResult);
+  return parseBulkScanResult(rawResult, node);
 }
 
-function parseBulkScanResult(rawResult: unknown): PlanResult {
+function parseBulkScanResult(rawResult: unknown, node: BulkScan): PlanResult {
   if (rawResult && typeof rawResult === 'object' && !Array.isArray(rawResult) && 'error' in rawResult) {
     throw new Error(`Bulk read error: ${(rawResult as any).error}`);
   }
@@ -166,8 +166,63 @@ function parseBulkScanResult(rawResult: unknown): PlanResult {
     throw new Error('Unexpected bulk read result format');
   }
 
+  // Derive computed vars after scan
+  if (node.computedVars && node.computedVars.size > 0) {
+    deriveComputedVars(rows, node.entity, node.computedVars);
+  }
+
   return { kind: 'rows', rows };
 }
+
+// ── Computed Var Derivation ──────────────────────────────────────────────
+
+function deriveComputedVars(rows: Row[], entity: EntityType, computedVars: Set<string>): void {
+  const derivers = computedVarDerivers[entity];
+  if (!derivers) return;
+
+  for (const varName of computedVars) {
+    const derive = derivers[varName];
+    if (!derive) continue;
+    for (const row of rows) {
+      row[varName] = derive(row);
+    }
+  }
+}
+
+const DUE_SOON_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function deriveTaskStatus(row: Row): string {
+  if (row.completed) return 'Completed';
+  if (row.dropped) return 'Dropped';
+  if (row.blocked) return 'Blocked';
+  if (row.dueDate) {
+    const due = new Date(row.dueDate as string).getTime();
+    const now = Date.now();
+    if (due < now) return 'Overdue';
+    if (due < now + DUE_SOON_MS) return 'DueSoon';
+  }
+  return 'Next';
+}
+
+function deriveTaskHasChildren(row: Row): boolean {
+  return (row.childCount as number) > 0;
+}
+
+function deriveFolderStatus(row: Row): string {
+  return row.hidden ? 'Dropped' : 'Active';
+}
+
+type RowDeriver = (row: Row) => unknown;
+
+const computedVarDerivers: Record<string, Record<string, RowDeriver>> = {
+  tasks: {
+    status: deriveTaskStatus,
+    hasChildren: deriveTaskHasChildren,
+  },
+  folders: {
+    status: deriveFolderStatus,
+  },
+};
 
 async function executeOmniJSScan(node: OmniJSScan, ctx: ExecContext): Promise<PlanResult> {
   const t = Date.now();

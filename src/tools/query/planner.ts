@@ -6,180 +6,18 @@
  */
 
 import { type LoweredExpr } from './fold.js';
-import { getVarRegistry, type EntityType, type VarDef } from './variables.js';
+import { getVarRegistry, computedVarDeps, type EntityType, type VarDef } from './variables.js';
 import { collectVarsFromAst } from './backends/varCollector.js';
-import { lowerExpr } from './lower.js';
 import type { PlanNode } from './planTree.js';
 
-// ── Types ───────────────────────────────────────────────────────────────
-
-export type ExecutionPath = 'project-scoped' | 'broad' | 'two-phase' | 'omnijs-fallback';
-
-export interface ExecutionPlan {
-  path: ExecutionPath;
-  /** Project scope predicate (lowered AST), if path is 'project-scoped' */
-  projectScope?: LoweredExpr;
-  /** Filter AST (full filter, literal(true) if none) */
-  filterAst: LoweredExpr;
-  /** All vars referenced in the filter */
-  neededVars: Set<string>;
-  /** Vars to bulk-read in phase 1 */
-  bulkVars: Set<string>;
-  /** Vars to read per-item in phase 2 (two-phase only) */
-  perItemVars?: Set<string>;
-  /** Vars to stub as true in phase 1 eval (two-phase only) */
-  stubVars?: Set<string>;
-  /** Entity type */
-  entity: EntityType;
-}
-
-// ── Public API ──────────────────────────────────────────────────────────
-
-/**
- * Plan the execution strategy for a query.
- * Accepts compact syntax where clause and entity type.
- */
-export function planExecution(
-  where: unknown,
-  entity: EntityType,
-  selectVars?: string[]
-): ExecutionPlan {
-  const ast: LoweredExpr = where != null ? lowerExpr(where) : true;
-  return planFromAst(ast, entity, selectVars);
-}
-
-/**
- * Plan from a pre-lowered AST.
- */
-export function planFromAst(
-  ast: LoweredExpr,
-  entity: EntityType,
-  selectVars?: string[]
-): ExecutionPlan {
-  // Rule 0: Perspectives → OmniJS fallback (no Apple Events bulk properties)
-  if (entity === 'perspectives') {
-    return fallbackPlan(ast, entity);
-  }
-
-  // Rule 1: Tags with any container → OmniJS fallback (structural parent-chain traversal needed)
-  if (entity === 'tags' && containsAnyContainer(ast)) {
-    return fallbackPlan(ast, entity);
-  }
-
-  // Rule 2: folder container at any depth → OmniJS fallback
-  if (containsFolderContainer(ast)) {
-    return fallbackPlan(ast, entity);
-  }
-
-  // Collect referenced variables
-  const neededVars = collectVarsFromAst(ast, entity);
-  const registry = getVarRegistry(entity);
-
-  // Check var costs
-  const costMap = classifyVars(neededVars, registry);
-
-  // Rule 3: expensive vars in the where clause → OmniJS fallback
-  if (costMap.expensive.size > 0) {
-    return fallbackPlan(ast, entity);
-  }
-
-  // Try to extract a project-scoped container
-  const extraction = extractContainerScope(ast);
-
-  // Rule 4: container present but not extractable → OmniJS fallback
-  if (extraction === null && containsAnyContainer(ast)) {
-    return fallbackPlan(ast, entity);
-  }
-
-  // Compute bulk vars: all easy + chain vars
-  const bulkVars = new Set([...costMap.easy, ...costMap.chain]);
-
-  // Collect per-item vars needed: from where + from select
-  const perItemVars = new Set(costMap.perItem);
-
-  // Add select vars to appropriate sets
-  if (selectVars) {
-    for (const v of selectVars) {
-      const def = registry[v];
-      if (!def) continue;
-      if (def.cost === 'easy' || def.cost === 'chain') {
-        bulkVars.add(v);
-      } else if (def.cost === 'per-item' || def.cost === 'expensive') {
-        perItemVars.add(v);
-      }
-    }
-  }
-
-  // Determine if we need two-phase (per-item vars in where OR in select)
-  const needsTwoPhase = perItemVars.size > 0;
-
-  if (needsTwoPhase) {
-    // Two-phase: stub per-item where vars in phase 1, load all per-item in phase 2
-    // Only stub vars that are actually in the where clause (not select-only vars)
-    const stubVars = new Set(costMap.perItem);
-
-    if (extraction) {
-      return {
-        path: 'project-scoped',
-        projectScope: extraction.scope,
-        filterAst: extraction.remainder,
-        neededVars,
-        bulkVars,
-        perItemVars,
-        stubVars,
-        entity
-      };
-    }
-
-    return {
-      path: 'two-phase',
-      filterAst: ast,
-      neededVars,
-      bulkVars,
-      perItemVars,
-      stubVars,
-      entity
-    };
-  }
-
-  // All easy/chain vars — broad or project-scoped
-  if (extraction) {
-    return {
-      path: 'project-scoped',
-      projectScope: extraction.scope,
-      filterAst: extraction.remainder,
-      neededVars,
-      bulkVars,
-      entity
-    };
-  }
-
-  return {
-    path: 'broad',
-    filterAst: ast,
-    neededVars,
-    bulkVars,
-    entity
-  };
-}
-
 // ── Helpers ─────────────────────────────────────────────────────────────
-
-function fallbackPlan(ast: LoweredExpr, entity: EntityType): ExecutionPlan {
-  return {
-    path: 'omnijs-fallback',
-    filterAst: ast,
-    neededVars: new Set(),
-    bulkVars: new Set(),
-    entity
-  };
-}
 
 interface CostClassification {
   easy: Set<string>;
   chain: Set<string>;
   perItem: Set<string>;
   expensive: Set<string>;
+  computed: Set<string>;
 }
 
 function classifyVars(vars: Set<string>, registry: Record<string, VarDef>): CostClassification {
@@ -187,7 +25,8 @@ function classifyVars(vars: Set<string>, registry: Record<string, VarDef>): Cost
     easy: new Set(),
     chain: new Set(),
     perItem: new Set(),
-    expensive: new Set()
+    expensive: new Set(),
+    computed: new Set(),
   };
 
   for (const name of vars) {
@@ -202,10 +41,33 @@ function classifyVars(vars: Set<string>, registry: Record<string, VarDef>): Cost
       case 'chain': result.chain.add(name); break;
       case 'per-item': result.perItem.add(name); break;
       case 'expensive': result.expensive.add(name); break;
+      case 'computed': result.computed.add(name); break;
     }
   }
 
   return result;
+}
+
+/**
+ * Expand computed var dependencies into the bulk var set.
+ * Returns the full set of computed vars (from where + select).
+ */
+function expandComputedDeps(
+  allComputed: Set<string>,
+  entity: EntityType,
+  bulkVarNames: Set<string>,
+  registry: Record<string, VarDef>
+): void {
+  const entityDeps = computedVarDeps[entity];
+  if (!entityDeps) return;
+
+  for (const name of allComputed) {
+    const deps = entityDeps[name];
+    if (!deps) continue;
+    for (const dep of deps) {
+      bulkVarNames.add(dep);
+    }
+  }
 }
 
 // ── Plan Tree Builder ────────────────────────────────────────────────────
@@ -258,6 +120,7 @@ export function buildPlanTree(
   // Compute bulk columns (nodeKeys)
   const bulkVarNames = new Set([...costMap.easy, ...costMap.chain]);
   const perItemVars = new Set(costMap.perItem);
+  const allComputed = new Set(costMap.computed);
 
   // Add select vars
   if (selectVars) {
@@ -266,11 +129,16 @@ export function buildPlanTree(
       if (!def) continue;
       if (def.cost === 'easy' || def.cost === 'chain') {
         bulkVarNames.add(v);
+      } else if (def.cost === 'computed') {
+        allComputed.add(v);
       } else if (def.cost === 'per-item' || def.cost === 'expensive') {
         perItemVars.add(v);
       }
     }
   }
+
+  // Expand computed var dependencies into bulk vars
+  expandComputedDeps(allComputed, entity, bulkVarNames, registry);
 
   const needsTwoPhase = perItemVars.size > 0;
 
@@ -293,6 +161,7 @@ export function buildPlanTree(
     columns,
     projectScope,
     includeCompleted,
+    computedVars: allComputed.size > 0 ? allComputed : undefined,
   };
 
   if (!needsTwoPhase) {

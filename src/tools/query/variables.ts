@@ -14,10 +14,27 @@ export interface VarDef {
   /** JXA Apple Events bulk property name, or null if per-item only */
   bulk: string | null;
   /** Read cost classification */
-  cost: 'easy' | 'chain' | 'per-item' | 'expensive';
+  cost: 'easy' | 'chain' | 'per-item' | 'expensive' | 'computed';
 }
 
+export type VarCost = VarDef['cost'];
+
 export type VarRegistry = Record<string, VarDef>;
+
+/**
+ * Dependency map for computed variables.
+ * Key: entity name. Value: map of computed var name → list of dependency var names.
+ * The planner adds dependencies to BulkScan columns so the executor can derive values.
+ */
+export const computedVarDeps: Record<string, Record<string, string[]>> = {
+  tasks: {
+    status: ['completed', 'dropped', 'blocked', 'dueDate'],
+    hasChildren: ['childCount'],
+  },
+  folders: {
+    status: ['hidden'],
+  },
+};
 
 // Helpers for concise registry definitions
 const str  = (accessor: (v: string) => string, nodeKey: string, bulk: string | null, cost: VarDef['cost']): VarDef =>
@@ -58,14 +75,18 @@ export const taskVars: VarRegistry = {
   projectName:          str(v  => `(${v}.containingProject ? ${v}.containingProject.name || "" : "")`,        'projectName',          'containingProject',     'chain'),
   projectId:            str(v  => `(${v}.containingProject ? ${v}.containingProject.id.primaryKey : null)`,   'projectId',            'containingProject',     'chain'),
 
-  // per-item: requires per-item access
-  status:               enm(v  => `taskStatusMap[${v}.taskStatus]`,                                           'status',               null,                    'per-item'),
-  tags:                 arr(v  => `${v}.tags.map(function(t){return t.name.toLowerCase();})`,                  'tags',                 null,                    'per-item'),
-  inInbox:              bool(v => `${v}.inInbox`,                                                             'inInbox',              null,                    'per-item'),
-  sequential:           bool(v => `${v}.sequential`,                                                          'sequential',           null,                    'per-item'),
-  hasChildren:          bool(v => `(${v}.children ? ${v}.children.length > 0 : false)`,                       'hasChildren',          null,                    'per-item'),
-  childCount:           num(v  => `(${v}.children ? ${v}.children.length : 0)`,                               'childCount',           null,                    'per-item'),
-  parentId:             str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                         'parentId',             null,                    'per-item'),
+  // easy: reclassified from per-item (verified bulk Apple Events accessors)
+  inInbox:              bool(v => `${v}.inInbox`,                                                             'inInbox',              'inInbox',               'easy'),
+  sequential:           bool(v => `${v}.sequential`,                                                          'sequential',           'sequential',            'easy'),
+  childCount:           num(v  => `(${v}.children ? ${v}.children.length : 0)`,                               'childCount',           'numberOfTasks',         'easy'),
+
+  // chain: reclassified from per-item (chained bulk Apple Events)
+  parentId:             str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                         'parentId',             'parentTask',            'chain'),
+  tags:                 arr(v  => `${v}.tags.map(function(t){return t.name.toLowerCase();})`,                  'tags',                 'tags',                  'chain'),
+
+  // computed: derived in Node from other bulk-readable properties
+  status:               enm(v  => `taskStatusMap[${v}.taskStatus]`,                                           'status',               null,                    'computed'),
+  hasChildren:          bool(v => `(${v}.children ? ${v}.children.length > 0 : false)`,                       'hasChildren',          null,                    'computed'),
 
   // expensive
   note:                 str(v  => `(${v}.note || "")`,                                                        'note',                 null,                    'expensive'),
@@ -112,13 +133,16 @@ export const folderVars: VarRegistry = {
   // easy: bulk Apple Events readable
   id:             str(v  => `${v}.id.primaryKey`,                                                               'id',               'id',                    'easy'),
   name:           str(v  => `(${v}.name || "")`,                                                                'name',             'name',                  'easy'),
+  hidden:         bool(v => `${v}.hidden`,                                                                      'hidden',           'hidden',                'easy'),
 
   // chain: chained bulk via container
   parentFolderId: str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                                 'parentFolderId',   'container',             'chain'),
 
-  // per-item: no bulk accessor
-  status:         enm(v  => `folderStatusMap[${v}.status]`,                                                     'status',           null,                    'per-item'),
+  // per-item: resolved by crossEntityJoinPass
   projectCount:   num(v  => `(${v}.projects ? ${v}.projects.length : 0)`,                                       'projectCount',     null,                    'per-item'),
+
+  // computed: derived in Node from bulk-readable hidden property
+  status:         enm(v  => `folderStatusMap[${v}.status]`,                                                     'status',           null,                    'computed'),
 
   // special
   now:            date(_ => '_now',                                                                              'now',              null,                    'easy'),
