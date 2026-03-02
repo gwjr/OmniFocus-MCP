@@ -32,7 +32,7 @@ import type { Row } from '../query/backends/nodeEval.js';
 
 // ── Feature flag ─────────────────────────────────────────────────────
 
-const USE_EVENT_PLAN = process.env.USE_EVENT_PLAN_PIPELINE === '1';
+const USE_EVENT_PLAN = process.env.USE_EVENT_PLAN_PIPELINE !== '0';
 
 // ── Query Logging ──────────────────────────────────────────────────────
 

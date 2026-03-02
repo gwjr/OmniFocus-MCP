@@ -50,6 +50,72 @@ function topoSort(units: ExecutionUnit[]): ExecutionUnit[] {
   return order;
 }
 
+// ── JXA-first schedule reordering ────────────────────────────────────────
+
+/**
+ * Reorder a topo-sorted schedule to group JXA units together, enabling
+ * fusion into fewer osascript round-trips.
+ *
+ * Problem: topoSort respects dependencies but doesn't optimize for runtime
+ * grouping. A JXA leaf unit may appear after an unrelated Node unit,
+ * breaking the consecutive-JXA-run that the fusion pass needs.
+ *
+ * Solution: partition the schedule into waves. Within each wave, hoist all
+ * JXA units whose dependencies are already satisfied ahead of non-JXA
+ * units. This is safe because a JXA unit with satisfied deps can execute
+ * before an unrelated Node unit without violating the dependency graph.
+ */
+export function fuseSchedule(sorted: ExecutionUnit[]): ExecutionUnit[] {
+  const scheduled = new Set<ExecutionUnit>();
+  const result: ExecutionUnit[] = [];
+
+  // Iterate: in each pass, extract all ready units, JXA first.
+  const remaining = new Set(sorted);
+
+  while (remaining.size > 0) {
+    // Find all units whose dependencies are satisfied
+    const readyJxa: ExecutionUnit[] = [];
+    const readyOther: ExecutionUnit[] = [];
+
+    for (const unit of sorted) {
+      if (!remaining.has(unit)) continue;
+      const allDepsSatisfied = unit.dependsOn.every(dep => scheduled.has(dep));
+      if (allDepsSatisfied) {
+        if (unit.runtime === 'jxa') {
+          readyJxa.push(unit);
+        } else {
+          readyOther.push(unit);
+        }
+      }
+    }
+
+    // Schedule JXA units first (so they fuse), then others
+    for (const unit of readyJxa) {
+      result.push(unit);
+      scheduled.add(unit);
+      remaining.delete(unit);
+    }
+    for (const unit of readyOther) {
+      result.push(unit);
+      scheduled.add(unit);
+      remaining.delete(unit);
+    }
+
+    // Safety: if no progress was made, break to avoid infinite loop
+    if (readyJxa.length === 0 && readyOther.length === 0) {
+      // Shouldn't happen with a valid DAG, but push remaining in original order
+      for (const unit of sorted) {
+        if (remaining.has(unit)) {
+          result.push(unit);
+        }
+      }
+      break;
+    }
+  }
+
+  return result;
+}
+
 // ── Exported refs ────────────────────────────────────────────────────────
 
 /**
@@ -249,7 +315,7 @@ export async function executeTargetedPlan(
   plan: TargetedEventPlan,
 ): Promise<OrchestratorResult> {
   const units = splitExecutionUnits(plan);
-  const sorted = topoSort(units);
+  const sorted = fuseSchedule(topoSort(units));
   const results = new Map<Ref, unknown>();
   const timings: OrchestratorResult['timings'] = [];
 
