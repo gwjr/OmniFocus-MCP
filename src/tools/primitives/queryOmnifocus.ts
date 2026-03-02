@@ -7,6 +7,12 @@
  *   3. Optimize plan tree (tag semi-join, normalization)
  *   4. Execute plan tree (executor)
  *   5. Sort, limit, select in Node (via tree wrapper nodes)
+ *
+ * Two execution backends:
+ *   - Legacy: compileQuery(JxaEmitter) → executeCompiledQuery (StrategyNode codegen)
+ *   - EventPlan: lowerStrategy → cseEventPlan → executeEventPlan (new IR pipeline)
+ *
+ * Set USE_EVENT_PLAN_PIPELINE=1 env var to use the new pipeline.
  */
 
 import { lowerExpr, LowerError } from '../query/lower.js';
@@ -19,9 +25,14 @@ import { tagSemiJoinPass } from '../query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../query/optimizations/normalize.js';
 import { crossEntityJoinPass } from '../query/optimizations/crossEntityJoin.js';
 import { selfJoinEliminationPass } from '../query/optimizations/selfJoinElimination.js';
+import { executeEventPlanPipeline } from '../query/executionUnits/orchestrator.js';
 import type { LoweredExpr } from '../query/fold.js';
 import type { EntityType } from '../query/variables.js';
 import type { Row } from '../query/backends/nodeEval.js';
+
+// ── Feature flag ─────────────────────────────────────────────────────
+
+const USE_EVENT_PLAN = process.env.USE_EVENT_PLAN_PIPELINE === '1';
 
 // ── Query Logging ──────────────────────────────────────────────────────
 
@@ -93,16 +104,27 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
     const strategy = planPathLabel(tree);
 
-    // Step 5: Compile and execute
-    const compiled = compileQuery(tree, new JxaEmitter());
-    const result = await executeCompiledQuery(compiled);
+    // Step 5: Compile and execute (legacy or EventPlan pipeline)
+    let rows: Row[];
 
-    // Step 6: Assert rows result
-    if (result.kind !== 'rows') {
-      throw new Error(`Plan tree produced ${result.kind} instead of rows — planner bug`);
+    if (USE_EVENT_PLAN) {
+      // New EventPlan IR pipeline:
+      // StrategyNode → EventPlan → CSE → assignRuntimes → split → execute
+      const orchResult = await executeEventPlanPipeline(tree);
+      if (!Array.isArray(orchResult.value)) {
+        throw new Error(`EventPlan pipeline produced non-array result — pipeline bug`);
+      }
+      rows = orchResult.value as Row[];
+    } else {
+      // Legacy pipeline: compile to JXA script and execute
+      const compiled = compileQuery(tree, new JxaEmitter());
+      const result = await executeCompiledQuery(compiled);
+      if (result.kind !== 'rows') {
+        throw new Error(`Plan tree produced ${result.kind} instead of rows — planner bug`);
+      }
+      rows = result.rows;
     }
 
-    let rows = result.rows;
     const totalCount = rows.length;
 
     logQuery({ where: params.where, entity: params.entity, strategy, totalMs: Date.now() - t0, resultCount: totalCount });

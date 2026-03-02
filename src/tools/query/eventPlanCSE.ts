@@ -105,8 +105,6 @@ function rewriteNode(node: EventNode, remap: (r: Ref) => Ref): EventNode {
       return { ...node, source: remap(node.source) };
     case 'Derive':
       return { ...node, source: remap(node.source) };
-    case 'Hint':
-      return { ...node, source: remap(node.source) };
   }
 }
 

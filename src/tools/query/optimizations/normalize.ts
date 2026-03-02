@@ -15,6 +15,11 @@ export const normalizePass: OptimizationPass = (root) => {
 };
 
 function normalizeNode(node: StrategyNode): StrategyNode {
+  // Drop identity Filter — Filter(source, true/null) is a no-op
+  if (node.kind === 'Filter' && (node.predicate === true || node.predicate === null)) {
+    return node.source;
+  }
+
   // Drop empty PerItemEnrich — if perItemVars is empty, just pass through source
   if (node.kind === 'PerItemEnrich' && node.perItemVars.size === 0) {
     return node.source;

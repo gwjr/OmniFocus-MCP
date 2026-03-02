@@ -6,7 +6,7 @@
  */
 
 import type { EventPlan, EventNode, Specifier, Ref } from './eventPlan.js';
-import type { TargetedEventPlan } from './targetedEventPlan.js';
+import type { ExecutionUnit, TargetedEventPlan } from './targetedEventPlan.js';
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -19,15 +19,34 @@ export function describeEventPlan(plan: EventPlan): string {
   return lines.join('\n');
 }
 
-export function describeTargetedEventPlan(plan: TargetedEventPlan): string {
+export function describeTargetedEventPlan(plan: TargetedEventPlan, units?: ExecutionUnit[]): string {
   const lines: string[] = [];
 
-  for (const batch of plan.batches) {
-    lines.push(`${'─'.repeat(2)} batch ${batch.index} [${batch.runtime}] ${'─'.repeat(40)}`);
-    for (const ref of batch.nodes) {
-      const node = plan.nodes[ref];
-      const suffix = `[${node.runtime} batch:${node.batch}]`;
-      const nodeLines = describeNode(node, String(ref), '');
+  if (units) {
+    for (let i = 0; i < units.length; i++) {
+      const unit = units[i];
+      lines.push(`${'─'.repeat(2)} unit ${i} [${unit.runtime}] ${'─'.repeat(40)}`);
+      for (const ref of unit.nodes) {
+        const node = plan.nodes[ref];
+        const alloc = node.runtimeAllocation;
+        const suffix = `[${alloc.runtime} ${alloc.kind}]`;
+        const nodeLines = describeNode(node, String(ref), '');
+        for (let j = 0; j < nodeLines.length; j++) {
+          if (j === 0) {
+            const pad = Math.max(1, 45 - nodeLines[j].length);
+            lines.push(`${nodeLines[j]}${' '.repeat(pad)}${suffix}`);
+          } else {
+            lines.push(nodeLines[j]);
+          }
+        }
+      }
+    }
+  } else {
+    for (let i = 0; i < plan.nodes.length; i++) {
+      const node = plan.nodes[i];
+      const alloc = node.runtimeAllocation;
+      const suffix = `[${alloc.runtime} ${alloc.kind}]`;
+      const nodeLines = describeNode(node, String(i), '');
       for (let j = 0; j < nodeLines.length; j++) {
         if (j === 0) {
           const pad = Math.max(1, 45 - nodeLines[j].length);
@@ -62,6 +81,35 @@ export function describeSpecifier(spec: Specifier): string {
     case 'ByIndex':
       return `ByIndex(${fmtParent(spec.parent)}, ${spec.index})`;
   }
+}
+
+export function describeExecutionUnit(unit: ExecutionUnit, plan: TargetedEventPlan, unitIndex?: number): string {
+  const lines: string[] = [];
+  const label = unitIndex != null ? `unit ${unitIndex}` : 'unit';
+  lines.push(`${label} [${unit.runtime}]`);
+  lines.push(`  nodes: [${unit.nodes.map(r => `%${r}`).join(', ')}]`);
+  if (unit.inputs.length > 0) {
+    lines.push(`  inputs: [${unit.inputs.map(r => `%${r}`).join(', ')}]`);
+  }
+  lines.push(`  result: %${unit.result}`);
+  if (unit.dependsOn.length > 0) {
+    lines.push(`  dependsOn: ${unit.dependsOn.length} unit(s)`);
+  }
+  for (const ref of unit.nodes) {
+    const node = plan.nodes[ref];
+    const alloc = node.runtimeAllocation;
+    const suffix = `[${alloc.runtime} ${alloc.kind}]`;
+    const nodeLines = describeNode(node, String(ref), '  ');
+    for (let j = 0; j < nodeLines.length; j++) {
+      if (j === 0) {
+        const pad = Math.max(1, 45 - nodeLines[j].length);
+        lines.push(`${nodeLines[j]}${' '.repeat(pad)}${suffix}`);
+      } else {
+        lines.push(nodeLines[j]);
+      }
+    }
+  }
+  return lines.join('\n');
 }
 
 // ── Internals ───────────────────────────────────────────────────────────
@@ -137,9 +185,6 @@ function describeNode(node: EventNode, idx: string, prefix: string): string[] {
       const specs = node.derivations.map(d => `${d.var}@${d.entity}`).join(', ');
       return [`${lhs} = Derive(${fmtRef(node.source)}, [${specs}])`];
     }
-
-    case 'Hint':
-      return [`${lhs} = Hint(${fmtRef(node.source)}, ${node.runtime})`];
 
     case 'ForEach': {
       const lines: string[] = [];

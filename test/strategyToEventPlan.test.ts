@@ -140,7 +140,7 @@ describe('lowerStrategy — BulkScan', () => {
     assert.ok(filterRef > zipRef, 'Filter should come after Zip');
 
     // The filter predicate should express active-task filtering:
-    // {op:'and', args:[{op:'not',args:[{var:'effectivelyCompleted'}]},{op:'not',args:[{var:'effectivelyDropped'}]}]}
+    // {op:'and', args:[{op:'not',args:[{var:'completed'}]},{op:'not',args:[{var:'dropped'}]}]}
     const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
     assert.equal(filter.source, zipRef);
     const pred = filter.predicate as any;
@@ -153,8 +153,8 @@ describe('lowerStrategy — BulkScan', () => {
     }
     // Check the var names
     const varNames = pred.args.map((a: any) => a.args[0].var);
-    assert.ok(varNames.includes('effectivelyCompleted'));
-    assert.ok(varNames.includes('effectivelyDropped'));
+    assert.ok(varNames.includes('completed'));
+    assert.ok(varNames.includes('dropped'));
 
     // result should point to the Filter
     assert.equal(plan.result, filterRef);
@@ -450,6 +450,427 @@ describe('lowerStrategy — MembershipScan', () => {
     // We just verify a Filter exists somewhere in the plan.
     const filterNodes = findNodes(plan, 'Filter');
     assert.ok(filterNodes.length >= 1, 'Should have a Filter for active items');
+  });
+});
+
+// ── Regression: active filter variable availability ─────────────────────
+//
+// When includeCompleted:false, the active filter predicate references
+// variables (completed/dropped for tasks, status for
+// projects, etc.) that must be present in the Zip'd rows. If the user's
+// select columns don't include them, the lowering pass must inject them
+// as additional bulk-read Property nodes fed into the Zip.
+//
+// Without this, the Filter evaluates `row.completed` as
+// undefined, and `!undefined` is truthy — silently including all rows
+// instead of filtering completed/dropped items.
+
+describe('lowerStrategy — active filter variables in Zip', () => {
+
+  it('tasks: Zip includes completed and dropped when includeCompleted:false', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tasks',
+      columns: ['id', 'name'],  // user only selected id and name
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    // Find the Zip node
+    const zips = findNodes(plan, 'Zip');
+    assert.equal(zips.length, 1, 'should have exactly one Zip');
+    const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
+
+    const colNames = zip.columns.map(c => c.name);
+    assert.ok(
+      colNames.includes('completed'),
+      `Zip columns should include completed for active filter, got: [${colNames.join(', ')}]`,
+    );
+    assert.ok(
+      colNames.includes('dropped'),
+      `Zip columns should include dropped for active filter, got: [${colNames.join(', ')}]`,
+    );
+  });
+
+  it('tasks: no extra columns when includeCompleted:true', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tasks',
+      columns: ['id', 'name'],
+      includeCompleted: true,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const zips = findNodes(plan, 'Zip');
+    assert.equal(zips.length, 1);
+    const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
+
+    const colNames = zip.columns.map(c => c.name);
+    assert.deepEqual(colNames, ['id', 'name'], 'no extra columns when includeCompleted:true');
+  });
+
+  it('projects: Zip includes status when includeCompleted:false', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'projects',
+      columns: ['id', 'name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const zips = findNodes(plan, 'Zip');
+    assert.equal(zips.length, 1);
+    const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
+
+    const colNames = zip.columns.map(c => c.name);
+    assert.ok(
+      colNames.includes('status'),
+      `Zip columns should include status for project active filter, got: [${colNames.join(', ')}]`,
+    );
+  });
+
+  it('tags: Zip includes effectivelyHidden when includeCompleted:false', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tags',
+      columns: ['id', 'name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const zips = findNodes(plan, 'Zip');
+    assert.equal(zips.length, 1);
+    const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
+
+    const colNames = zip.columns.map(c => c.name);
+    assert.ok(
+      colNames.includes('effectivelyHidden'),
+      `Zip columns should include effectivelyHidden for tag active filter, got: [${colNames.join(', ')}]`,
+    );
+  });
+
+  it('folders: no active filter vars added (legacy has no folder active filter)', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'folders',
+      columns: ['id', 'name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const zips = findNodes(plan, 'Zip');
+    assert.equal(zips.length, 1);
+    const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
+
+    // Folders have no active filter, so no extra columns should be injected
+    const colNames = zip.columns.map(c => c.name);
+    assert.deepEqual(colNames, ['id', 'name'], 'no extra active filter columns for folders');
+
+    // No Filter node should be emitted for folders
+    const filters = findNodes(plan, 'Filter');
+    assert.equal(filters.length, 0, 'no Filter for folders when no active filter');
+  });
+
+  it('tasks: does not duplicate columns already in the select list', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tasks',
+      columns: ['id', 'name', 'completed', 'dropped'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const zips = findNodes(plan, 'Zip');
+    assert.equal(zips.length, 1);
+    const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
+
+    const colNames = zip.columns.map(c => c.name);
+    // Should not have duplicates
+    const unique = new Set(colNames);
+    assert.equal(colNames.length, unique.size, `no duplicate columns: [${colNames.join(', ')}]`);
+  });
+});
+
+// ── Identity filter elimination in lowering ──────────────────────────────
+
+describe('lowerStrategy — identity filter elimination', () => {
+
+  it('Filter(source, true) does not emit a Filter node', () => {
+    const strategy: StrategyNode = {
+      kind: 'Filter',
+      source: {
+        kind: 'BulkScan',
+        entity: 'tasks',
+        columns: ['id', 'name'],
+        includeCompleted: true,
+      },
+      predicate: true,
+      entity: 'tasks',
+    };
+    const plan = lowerStrategy(strategy);
+
+    // The plan should have no EventPlan Filter node — the identity filter
+    // was eliminated by the lowering guard.
+    const filters = findNodes(plan, 'Filter');
+    assert.equal(filters.length, 0, 'Identity Filter(source, true) should be eliminated in lowering');
+  });
+
+  it('PreFilter(source, true) does not emit a Filter node', () => {
+    const strategy: StrategyNode = {
+      kind: 'PreFilter',
+      source: {
+        kind: 'BulkScan',
+        entity: 'tasks',
+        columns: ['id', 'name'],
+        includeCompleted: true,
+      },
+      predicate: true,
+      entity: 'tasks',
+      assumeTrue: new Set(['flagged']),
+    };
+    const plan = lowerStrategy(strategy);
+
+    // The plan should have no EventPlan Filter node — the identity filter
+    // was eliminated by the lowering guard.
+    const filters = findNodes(plan, 'Filter');
+    assert.equal(filters.length, 0, 'Identity PreFilter(source, true) should be eliminated in lowering');
+  });
+
+  it('Filter(source, null) does not emit a Filter node', () => {
+    const strategy: StrategyNode = {
+      kind: 'Filter',
+      source: {
+        kind: 'BulkScan',
+        entity: 'tasks',
+        columns: ['id', 'name'],
+        includeCompleted: true,
+      },
+      predicate: null,
+      entity: 'tasks',
+    };
+    const plan = lowerStrategy(strategy);
+
+    const filters = findNodes(plan, 'Filter');
+    assert.equal(filters.length, 0, 'Identity Filter(source, null) should be eliminated in lowering');
+  });
+
+  it('PreFilter(source, null) does not emit a Filter node', () => {
+    const strategy: StrategyNode = {
+      kind: 'PreFilter',
+      source: {
+        kind: 'BulkScan',
+        entity: 'tasks',
+        columns: ['id', 'name'],
+        includeCompleted: true,
+      },
+      predicate: null,
+      entity: 'tasks',
+      assumeTrue: new Set(['flagged']),
+    };
+    const plan = lowerStrategy(strategy);
+
+    const filters = findNodes(plan, 'Filter');
+    assert.equal(filters.length, 0, 'Identity PreFilter(source, null) should be eliminated in lowering');
+  });
+});
+
+// ── Regression: Filter nodes carry entity field (#22) ────────────────────
+//
+// Filter nodes emitted by lowerStrategy must carry the entity field so
+// that nodeUnit can compile the predicate against the correct entity's
+// variable registry. Without entity, the nodeEval backend doesn't know
+// which variable set to use and fails with "Unknown variable X for entity Y".
+
+describe('lowerStrategy — Filter nodes carry entity field', () => {
+
+  it('BulkScan active filter carries entity for tasks', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tasks',
+      columns: ['name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const { node: filterNode } = findOne(plan, 'Filter');
+    const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
+    assert.equal(filter.entity, 'tasks', 'active filter should carry entity: tasks');
+  });
+
+  it('BulkScan active filter carries entity for projects', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'projects',
+      columns: ['name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const { node: filterNode } = findOne(plan, 'Filter');
+    const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
+    assert.equal(filter.entity, 'projects', 'active filter should carry entity: projects');
+  });
+
+  it('BulkScan active filter carries entity for tags', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tags',
+      columns: ['name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const { node: filterNode } = findOne(plan, 'Filter');
+    const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
+    assert.equal(filter.entity, 'tags', 'active filter should carry entity: tags');
+  });
+
+  it('Strategy Filter node passes entity through to EventPlan Filter', () => {
+    const strategy: StrategyNode = {
+      kind: 'Filter',
+      source: {
+        kind: 'BulkScan',
+        entity: 'projects',
+        columns: ['name', 'status'],
+        includeCompleted: true,
+      },
+      predicate: { op: 'eq', args: [{ var: 'status' }, 'Active'] } as any,
+      entity: 'projects',
+    };
+    const plan = lowerStrategy(strategy);
+
+    const filters = findNodes(plan, 'Filter');
+    assert.ok(filters.length >= 1, 'should have at least one Filter');
+    // The user-specified Filter (not the active filter) should carry entity
+    const userFilter = filters[filters.length - 1];
+    const filter = userFilter.node as Extract<EventNode, { kind: 'Filter' }>;
+    assert.equal(filter.entity, 'projects', 'user Filter should carry entity: projects');
+  });
+
+  it('FallbackScan Filter carries entity', () => {
+    const strategy: StrategyNode = {
+      kind: 'FallbackScan',
+      entity: 'tasks',
+      filterAst: { op: 'var', args: ['flagged'] } as any,
+      includeCompleted: true,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const { node: filterNode } = findOne(plan, 'Filter');
+    const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
+    assert.equal(filter.entity, 'tasks', 'FallbackScan filter should carry entity: tasks');
+  });
+
+  it('PreFilter passes entity through to EventPlan Filter', () => {
+    const strategy: StrategyNode = {
+      kind: 'PreFilter',
+      source: {
+        kind: 'BulkScan',
+        entity: 'tags',
+        columns: ['name'],
+        includeCompleted: true,
+      },
+      predicate: { op: 'eq', args: [{ var: 'name' }, 'Work'] } as any,
+      entity: 'tags',
+      assumeTrue: new Set(['name']),
+    };
+    const plan = lowerStrategy(strategy);
+
+    const filters = findNodes(plan, 'Filter');
+    assert.ok(filters.length >= 1, 'should have at least one Filter');
+    const filter = filters[filters.length - 1].node as Extract<EventNode, { kind: 'Filter' }>;
+    assert.equal(filter.entity, 'tags', 'PreFilter should carry entity: tags');
+  });
+});
+
+// ── Regression: tasks active filter uses completed/dropped, not effectively (#24) ──
+//
+// The task active filter must reference `completed` and `dropped` (direct
+// boolean Apple Events properties), NOT `effectivelyCompleted` /
+// `effectivelyDropped` (which have different semantics — they propagate
+// from parent tasks and are not what the legacy pipeline uses).
+
+describe('lowerStrategy — tasks active filter uses correct variables', () => {
+
+  it('tasks active filter predicate uses completed and dropped', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tasks',
+      columns: ['name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const { node: filterNode } = findOne(plan, 'Filter');
+    const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
+    const pred = filter.predicate as any;
+
+    // Extract all {var} references from the predicate tree
+    const vars: string[] = [];
+    function collectVars(expr: any): void {
+      if (expr && typeof expr === 'object') {
+        if ('var' in expr) vars.push(expr.var);
+        if (expr.args) for (const a of expr.args) collectVars(a);
+      }
+    }
+    collectVars(pred);
+
+    assert.ok(vars.includes('completed'), 'should reference completed');
+    assert.ok(vars.includes('dropped'), 'should reference dropped');
+    assert.ok(!vars.includes('effectivelyCompleted'),
+      'must NOT reference effectivelyCompleted — use completed instead');
+    assert.ok(!vars.includes('effectivelyDropped'),
+      'must NOT reference effectivelyDropped — use dropped instead');
+  });
+
+  it('tasks active filter Zip columns include completed and dropped, not effectively*', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'tasks',
+      columns: ['name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const zips = findNodes(plan, 'Zip');
+    assert.equal(zips.length, 1, 'should have exactly one Zip');
+    const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
+    const colNames = zip.columns.map(c => c.name);
+
+    assert.ok(colNames.includes('completed'), 'Zip should include completed column');
+    assert.ok(colNames.includes('dropped'), 'Zip should include dropped column');
+    assert.ok(!colNames.includes('effectivelyCompleted'),
+      'Zip must NOT include effectivelyCompleted');
+    assert.ok(!colNames.includes('effectivelyDropped'),
+      'Zip must NOT include effectivelyDropped');
+  });
+
+  it('projects active filter uses status (not completed/dropped)', () => {
+    const strategy: StrategyNode = {
+      kind: 'BulkScan',
+      entity: 'projects',
+      columns: ['name'],
+      includeCompleted: false,
+    };
+    const plan = lowerStrategy(strategy);
+
+    const { node: filterNode } = findOne(plan, 'Filter');
+    const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
+    const pred = filter.predicate as any;
+
+    // Project active filter is {op:'in', args:[{var:'status'}, ['Active','OnHold']]}
+    const vars: string[] = [];
+    function collectVars(expr: any): void {
+      if (expr && typeof expr === 'object') {
+        if ('var' in expr) vars.push(expr.var);
+        if (expr.args) for (const a of expr.args) collectVars(a);
+      }
+    }
+    collectVars(pred);
+
+    assert.ok(vars.includes('status'), 'projects active filter should reference status');
+    assert.ok(!vars.includes('completed'),
+      'projects active filter should not reference completed');
   });
 });
 

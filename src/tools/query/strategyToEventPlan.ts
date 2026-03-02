@@ -28,9 +28,20 @@ function classCode(entity: EntityType): FourCC {
   return code;
 }
 
-// ── Variable → property code ────────────────────────────────────────────
+// ── Variable → property specifier ────────────────────────────────────────
+//
+// Two shapes:
+//   • Simple:  { kind: 'simple', code: FourCC }
+//     → Get(Property(elements, code))  e.g. .name()
+//   • Chain:   { kind: 'chain', relation: FourCC, terminal: FourCC }
+//     → Get(Property(Property(elements, relation), terminal))  e.g. .containingProject.name()
 
-const PROP_TABLES: Record<string, Record<string, FourCC>> = {
+type PropSpec =
+  | { kind: 'simple'; code: FourCC }
+  | { kind: 'chain';  relation: FourCC; terminal: FourCC };
+
+/** Simple property tables — direct bulk-readable AE properties. */
+const SIMPLE_PROPS: Record<string, Record<string, FourCC>> = {
   tasks: {
     id:                   OFTaskProp.id,
     name:                 OFTaskProp.name,
@@ -44,8 +55,6 @@ const PROP_TABLES: Record<string, Record<string, FourCC>> = {
     dropped:              OFTaskProp.dropped,
     effectivelyDropped:   OFTaskProp.effectivelyDropped,
     blocked:              OFTaskProp.blocked,
-    containingProject:    OFTaskProp.containingProject,
-    parentTask:           OFTaskProp.parentTask,
     inInbox:              OFTaskProp.inInbox,
     sequential:           OFTaskProp.sequential,
     estimatedMinutes:     OFTaskProp.estimatedMinutes,
@@ -59,7 +68,7 @@ const PROP_TABLES: Record<string, Record<string, FourCC>> = {
   projects: {
     id:                   OFProjectProp.id,
     name:                 OFProjectProp.name,
-    status:               OFProjectProp.status,
+    status:               OFProjectProp.effectiveStatus,
     flagged:              OFProjectProp.flagged,
     dueDate:              OFProjectProp.dueDate,
     deferDate:            OFProjectProp.deferDate,
@@ -71,7 +80,6 @@ const PROP_TABLES: Record<string, Record<string, FourCC>> = {
     estimatedMinutes:     OFProjectProp.estimatedMinutes,
     note:                 OFProjectProp.note,
     numberOfTasks:        OFProjectProp.numberOfTasks,
-    containingFolderId:   OFProjectProp.containingFolderId,
     tags:                 OFProjectProp.tags,
     creationDate:         OFProjectProp.creationDate,
     modificationDate:     OFProjectProp.modificationDate,
@@ -88,40 +96,59 @@ const PROP_TABLES: Record<string, Record<string, FourCC>> = {
     id:               OFTagProp.id,
     name:             OFTagProp.name,
     effectivelyHidden: OFTagProp.effectivelyHidden,
-    parentTag:        OFTagProp.parentTag,
   },
 };
 
-function propCode(entity: EntityType, varName: string): FourCC {
-  // First check the explicit tables
-  const table = PROP_TABLES[entity];
-  if (table && table[varName]) return table[varName];
+/**
+ * Chain property table — properties that require chained AE specifiers.
+ * e.g. `folderId` → `.container.id()` → Property(Property(elems, container), id)
+ */
+const CHAIN_PROPS: Record<string, Record<string, { relation: FourCC; terminal: FourCC }>> = {
+  tasks: {
+    projectName: { relation: OFTaskProp.containingProject, terminal: OFTaskProp.name },
+    projectId:   { relation: OFTaskProp.containingProject, terminal: OFTaskProp.id },
+    parentId:    { relation: OFTaskProp.parentTask,         terminal: OFTaskProp.id },
+  },
+  projects: {
+    folderId:  { relation: OFProjectProp.container, terminal: OFProjectProp.id },
+  },
+  folders: {
+    parentFolderId: { relation: OFFolderProp.container, terminal: OFFolderProp.id },
+  },
+  tags: {
+    parentId: { relation: OFTagProp.container, terminal: OFTagProp.id },
+  },
+};
 
-  // Fall back to the VarRegistry's appleEventsProperty to resolve
-  // names that use nodeKey aliases (e.g. 'folderId' → container → 'FCAr')
-  const registry = getVarRegistry(entity);
-  const def = registry[varName];
-  if (def?.appleEventsProperty) {
-    // Look up the AE property name in the PROP_TABLES
-    const aeTable = PROP_TABLES[entity];
-    if (aeTable) {
-      for (const [, code] of Object.entries(aeTable)) {
-        // Check if the appleEventsProperty matches a key we already have
-        // This won't work directly — we need to look by AE property name
-      }
-    }
-    // For known aliases, map explicitly
-    if (entity === 'projects' && varName === 'folderId') return OFProjectProp.containingFolderId;
-    if (entity === 'projects' && varName === 'taskCount') return OFProjectProp.numberOfTasks;
-    if (entity === 'tasks' && varName === 'childCount') return OFTaskProp.numberOfTasks;
-    if (entity === 'tasks' && varName === 'projectName') return OFTaskProp.containingProject;
-    if (entity === 'tasks' && varName === 'projectId') return OFTaskProp.containingProject;
-    if (entity === 'tasks' && varName === 'parentId') return OFTaskProp.parentTask;
-    if (entity === 'tags' && varName === 'parentId') return OFTagProp.parentTag;
-    if (entity === 'folders' && varName === 'parentFolderId') return OFFolderProp.hidden; // fallback — shouldn't reach
+/** Resolve a variable name to a PropSpec (simple or chain). */
+function propSpec(entity: EntityType, varName: string): PropSpec {
+  // Check chain properties first (more specific)
+  const chainTable = CHAIN_PROPS[entity];
+  if (chainTable && chainTable[varName]) {
+    const { relation, terminal } = chainTable[varName];
+    return { kind: 'chain', relation, terminal };
   }
 
-  throw new Error(`No property code for ${entity}.${varName}`);
+  // Check simple properties
+  const simpleTable = SIMPLE_PROPS[entity];
+  if (simpleTable && simpleTable[varName]) {
+    return { kind: 'simple', code: simpleTable[varName] };
+  }
+
+  // Aliases for nodeKey → propCode (e.g. taskCount → numberOfTasks)
+  if (entity === 'projects' && varName === 'taskCount') return { kind: 'simple', code: OFProjectProp.numberOfTasks };
+  if (entity === 'tasks' && varName === 'childCount') return { kind: 'simple', code: OFTaskProp.numberOfTasks };
+
+  throw new Error(`No property spec for ${entity}.${varName}`);
+}
+
+/** Backward-compatible: resolve to a single FourCC for per-item property reads. */
+function propCode(entity: EntityType, varName: string): FourCC {
+  const spec = propSpec(entity, varName);
+  if (spec.kind === 'simple') return spec.code;
+  // For chain props in per-item context, return the relation code —
+  // the terminal is read separately via a second specifier.
+  return spec.relation;
 }
 
 // ── Active filter expressions ───────────────────────────────────────────
@@ -132,18 +159,29 @@ function activeFilterExpr(entity: EntityType): LoweredExpr {
       return {
         op: 'and',
         args: [
-          { op: 'not', args: [{ var: 'effectivelyCompleted' }] },
-          { op: 'not', args: [{ var: 'effectivelyDropped' }] },
+          { op: 'not', args: [{ var: 'completed' }] },
+          { op: 'not', args: [{ var: 'dropped' }] },
         ],
       };
     case 'projects':
-      return { op: 'in', args: [{ var: 'status' }, ['active', 'on hold']] };
+      return { op: 'in', args: [{ var: 'status' }, ['Active', 'OnHold']] };
     case 'tags':
       return { op: 'not', args: [{ var: 'effectivelyHidden' }] };
     case 'folders':
-      return { op: 'not', args: [{ var: 'hidden' }] };
+      return true;   // Legacy has no folder active filter; pass through
     default:
       throw new Error(`No active filter for entity: ${entity}`);
+  }
+}
+
+/** Variable names referenced by the active filter for a given entity. */
+function activeFilterVars(entity: EntityType): string[] {
+  switch (entity) {
+    case 'tasks':    return ['completed', 'dropped'];
+    case 'projects': return ['status'];
+    case 'tags':     return ['effectivelyHidden'];
+    case 'folders':  return [];          // No folder active filter
+    default:         return [];
   }
 }
 
@@ -179,18 +217,49 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
           effect: 'nonMutating',
         });
 
-        // For each column: %n = Get(Property(%0, propCode))
+        // Inject active-filter variables into columns if not already present
+        const colSet = new Set(node.columns);
+        const allColumns = [...node.columns];
+        if (!node.includeCompleted) {
+          for (const v of activeFilterVars(node.entity)) {
+            if (!colSet.has(v)) {
+              allColumns.push(v);
+            }
+          }
+        }
+
+        // For each column: emit Get(Property) or Get(Property(Property)) for chains
         const colRefs: { name: string; ref: Ref }[] = [];
-        for (const col of node.columns) {
-          const ref = push({
-            kind: 'Get',
-            specifier: {
-              kind: 'Property',
-              parent: elemRef,
-              propCode: propCode(node.entity, col),
-            },
-            effect: 'nonMutating',
-          });
+        for (const col of allColumns) {
+          const spec = propSpec(node.entity, col);
+          let ref: Ref;
+          if (spec.kind === 'simple') {
+            ref = push({
+              kind: 'Get',
+              specifier: {
+                kind: 'Property',
+                parent: elemRef,
+                propCode: spec.code,
+              },
+              effect: 'nonMutating',
+            });
+          } else {
+            // Chain: Property(Property(elements, relation), terminal)
+            // e.g. .containingProject.name() or .container.id()
+            ref = push({
+              kind: 'Get',
+              specifier: {
+                kind: 'Property',
+                parent: {
+                  kind: 'Property',
+                  parent: elemRef,
+                  propCode: spec.relation,
+                },
+                propCode: spec.terminal,
+              },
+              effect: 'nonMutating',
+            });
+          }
           colRefs.push({ name: col, ref });
         }
 
@@ -206,13 +275,17 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
           current = push({ kind: 'Derive', source: current, derivations });
         }
 
-        // Active filter
+        // Active filter (if entity has one)
         if (!node.includeCompleted) {
-          current = push({
-            kind: 'Filter',
-            source: current,
-            predicate: activeFilterExpr(node.entity),
-          });
+          const activePred = activeFilterExpr(node.entity);
+          if (activePred !== true) {
+            current = push({
+              kind: 'Filter',
+              source: current,
+              predicate: activePred,
+              entity: node.entity,
+            });
+          }
         }
 
         return current;
@@ -240,6 +313,7 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
           kind: 'Filter',
           source: elemRef,
           predicate,
+          entity: node.entity,
         });
 
         return filterRef;
@@ -308,20 +382,26 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
       // ── Transform: Filter ─────────────────────────────────────────
       case 'Filter': {
         const sourceRef = lower(node.source);
+        // Identity filter (predicate === true or null) is a no-op — pass through
+        if (node.predicate === true || node.predicate === null) return sourceRef;
         return push({
           kind: 'Filter',
           source: sourceRef,
           predicate: node.predicate,
+          entity: node.entity,
         });
       }
 
       // ── Transform: PreFilter → Filter (dissolves) ─────────────────
       case 'PreFilter': {
         const sourceRef = lower(node.source);
+        // Identity filter (predicate === true or null) is a no-op — pass through
+        if (node.predicate === true || node.predicate === null) return sourceRef;
         return push({
           kind: 'Filter',
           source: sourceRef,
           predicate: node.predicate,
+          entity: node.entity,
         });
       }
 

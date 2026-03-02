@@ -347,6 +347,28 @@ describe('normalizePass', () => {
     assert.equal(result.kind, 'Filter');
   });
 
+  it('drops identity Filter (predicate === true)', () => {
+    const tree: StrategyNode = {
+      kind: 'Filter',
+      source: { kind: 'BulkScan', entity: 'tasks', columns: ['name'], includeCompleted: false },
+      predicate: true,
+      entity: 'tasks',
+    };
+    const result = normalizePass(tree);
+    assert.equal(result.kind, 'BulkScan', 'Filter(source, true) should collapse to source');
+  });
+
+  it('drops identity Filter (predicate === null)', () => {
+    const tree: StrategyNode = {
+      kind: 'Filter',
+      source: { kind: 'BulkScan', entity: 'tasks', columns: ['name'], includeCompleted: false },
+      predicate: null,
+      entity: 'tasks',
+    };
+    const result = normalizePass(tree);
+    assert.equal(result.kind, 'BulkScan', 'Filter(source, null) should collapse to source');
+  });
+
   it('merges adjacent Filters', () => {
     const tree: StrategyNode = {
       kind: 'Filter',

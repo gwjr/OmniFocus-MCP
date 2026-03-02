@@ -5,7 +5,7 @@
  * (JXA / AppleScript / OmniJS / Node).
  *
  * Runtime-agnostic: no JXA, AppleScript, or OmniJS syntax embedded.
- * Runtime annotations are added by the TargetedEventPlan pass.
+ * Runtime annotations are added by the targeting pass (assignRuntimes).
  *
  * SSA form: each node occupies a slot in the plan array; its slot index
  * is its Ref. Values are immutable references. Data flow is explicit.
@@ -28,6 +28,31 @@ export type Ref = number;
 // ── Runtime ──────────────────────────────────────────────────────────────────
 
 export type Runtime = 'jxa' | 'omniJS' | 'node';
+
+// ── RuntimeAllocation ────────────────────────────────────────────────────────
+
+/**
+ * Runtime allocation for a node.
+ *
+ * - proposed: optimizer may reassign to a different runtime
+ * - fixed:    immutable — either a Hint from the lowering pass, or the op
+ *             has only one viable runtime implementation
+ */
+export type RuntimeAllocation =
+  | { kind: 'proposed'; runtime: Runtime }
+  | { kind: 'fixed';    runtime: Runtime };
+
+// ── Hinted node wrapper ──────────────────────────────────────────────────────
+
+/**
+ * A Hinted<T> is a T node annotated with a runtime constraint by the
+ * Strategy→EventPlan lowering pass. The lowering pass has app-specific
+ * knowledge (e.g. FallbackScan must run in omniJS) that the generic
+ * targeting pass does not.
+ *
+ * The targeting pass reads hint and converts it to { kind: 'fixed', runtime }.
+ */
+export type Hinted<T extends EventNode> = T & { hint: Runtime };
 
 // ── Side effects ─────────────────────────────────────────────────────────────
 
@@ -140,6 +165,7 @@ export type EventNode =
   | { kind: 'Filter';
       source:    Ref;
       predicate: LoweredExpr;   // compiled at emission time to runtime predicate
+      entity?:   EntityType;    // entity context for predicate compilation (needed by nodeUnit)
     }
 
   | { kind: 'SemiJoin';
@@ -176,26 +202,11 @@ export type EventNode =
   | { kind: 'Derive';
       source:      Ref;
       derivations: DeriveSpec[];
-    }
-
-  // ── Targeting hint ──────────────────────────────────────────────────────
-  //
-  // Transparent to data flow: value equals source's value.
-  // Carries a runtime preference that the targeting pass treats as
-  // authoritative, overriding its default heuristics for the sourced node.
-  //
-  // Emitted by the Strategy→EventPlan lowering, which has app-specific
-  // knowledge the generic targeting pass does not.
-  // Consumed and stripped by the targeting pass (Pass 1).
-
-  | { kind: 'Hint';
-      source:  Ref;
-      runtime: Runtime;
     };
 
 // ── EventPlan ────────────────────────────────────────────────────────────────
 
 export interface EventPlan {
-  nodes:  EventNode[];   // index = Ref
-  result: Ref;           // which node's value is the query output
+  nodes:  Array<EventNode | Hinted<EventNode>>;   // index = Ref
+  result: Ref;                                     // which node's value is the query output
 }

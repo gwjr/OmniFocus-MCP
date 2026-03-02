@@ -1,18 +1,23 @@
 /**
  * targetedEventPlanLowering.ts
  *
- * Takes a runtime-agnostic EventPlan and produces a TargetedEventPlan with:
- *   1. Runtime assignment for each node (jxa, omniJS, node)
- *   2. Hint consumption (strip Hint nodes, apply runtime overrides)
- *   3. Batch grouping by runtime with dependency tracking
+ * Assigns a RuntimeAllocation to every node in an EventPlan, producing a
+ * TargetedEventPlan. Then splits into ExecutionUnits.
+ *
+ * Pass 1 — assignRuntimes:
+ *   • Nodes with a hint field → fixed(hint.runtime)
+ *   • All other nodes        → proposed(defaultRuntime(node))
+ *
+ * Pass 2 — splitExecutionUnits:
+ *   • Partition nodes by effective runtime into contiguous ExecutionUnits
+ *   • Compute cross-unit input/output refs and dependsOn links
  */
 
-import type { EventNode, EventPlan, Ref, Runtime, Specifier } from './eventPlan.js';
-import type { Batch, TargetedEventPlan } from './targetedEventPlan.js';
+import type { EventNode, EventPlan, Hinted, Ref, Runtime, RuntimeAllocation, Specifier } from './eventPlan.js';
+import type { ExecutionUnit, TargetedEventPlan, TargetedNode } from './targetedEventPlan.js';
 
-// ── Pass 1: Runtime assignment + Hint consumption ───────────────────────────
+// ── Default runtime per node kind ────────────────────────────────────────────
 
-/** Default runtime for a node based on its kind. */
 function defaultRuntime(node: EventNode): Runtime {
   switch (node.kind) {
     case 'Get':
@@ -32,13 +37,10 @@ function defaultRuntime(node: EventNode): Runtime {
     case 'ColumnValues':
     case 'Flatten':
       return 'node';
-    case 'Hint':
-      // Hints are consumed, not executed — placeholder that gets stripped.
-      return 'node';
   }
 }
 
-// ── Pass 3: Collect all Ref inputs for a given node ─────────────────────────
+// ── Collect all Ref inputs for a node ────────────────────────────────────────
 
 function collectRefs(node: EventNode): Ref[] {
   const refs: Ref[] = [];
@@ -60,8 +62,6 @@ function collectRefs(node: EventNode): Ref[] {
       break;
     case 'ForEach':
       refs.push(node.source);
-      // body nodes reference the ForEach's own ref (loop var) — not
-      // cross-batch dependencies. We only track source here.
       break;
     case 'Zip':
       for (const col of node.columns) refs.push(col.ref);
@@ -83,9 +83,6 @@ function collectRefs(node: EventNode): Ref[] {
     case 'Flatten':
       refs.push(node.source);
       break;
-    case 'Hint':
-      // Hints are stripped — should not appear in output.
-      break;
   }
 
   return refs;
@@ -94,7 +91,6 @@ function collectRefs(node: EventNode): Ref[] {
 function collectSpecifierRefs(spec: Specifier, refs: Ref[]): void {
   if (spec.kind === 'Document') return;
 
-  // parent can be a nested Specifier or a Ref
   if (typeof spec.parent === 'number') {
     refs.push(spec.parent);
   } else {
@@ -109,104 +105,100 @@ function collectSpecifierRefs(spec: Specifier, refs: Ref[]): void {
   }
 }
 
-// ── Main entry point ────────────────────────────────────────────────────────
+// ── Pass 1: assign runtimes ───────────────────────────────────────────────────
 
-export function targetEventPlan(plan: EventPlan): TargetedEventPlan {
-  const { nodes } = plan;
-  const n = nodes.length;
+export function assignRuntimes(plan: EventPlan): TargetedEventPlan {
+  const outNodes: TargetedNode[] = [];
 
-  // ── Pass 1: assign runtimes, consume Hints ────────────────────────────
+  for (const node of plan.nodes) {
+    const isHinted = 'hint' in node;
+    const runtimeAllocation: RuntimeAllocation = isHinted
+      ? { kind: 'fixed',    runtime: (node as Hinted<EventNode>).hint }
+      : { kind: 'proposed', runtime: defaultRuntime(node) };
 
-  const runtimes = new Map<Ref, Runtime>();
-  const strippedHints = new Set<Ref>();
-  let resultRef: Ref = plan.result;
-
-  // First pass: assign default runtimes
-  for (let i = 0; i < n; i++) {
-    runtimes.set(i, defaultRuntime(nodes[i]));
+    // Strip the hint field from the output node — it's been consumed
+    const { hint: _hint, ...baseNode } = node as Hinted<EventNode>;
+    void _hint;
+    outNodes.push({ ...baseNode, runtimeAllocation } as TargetedNode);
   }
 
-  // Second pass: process Hints — override runtimes, strip Hints
-  for (let i = 0; i < n; i++) {
-    const node = nodes[i];
-    if (node.kind === 'Hint') {
-      runtimes.set(node.source, node.runtime);
-      strippedHints.add(i);
-      if (resultRef === i) {
-        resultRef = node.source;
+  return { nodes: outNodes, result: plan.result };
+}
+
+// ── Pass 2: split into ExecutionUnits ────────────────────────────────────────
+
+export function splitExecutionUnits(targeted: TargetedEventPlan): ExecutionUnit[] {
+  const { nodes } = targeted;
+  if (nodes.length === 0) return [];
+
+  // Walk nodes in SSA order; start a new unit on every runtime boundary.
+  // Consecutive nodes with the same runtime merge into one unit.
+  const units: ExecutionUnit[] = [];
+  const refToUnit = new Map<Ref, ExecutionUnit>();
+
+  let currentRuntime: Runtime = nodes[0].runtimeAllocation.runtime;
+  let currentRefs: Ref[] = [0];
+
+  for (let i = 1; i < nodes.length; i++) {
+    const rt = nodes[i].runtimeAllocation.runtime;
+    if (rt !== currentRuntime) {
+      // Flush the current run as a unit
+      units.push(buildUnit(currentRuntime, currentRefs, nodes, refToUnit));
+      currentRuntime = rt;
+      currentRefs = [];
+    }
+    currentRefs.push(i);
+  }
+  // Flush the final run
+  units.push(buildUnit(currentRuntime, currentRefs, nodes, refToUnit));
+
+  // Compute dependsOn
+  for (const unit of units) {
+    const deps = new Set<ExecutionUnit>();
+    for (const inputRef of unit.inputs) {
+      const dep = refToUnit.get(inputRef);
+      if (dep && dep !== unit) deps.add(dep);
+    }
+    unit.dependsOn = [...deps];
+  }
+
+  return units;
+}
+
+function buildUnit(
+  runtime: Runtime,
+  nodeRefs: Ref[],
+  nodes: TargetedNode[],
+  refToUnit: Map<Ref, ExecutionUnit>,
+): ExecutionUnit {
+  const nodeSet = new Set(nodeRefs);
+  const inputSet = new Set<Ref>();
+  for (const ref of nodeRefs) {
+    for (const inputRef of collectRefs(nodes[ref])) {
+      if (!nodeSet.has(inputRef)) {
+        inputSet.add(inputRef);
       }
     }
   }
 
-  // ── Pass 2: build output nodes (sparse — Hint slots become null) ──────
-
-  type TargetedNode = EventNode & { runtime: Runtime; batch: number };
-  const outNodes: Array<TargetedNode | null> = new Array(n).fill(null);
-
-  // We'll assign batch indices after grouping. For now, store runtime.
-  for (let i = 0; i < n; i++) {
-    if (strippedHints.has(i)) continue;
-    outNodes[i] = {
-      ...nodes[i],
-      runtime: runtimes.get(i)!,
-      batch: -1, // placeholder, filled in Pass 3
-    } as TargetedNode;
-  }
-
-  // ── Pass 3: batch grouping ────────────────────────────────────────────
-
-  // Group surviving nodes by runtime
-  const runtimeGroups = new Map<Runtime, Ref[]>();
-  for (let i = 0; i < n; i++) {
-    if (strippedHints.has(i)) continue;
-    const rt = runtimes.get(i)!;
-    let group = runtimeGroups.get(rt);
-    if (!group) {
-      group = [];
-      runtimeGroups.set(rt, group);
-    }
-    group.push(i);
-  }
-
-  // Assign batch indices (stable order: iterate runtimeGroups in insertion order)
-  const batches: Batch[] = [];
-  const refToBatch = new Map<Ref, number>();
-  let batchIdx = 0;
-
-  for (const [rt, nodeRefs] of runtimeGroups) {
-    const currentBatchIdx = batchIdx++;
-    for (const ref of nodeRefs) {
-      refToBatch.set(ref, currentBatchIdx);
-      outNodes[ref]!.batch = currentBatchIdx;
-    }
-    batches.push({
-      index: currentBatchIdx,
-      runtime: rt,
-      nodes: nodeRefs,
-      dependsOn: [], // filled below
-    });
-  }
-
-  // Compute dependsOn for each batch
-  for (const batch of batches) {
-    const depBatches = new Set<number>();
-    for (const ref of batch.nodes) {
-      const node = nodes[ref];
-      const inputRefs = collectRefs(node);
-      for (const inputRef of inputRefs) {
-        if (strippedHints.has(inputRef)) continue;
-        const inputBatch = refToBatch.get(inputRef);
-        if (inputBatch !== undefined && inputBatch !== batch.index) {
-          depBatches.add(inputBatch);
-        }
-      }
-    }
-    batch.dependsOn = [...depBatches].sort((a, b) => a - b);
-  }
-
-  return {
-    nodes: outNodes as any, // sparse array — null slots for stripped Hints
-    batches,
-    result: resultRef,
+  const unit: ExecutionUnit = {
+    runtime,
+    nodes: nodeRefs,
+    inputs: [...inputSet].sort((a, b) => a - b),
+    result: nodeRefs[nodeRefs.length - 1],
+    dependsOn: [], // filled by caller
   };
+  for (const ref of nodeRefs) refToUnit.set(ref, unit);
+  return unit;
+}
+
+// ── Convenience: assign + split in one step ──────────────────────────────────
+
+export function targetEventPlan(plan: EventPlan): {
+  targeted: TargetedEventPlan;
+  units: ExecutionUnit[];
+} {
+  const targeted = assignRuntimes(plan);
+  const units = splitExecutionUnits(targeted);
+  return { targeted, units };
 }
