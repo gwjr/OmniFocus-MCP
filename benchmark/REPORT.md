@@ -278,7 +278,33 @@ The `byIdentifier()` per-item cost is not constant: it starts at ~123ms for a si
 
 4. **This creates a two-path enrichment strategy:** the planner can estimate result set size (from the SemiJoin cardinality or a `limit` clause) and choose `byIdentifier()` for small sets vs bulk-read for large ones.
 
-5. **Bridge serialisation matters for larger result sets.** The benchmark returns results as a JSON array of objects (`[{name, id, flagged, ...}]`), which repeats property keys for every item. Moving data across the `evaluateJavascript()` bridge can be surprisingly slow — the JXA↔OmniJS boundary involves string serialisation in both directions. For the `byIdentifier()` path, returning an array of arrays (positional columns, no keys) would reduce the payload size and deserialisation cost. At 500 items × 5 properties, the object-keyed JSON is roughly 2× the size of the positional form. This overhead is folded into the measurements above and may account for some of the non-linear scaling at high item counts.
+5. **Bridge serialisation format doesn't matter at these scales.** A follow-up benchmark (§8.1) tested three serialisation strategies — JSON objects stringified in OmniJS, raw arrays returned to JXA for stringification, and JSON arrays stringified in OmniJS — with randomised execution order and trimmed outlier removal. At 100 items × 5 properties, all three converge to within 70ms of each other (~550–620ms). The `byIdentifier()` loop dominates; serialisation cost is in the noise. Choose based on ergonomics (objects are easier to work with downstream), not performance.
+
+### 8.1 Bridge Serialisation: OmniJS vs JXA (detailed)
+
+`evaluateJavascript()` preserves structure — arrays, objects, and nested values come back as real JS types in JXA, not strings. So there are two choices: stringify in OmniJS (returns a flat string across the bridge) or return structured data and let JXA stringify.
+
+Three strategies tested (9 runs each, strategy order randomised per iteration, top/bottom 2 trimmed):
+
+| Path | Description |
+|------|-------------|
+| A | OmniJS builds `[{name, id, ...}]`, `JSON.stringify` in OmniJS, string returned to JXA |
+| B | OmniJS builds `[[name, id, ...]]`, returns raw array, JXA does `JSON.stringify` |
+| C | OmniJS builds `[[name, id, ...]]`, `JSON.stringify` in OmniJS, string returned to JXA |
+
+**Results (trimmed median):**
+
+| Items | A (OmniJS JSON, objects) | B (Raw → JXA JSON) | C (OmniJS JSON, arrays) |
+|------:|-------------------------:|--------------------:|-------------------------:|
+| 10 | 480ms | 401ms | 332ms |
+| 50 | 775ms | 430ms | 446ms |
+| 100 | **549ms** | 619ms | 591ms |
+
+At 10 and 50 items, the variance between runs is so high (trimmed range at 50 items: 164ms–1,885ms) that the differences between strategies are not statistically meaningful. The timeline view revealed the variance is temporal — entire iterations are fast or slow regardless of strategy, consistent with OmniFocus background processing (sync, indexing) rather than a serialisation difference.
+
+At 100 items, where variance is lower (trimmed range: 472ms–731ms across all strategies), the three paths converge. The ~70ms spread is within measurement noise.
+
+**Why the initial (non-randomised) benchmark was misleading:** With fixed A→B→C ordering, strategy A always ran first in each iteration. If OmniFocus had a warm period followed by a slow period, A systematically benefited from the warm start. Randomising the order eliminated this bias and collapsed the apparent differences.
 
 ---
 
