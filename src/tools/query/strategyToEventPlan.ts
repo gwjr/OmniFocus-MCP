@@ -48,8 +48,10 @@ const SIMPLE_PROPS: Record<string, Record<string, FourCC>> = {
     flagged:              OFTaskProp.flagged,
     dueDate:              OFTaskProp.dueDate,
     deferDate:            OFTaskProp.deferDate,
+    plannedDate:          OFTaskProp.plannedDate,
     effectiveDueDate:     OFTaskProp.effectiveDueDate,
     effectiveDeferDate:   OFTaskProp.effectiveDeferDate,
+    effectivePlannedDate: OFTaskProp.effectivePlannedDate,
     completed:            OFTaskProp.completed,
     effectivelyCompleted: OFTaskProp.effectivelyCompleted,
     dropped:              OFTaskProp.dropped,
@@ -80,6 +82,7 @@ const SIMPLE_PROPS: Record<string, Record<string, FourCC>> = {
     estimatedMinutes:     OFProjectProp.estimatedMinutes,
     note:                 OFProjectProp.note,
     numberOfTasks:        OFProjectProp.numberOfTasks,
+    activeTaskCount:      OFProjectProp.numberOfAvailableTasks,
     tags:                 OFProjectProp.tags,
     creationDate:         OFProjectProp.creationDate,
     modificationDate:     OFProjectProp.modificationDate,
@@ -95,9 +98,11 @@ const SIMPLE_PROPS: Record<string, Record<string, FourCC>> = {
   tags: {
     id:                 OFTagProp.id,
     name:               OFTagProp.name,
+    allowsNextAction:   OFTagProp.allowsNextAction,
     hidden:             OFTagProp.hidden,
     effectivelyHidden:  OFTagProp.effectivelyHidden,
     availableTaskCount: OFTagProp.availableTaskCount,
+    remainingTaskCount: OFTagProp.remainingTaskCount,
   },
 };
 
