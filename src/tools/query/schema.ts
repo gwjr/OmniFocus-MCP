@@ -160,7 +160,7 @@ OPERATIONS (16):
 
 TASK VARS: id, name, note, flagged, status, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, modificationDate, creationDate, estimatedMinutes, projectId, parentId, inInbox, sequential, hasChildren, childCount, tags, now
 PROJECT VARS: id, name, note, status, flagged, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, modificationDate, creationDate, estimatedMinutes, sequential, folderId, taskCount, activeTaskCount, now
-FOLDER VARS: id, name, status, parentFolderId, projectCount, path, now
+FOLDER VARS: id, name, status, parentFolderId, projectCount, now
 TAG VARS: id, name, note, allowsNextAction, hidden, effectivelyHidden, availableTaskCount, remainingTaskCount, parentName, now
 
 Status values — Task: Available, Blocked, Completed, Dropped, DueSoon, Next, Overdue — Project: Active, Done, Dropped, OnHold — Folder: Active, Dropped
@@ -168,7 +168,7 @@ Status values — Task: Available, Blocked, Completed, Dropped, DueSoon, Next, O
 EXAMPLES:
 - Tasks named "review": {contains: [{var: "name"}, "review"]}
 - Flagged tasks due within 7 days: {and: [{eq: [{var: "flagged"}, true]}, {lte: [{var: "dueDate"}, {offset: {date: "now", days: 7}}]}]}
-- Tasks in project "litigation": {within: ["project", {contains: [{var: "name"}, "litigation"]}]}
+- Tasks in project "litigation": {container: ["project", {contains: [{var: "name"}, "litigation"]}]}
 - Tasks with tag "work": {contains: [{var: "tags"}, "work"]}
 - Overdue or due soon: {in: [{var: "status"}, ["Overdue", "DueSoon"]]}
 - Tasks modified in last 3 days: {gt: [{var: "modificationDate"}, {offset: {date: "now", days: -3}}]}

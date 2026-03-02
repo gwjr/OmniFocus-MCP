@@ -10,12 +10,13 @@
  * Special compact nodes:
  *   {var: "name"}        → {var: "name"}           (pass-through)
  *   {date: "2026-03-01"} → {type: "date", value: "2026-03-01"}
- *   {offset: {date: "now", days: -3}} → {op: "offset", args: [{date, days}]}
+ *   {offset: {date: "now", days: -3}} → {op: "offset", args: [dateExpr, days]}
  *
  * The lowering is recursive and preserves primitives unchanged.
  */
 
 import { operations, validateArgCount } from './operations.js';
+import type { LoweredExpr } from './fold.js';
 
 export class LowerError extends Error {
   constructor(message: string, public path: string, public node: unknown) {
@@ -27,7 +28,7 @@ export class LowerError extends Error {
 /**
  * Lower a compact-syntax expression tree into internal {op, args} AST.
  */
-export function lowerExpr(node: unknown, path = 'where'): unknown {
+export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
   // null / undefined → pass through
   if (node == null) return null;
 
@@ -84,7 +85,7 @@ export function lowerExpr(node: unknown, path = 'where'): unknown {
     // {type: "date", value: "..."} — internal typed literal, pass through
     // (for internal use / round-tripping)
     if ('type' in obj && 'value' in obj) {
-      return node;
+      return node as LoweredExpr;
     }
 
     // Single-key object where key is a known op → {op, args}
@@ -154,7 +155,7 @@ export function lowerExpr(node: unknown, path = 'where'): unknown {
 
 // ── Offset Lowering ──────────────────────────────────────────────────────
 
-function lowerOffset(value: unknown, parentPath: string): unknown {
+function lowerOffset(value: unknown, parentPath: string): LoweredExpr {
   const path = `${parentPath}.offset`;
 
   if (typeof value !== 'object' || value == null || Array.isArray(value)) {
@@ -215,5 +216,5 @@ function lowerOffset(value: unknown, parentPath: string): unknown {
   }
 
   // Produce internal offset node
-  return { op: 'offset', args: [{ date: datePart, days: offset.days }] };
+  return { op: 'offset', args: [datePart as LoweredExpr, offset.days as number] };
 }

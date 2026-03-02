@@ -25,7 +25,7 @@ export function describeExpr(node: unknown): string {
   if (preDesc !== null) return preDesc;
 
   // Lower and fold
-  const lowered = lowerExpr(node) as LoweredExpr;
+  const lowered = lowerExpr(node);
   const backend = new DescriberBackend();
   return foldExpr(lowered, backend, 'tasks');
 }
@@ -179,10 +179,12 @@ class DescriberBackend implements ExprBackend<string> {
   }
 
   and(args: string[]): string {
+    if (args.length === 0) return 'true';
     return args.map(a => `(${a})`).join(' AND ');
   }
 
   or(args: string[]): string {
+    if (args.length === 0) return 'false';
     return args.map(a => `(${a})`).join(' OR ');
   }
 

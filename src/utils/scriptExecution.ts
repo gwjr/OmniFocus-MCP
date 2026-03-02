@@ -19,32 +19,33 @@ export async function executeJXA(script: string): Promise<any[]> {
   try {
     // Write the script to a temporary file in the system temp directory
     const tempFile = uniqueTempFile('jxa_script');
-    
+
     // Write the script to the temporary file
     writeFileSync(tempFile, script);
-    
-    // Execute the script using osascript
-    const { stdout, stderr } = await execAsync(`osascript -l JavaScript "${tempFile}"`);
-    
-    if (stderr) {
-      console.error("Script stderr output:", stderr);
+
+    let stdout: string;
+    try {
+      const result = await execAsync(`osascript -l JavaScript "${tempFile}"`, { timeout: 30000 });
+      stdout = result.stdout;
+      if (result.stderr) {
+        console.error("Script stderr output:", result.stderr);
+      }
+    } finally {
+      try { unlinkSync(tempFile); } catch { /* ignore */ }
     }
-    
-    // Clean up the temporary file
-    unlinkSync(tempFile);
-    
+
     // Parse the output as JSON
     try {
       const result = JSON.parse(stdout);
       return result;
     } catch (e) {
       console.error("Failed to parse script output as JSON:", e);
-      
+
       // If this contains a "Found X tasks" message, treat it as a successful non-JSON response
       if (stdout.includes("Found") && stdout.includes("tasks")) {
         return [];
       }
-      
+
       return [];
     }
   } catch (error) {
@@ -109,8 +110,8 @@ export async function executeOmniFocusScript(scriptPath: string, args?: any): Pr
     writeFileSync(tempFile, jxaScript);
     
     // Execute the JXA script using osascript
-    const { stdout, stderr } = await execAsync(`osascript -l JavaScript "${tempFile}"`);
-    
+    const { stdout, stderr } = await execAsync(`osascript -l JavaScript "${tempFile}"`, { timeout: 30000 });
+
     // Clean up the temporary file
     unlinkSync(tempFile);
     

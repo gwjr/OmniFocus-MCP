@@ -44,7 +44,7 @@ export function planExecution(
   entity: EntityType,
   selectVars?: string[]
 ): ExecutionPlan {
-  const ast = (where != null ? lowerExpr(where) : true) as LoweredExpr;
+  const ast: LoweredExpr = where != null ? lowerExpr(where) : true;
   return planFromAst(ast, entity, selectVars);
 }
 
@@ -85,6 +85,11 @@ export function planFromAst(
 
   // Try to extract a project-scoped container
   const extraction = extractContainerScope(ast);
+
+  // Rule 4: container present but not extractable → OmniJS fallback
+  if (extraction === null && containsAnyContainer(ast)) {
+    return fallbackPlan(ast, entity);
+  }
 
   // Compute bulk vars: all easy + chain vars
   const bulkVars = new Set([...costMap.easy, ...costMap.chain]);
@@ -245,6 +250,11 @@ export function buildPlanTree(
   // Try to extract a project-scoped container
   const extraction = extractContainerScope(ast);
 
+  // Rule 4: container present but not extractable → OmniJS fallback
+  if (extraction === null && containsAnyContainer(ast)) {
+    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+  }
+
   // Compute bulk columns (nodeKeys)
   const bulkVarNames = new Set([...costMap.easy, ...costMap.chain]);
   const perItemVars = new Set(costMap.perItem);
@@ -340,6 +350,25 @@ function varNamesToColumns(varNames: Set<string>, registry: Record<string, VarDe
   return columns;
 }
 
+// ── Scope Compilation Check ─────────────────────────────────────────────
+
+/** Check if a scope expression can be compiled to a .whose() clause by generateScopeWhose */
+function canCompileScope(scope: LoweredExpr): boolean {
+  if (typeof scope !== 'object' || scope === null || Array.isArray(scope)) return false;
+  if (!('op' in scope)) return false;
+  const node = scope as { op: string; args: LoweredExpr[] };
+  if ((node.op === 'eq' || node.op === 'contains') &&
+      isVarRef(node.args[0], 'name') && typeof node.args[1] === 'string') {
+    return true;
+  }
+  return false;
+}
+
+function isVarRef(node: LoweredExpr, name: string): boolean {
+  return typeof node === 'object' && node !== null && !Array.isArray(node) &&
+    'var' in node && (node as { var: string }).var === name;
+}
+
 // ── Container Extraction ────────────────────────────────────────────────
 
 interface ContainerExtraction {
@@ -368,6 +397,7 @@ export function extractContainerScope(ast: LoweredExpr): ContainerExtraction | n
   if (node.op === 'container') {
     const containerType = node.args[0] as unknown as string;
     if (containerType === 'project') {
+      if (!canCompileScope(node.args[1])) return null;
       return {
         scope: node.args[1],
         remainder: true
@@ -382,7 +412,8 @@ export function extractContainerScope(ast: LoweredExpr): ContainerExtraction | n
       if (typeof arg !== 'object' || arg === null || Array.isArray(arg)) return false;
       if (!('op' in arg)) return false;
       const a = arg as { op: string; args: LoweredExpr[] };
-      return a.op === 'container' && (a.args[0] as unknown as string) === 'project';
+      return a.op === 'container' && (a.args[0] as unknown as string) === 'project' &&
+        canCompileScope(a.args[1]);
     });
 
     if (containerIdx === -1) return null;
