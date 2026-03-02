@@ -11,7 +11,9 @@
 
 import { lowerExpr, LowerError } from '../query/lower.js';
 import { buildPlanTree } from '../query/planner.js';
-import { executePlan } from '../query/executor.js';
+import { executeCompiledQuery } from '../query/executor.js';
+import { compileQuery } from '../query/compile.js';
+import { JxaEmitter } from '../query/emitters/jxaEmitter.js';
 import { optimize, planPathLabel, type PlanNode } from '../query/planTree.js';
 import { tagSemiJoinPass } from '../query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../query/optimizations/normalize.js';
@@ -91,8 +93,9 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
     const strategy = planPathLabel(tree);
 
-    // Step 5: Execute
-    const result = await executePlan(tree);
+    // Step 5: Compile and execute
+    const compiled = compileQuery(tree, new JxaEmitter());
+    const result = await executeCompiledQuery(compiled);
 
     // Step 6: Assert rows result
     if (result.kind !== 'rows') {
