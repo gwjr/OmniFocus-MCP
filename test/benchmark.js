@@ -164,7 +164,7 @@ const testCases = [
     },
   },
 
-  // ── #5: Tag-based queries (tags is now chain → broad) ─────────────────
+  // ── #5: Tag-based queries (chain, broad path) ─────────────────────────
   {
     name: 'Tasks with tag (chain)',
     category: 'tags',

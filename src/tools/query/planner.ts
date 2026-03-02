@@ -122,6 +122,9 @@ export function buildPlanTree(
   const perItemVars = new Set(costMap.perItem);
   const allComputed = new Set(costMap.computed);
 
+  // Track which vars are needed for output (select)
+  const selectBulkVars = new Set<string>();
+
   // Add select vars
   if (selectVars) {
     for (const v of selectVars) {
@@ -129,6 +132,7 @@ export function buildPlanTree(
       if (!def) continue;
       if (def.cost === 'easy' || def.cost === 'chain') {
         bulkVarNames.add(v);
+        selectBulkVars.add(v);
       } else if (def.cost === 'computed') {
         allComputed.add(v);
       } else if (def.cost === 'per-item' || def.cost === 'expensive') {
@@ -150,6 +154,11 @@ export function buildPlanTree(
     columns.push('id');
   }
 
+  // Build selectColumns as nodeKeys (for optimization passes to know what's output-required)
+  const selectColumns = selectBulkVars.size > 0
+    ? new Set(varNamesToColumns(selectBulkVars, registry))
+    : undefined;
+
   // Use the remainder filter if project-scoped, otherwise full AST
   const filterAst = extraction ? extraction.remainder : ast;
   const projectScope = extraction?.scope;
@@ -159,6 +168,7 @@ export function buildPlanTree(
     kind: 'BulkScan',
     entity,
     columns,
+    selectColumns,
     projectScope,
     includeCompleted,
     computedVars: allComputed.size > 0 ? allComputed : undefined,

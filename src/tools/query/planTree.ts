@@ -24,6 +24,9 @@ export interface BulkScan {
   kind: 'BulkScan';
   entity: EntityType;
   columns: string[];
+  /** Columns required for output (subset of columns). Optimization passes may
+   *  strip filter-only columns but must preserve these. */
+  selectColumns?: Set<string>;
   projectScope?: LoweredExpr;
   includeCompleted: boolean;
   /** Pushed-down Apple Events .whose() predicates (optional). */

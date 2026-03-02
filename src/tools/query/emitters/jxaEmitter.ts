@@ -54,17 +54,8 @@ const entityConfigs: Record<EntityType, EntityJxaConfig> = {
 
 const perItemOverrides: Record<EntityType, Record<string, string>> = {
   tasks: {
-    tags:       'item.tags().map(function(t) { return t.name().toLowerCase(); })',
-    status:     '(function() { var s = item.completed() ? "Completed" : item.flagged() ? "Flagged" : "Available"; return s; })()',
-    inInbox:    'item.inInbox()',
-    sequential: 'item.sequential()',
-    hasChildren:'item.tasks().length > 0',
-    childCount: 'item.tasks().length',
-    parentId:   '(function() { var p = item.parentTask(); return p ? p.id().toString() : null; })()',
     id:         'item.id().toString()',
     note:       '(item.note() || "")',
-    completed:  'item.completed()',
-    dropped:    '(item.dropped ? item.dropped() : false)',
   },
   tags: {
     parentName: '(function() { var c = item.container(); return c ? c.name() : null; })()',

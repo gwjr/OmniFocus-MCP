@@ -300,43 +300,20 @@ describe('extractTagPredicates', () => {
 // ── Tag Semi-Join Rewrite ────────────────────────────────────────────────
 
 describe('tagSemiJoinPass', () => {
-  // After reclassification, tags is a chain var → no two-phase shape for tag queries.
-  // The tagSemiJoinPass pattern-matches Filter→PerItemEnrich→PreFilter→BulkScan,
-  // which no longer appears for tasks tag queries. The pass is effectively a no-op.
+  // tagSemiJoinPass matches Filter→PerItemEnrich→PreFilter→BulkScan.
+  // After reclassification, tags is chain → no PerItemEnrich for tasks.
+  // The pass is a no-op until rewritten to use ByIdEnrich.
 
-  it('tags (now chain) → no SemiJoin rewrite (no two-phase shape)', () => {
+  it('tags (chain) → no SemiJoin rewrite (no PerItemEnrich shape)', () => {
     const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
     const rewritten = tagSemiJoinPass(tree);
-    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT have SemiJoin');
-    // Tree should be Filter(BulkScan) unchanged
-    assert.equal(rewritten.kind, 'Filter');
-  });
-
-  it('multi-tag AND → no SemiJoin rewrite (chain, not per-item)', () => {
-    const tree = plan({
-      and: [
-        { contains: [{ var: 'tags' }, 'a'] },
-        { contains: [{ var: 'tags' }, 'b'] },
-      ]
-    });
-    const rewritten = tagSemiJoinPass(tree);
-    assert.equal(countNodes(rewritten, 'SemiJoin'), 0);
+    assert.equal(findNode(rewritten, 'SemiJoin'), null);
   });
 
   it('does NOT rewrite for non-tasks entity', () => {
     const tree = plan({ contains: [{ var: 'folderName' }, 'Legal'] }, 'projects');
     const rewritten = tagSemiJoinPass(tree);
-    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT have SemiJoin');
-  });
-
-  it('tags in select only → no rewrite (chain, no two-phase shape)', () => {
-    const tree = plan(
-      { eq: [{ var: 'flagged' }, true] },
-      'tasks',
-      ['name', 'tags']
-    );
-    const rewritten = tagSemiJoinPass(tree);
-    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT rewrite');
+    assert.equal(findNode(rewritten, 'SemiJoin'), null);
   });
 });
 
@@ -424,7 +401,7 @@ describe('walkPlan', () => {
 // ── planPathLabel after optimization ────────────────────────────────────
 
 describe('planPathLabel after optimization', () => {
-  it('tag query (now chain) → broad after optimization', () => {
+  it('tag query (chain) → broad after optimization', () => {
     const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
     const rewritten = optimize(tree, [tagSemiJoinPass, normalizePass]);
     assert.equal(planPathLabel(rewritten), 'broad');
