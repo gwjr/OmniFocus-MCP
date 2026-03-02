@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { queryOmnifocus, type QueryOmnifocusParams } from '../primitives/queryOmnifocus.js';
 import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
+import { formatItems } from '../formatters/queryResults.js';
 
 export const schema = z.object({
   project: z.string().optional().describe(
@@ -136,7 +137,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       }
 
       let output = `## ${label} (${items.length} items)\n\n`;
-      output += JSON.stringify(items, null, 2);
+      output += formatItems(items, queryParams.entity);
 
       return {
         content: [{
@@ -206,7 +207,7 @@ async function executeCustomPerspective(args: z.infer<typeof schema>) {
   }
 
   let output = `## ${label} (${items.length} items)\n\n`;
-  output += JSON.stringify(items, null, 2);
+  output += formatItems(items, 'tasks');
 
   return {
     content: [{

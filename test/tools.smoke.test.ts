@@ -262,6 +262,103 @@ describe('tool handler smoke: show_forecast', () => {
   });
 });
 
+// ── No-JSON-output regression tests ──────────────────────────────────────
+//
+// Every non-mutating tool should return human-readable text, not raw JSON.
+// If a handler emits JSON.stringify output without a header/label prefix,
+// the LLM gets noisy structured data instead of a formatted summary.
+
+function assertNotRawJson(text: string, label: string): void {
+  const trimmed = text.trimStart();
+  assert.ok(
+    !trimmed.startsWith('{') && !trimmed.startsWith('['),
+    `${label}: response starts with raw JSON — expected human-readable text.\nFirst 200 chars: ${trimmed.slice(0, 200)}`
+  );
+}
+
+describe('no raw JSON output', () => {
+  it('query tasks — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'tasks', limit: 3 } as any, {});
+    const r = assertMcpResponse(result, 'query noJSON');
+    assertSuccess(r, 'query noJSON');
+    assertNotRawJson(r.content[0].text, 'query tasks');
+  });
+
+  it('query projects — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'projects', limit: 3 } as any, {});
+    const r = assertMcpResponse(result, 'query projects noJSON');
+    assertSuccess(r, 'query projects noJSON');
+    assertNotRawJson(r.content[0].text, 'query projects');
+  });
+
+  it('query tags — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'tags', limit: 3 } as any, {});
+    const r = assertMcpResponse(result, 'query tags noJSON');
+    assertSuccess(r, 'query tags noJSON');
+    assertNotRawJson(r.content[0].text, 'query tags');
+  });
+
+  it('query folders — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'folders' } as any, {});
+    const r = assertMcpResponse(result, 'query folders noJSON');
+    // May error on folders — only check if successful
+    if (!r.isError) {
+      assertNotRawJson(r.content[0].text, 'query folders');
+    }
+  });
+
+  it('view inbox — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ inbox: true } as any, {});
+    const r = assertMcpResponse(result, 'view inbox noJSON');
+    assertSuccess(r, 'view inbox noJSON');
+    assertNotRawJson(r.content[0].text, 'view inbox');
+  });
+
+  it('view flagged — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ perspective: 'Flagged' } as any, {});
+    const r = assertMcpResponse(result, 'view flagged noJSON');
+    assertSuccess(r, 'view flagged noJSON');
+    assertNotRawJson(r.content[0].text, 'view flagged');
+  });
+
+  it('view project — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ project: 'a' } as any, {});
+    const r = assertMcpResponse(result, 'view project noJSON');
+    assertSuccess(r, 'view project noJSON');
+    assertNotRawJson(r.content[0].text, 'view project');
+  });
+
+  it('list_projects — human-readable, not JSON', async () => {
+    const result = await listProjectsTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'list_projects noJSON');
+    assertSuccess(r, 'list_projects noJSON');
+    assertNotRawJson(r.content[0].text, 'list_projects');
+  });
+
+  it('list_tags — human-readable, not JSON', async () => {
+    const result = await listTagsTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'list_tags noJSON');
+    assertSuccess(r, 'list_tags noJSON');
+    assertNotRawJson(r.content[0].text, 'list_tags');
+  });
+
+  it('list_perspectives — human-readable, not JSON', async () => {
+    const result = await listPerspectivesTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'list_perspectives noJSON');
+    // Perspectives may error (no class code) — only check if successful
+    if (!r.isError) {
+      assertNotRawJson(r.content[0].text, 'list_perspectives');
+    }
+  });
+
+  it('show_forecast — human-readable, not JSON', async () => {
+    const result = await showForecastTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'show_forecast noJSON');
+    assertSuccess(r, 'show_forecast noJSON');
+    assertNotRawJson(r.content[0].text, 'show_forecast');
+  });
+});
+
 // ── Mutation tool smoke tests ────────────────────────────────────────────
 //
 // VALIDATION ONLY — never calls a primitive that touches OmniFocus.
