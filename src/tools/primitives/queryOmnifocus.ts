@@ -93,8 +93,14 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       throw e;
     }
 
+    // Step 1b: For tasks, expand select to include mandatory minimum fields
+    // so the planner bulk-reads them (id, flagged are easy; status is computed).
+    const expandedSelect = params.entity === 'tasks' && params.select
+      ? augmentTaskSelect(params.select)
+      : params.select;
+
     // Step 2: Build plan tree
-    let tree = buildPlanTree(ast, params.entity, params.select, params.includeCompleted ?? false);
+    let tree = buildPlanTree(ast, params.entity, expandedSelect, params.includeCompleted ?? false);
 
     // Step 3: Wrap with sort/limit/project nodes
     tree = wrapWithPostProcessing(tree, params);
@@ -137,7 +143,13 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     // Select fields (if not already handled by Project node, which only
     // applies to tree-internal usage — for the public API, we always apply
     // select here to handle the full field mapping including OmniJS results)
-    const items = params.select ? selectFields(rows, params.select) : rows;
+    let items = params.select ? selectFields(rows, params.select) : rows;
+
+    // For tasks, inject mandatory minimum fields (id, flagged, taskStatus)
+    // into every row regardless of what the user selected.
+    if (params.entity === 'tasks') {
+      items = injectMandatoryTaskFields(items);
+    }
 
     return { success: true, items, count: totalCount };
   } catch (error) {
@@ -186,5 +198,42 @@ function selectFields(rows: Row[], fields: string[]): Row[] {
       }
     }
     return selected;
+  });
+}
+
+// ── Mandatory Task Fields ─────────────────────────────────────────────────
+
+/** Fields that are always needed for tasks (mapped to internal variable names). */
+const MANDATORY_TASK_VARS = ['id', 'flagged', 'status'];
+
+/**
+ * Augment a user's select list with mandatory task fields so the planner
+ * bulk-reads them. Uses internal variable names (status, not taskStatus).
+ */
+export function augmentTaskSelect(select: string[]): string[] {
+  const set = new Set(select);
+  // Map user-facing 'taskStatus' to internal 'status' computed var
+  if (set.has('taskStatus')) {
+    set.add('status');
+  }
+  for (const v of MANDATORY_TASK_VARS) {
+    set.add(v);
+  }
+  return [...set];
+}
+
+/**
+ * Inject mandatory minimum fields into task result rows.
+ * Maps the internal 'status' field to 'taskStatus' for user-facing output.
+ */
+export function injectMandatoryTaskFields(rows: Row[]): Row[] {
+  return rows.map(row => {
+    const result = { ...row };
+    // Map internal 'status' → user-facing 'taskStatus'
+    if ('status' in result && !('taskStatus' in result)) {
+      result.taskStatus = result.status;
+      delete result.status;
+    }
+    return result;
   });
 }

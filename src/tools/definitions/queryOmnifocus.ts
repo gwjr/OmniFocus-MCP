@@ -143,8 +143,8 @@ function formatTasks(tasks: any[]): string {
   return tasks.map(task => {
     const parts = [];
 
-    const flag = task.flagged ? '🚩 ' : '';
-    parts.push(`• ${flag}${task.name || 'Unnamed'}`);
+    const flag = task.flagged ? ' 🚩' : '';
+    parts.push(`☐ ${task.name || 'Unnamed'}${flag}`);
 
     if (task.id) {
       parts.push(`[${task.id}]`);
