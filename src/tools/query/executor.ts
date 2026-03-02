@@ -3,6 +3,10 @@
  *
  * Recursively walks a PlanNode tree, executing each node and producing
  * a PlanResult ({kind:'rows', rows} or {kind:'idSet', ids}).
+ *
+ * Supports two entry points:
+ *   - executePlan(node): legacy, each JXA leaf fires its own osascript
+ *   - executeCompiledQuery(compiled): fused, pre-computed JXA results via slotMap
  */
 
 import { executeJXA, executeOmniFocusScript } from '../../utils/scriptExecution.js';
@@ -32,6 +36,7 @@ import type {
   CrossEntityJoin,
 } from './planTree.js';
 import type { SelfJoinEnrich } from './optimizations/selfJoinElimination.js';
+import type { CompiledQuery, SlotEntry } from './compile.js';
 
 // ── Execution Context ───────────────────────────────────────────────────
 
@@ -40,10 +45,14 @@ interface ExecContext {
   timings: Map<string, number>;
   /** Predicate cache to avoid recompiling the same (pred, entity, stubs) */
   predicateCache: Map<string, RowFn>;
+  /** Pre-computed batch results from fused JXA execution (keyed by slot index). */
+  batchResults: unknown[] | null;
+  /** Map from JXA leaf PlanNode (by identity) → slot in batchResults. */
+  slotMap: Map<PlanNode, SlotEntry> | null;
 }
 
 function createContext(): ExecContext {
-  return { timings: new Map(), predicateCache: new Map() };
+  return { timings: new Map(), predicateCache: new Map(), batchResults: null, slotMap: null };
 }
 
 function recordTiming(ctx: ExecContext, kind: string, ms: number): void {
@@ -58,8 +67,48 @@ function recordTiming(ctx: ExecContext, kind: string, ms: number): void {
 export async function executePlan(node: PlanNode): Promise<PlanResult> {
   const ctx = createContext();
   const result = await executeNode(node, ctx);
+  logTimings(ctx);
+  return result;
+}
 
-  // Log timing summary
+/**
+ * Execute a compiled query with fused JXA scripts.
+ *
+ * Runs the batch/standalone script upfront, populates the slotMap,
+ * then walks the plan tree — JXA leaf nodes return pre-computed results
+ * instead of firing individual osascript invocations.
+ */
+export async function executeCompiledQuery(compiled: CompiledQuery): Promise<PlanResult> {
+  const ctx = createContext();
+
+  // Execute batch or standalone script
+  const t = Date.now();
+  let batchResults: unknown[] = [];
+
+  if (compiled.batchScript) {
+    const raw = await executeJXA(compiled.batchScript);
+    if (!Array.isArray(raw)) {
+      throw new Error('Batch script did not return an array');
+    }
+    batchResults = raw;
+    recordTiming(ctx, 'BatchJXA', Date.now() - t);
+  } else if (compiled.standaloneScript) {
+    const raw = await executeJXA(compiled.standaloneScript);
+    batchResults = [raw];
+    recordTiming(ctx, 'StandaloneJXA', Date.now() - t);
+  }
+
+  // Populate context with pre-computed results
+  ctx.batchResults = batchResults;
+  ctx.slotMap = compiled.slotMap;
+
+  // Walk the plan tree
+  const result = await executeNode(compiled.root, ctx);
+  logTimings(ctx);
+  return result;
+}
+
+function logTimings(ctx: ExecContext): void {
   const parts: string[] = [];
   for (const [kind, ms] of ctx.timings) {
     parts.push(`${kind}=${ms}ms`);
@@ -67,8 +116,6 @@ export async function executePlan(node: PlanNode): Promise<PlanResult> {
   if (parts.length > 0) {
     console.error(`[executor] ${parts.join(' ')}`);
   }
-
-  return result;
 }
 
 // ── Node Dispatch ───────────────────────────────────────────────────────
@@ -93,12 +140,23 @@ async function executeNode(node: PlanNode, ctx: ExecContext): Promise<PlanResult
 // ── Leaf Nodes ──────────────────────────────────────────────────────────
 
 async function executeBulkScan(node: BulkScan, ctx: ExecContext): Promise<PlanResult> {
+  // Check slotMap for pre-computed result
+  const slot = ctx.slotMap?.get(node);
+  if (slot && ctx.batchResults) {
+    const rawResult = ctx.batchResults[slot.index];
+    recordTiming(ctx, 'BulkScan(cached)', 0);
+    return parseBulkScanResult(rawResult);
+  }
+
   const t = Date.now();
   const script = generateBulkReadFromColumns(node);
   const rawResult = await executeJXA(script);
   recordTiming(ctx, 'BulkScan', Date.now() - t);
 
-  // Check for alignment errors
+  return parseBulkScanResult(rawResult);
+}
+
+function parseBulkScanResult(rawResult: unknown): PlanResult {
   if (rawResult && typeof rawResult === 'object' && !Array.isArray(rawResult) && 'error' in rawResult) {
     throw new Error(`Bulk read error: ${(rawResult as any).error}`);
   }
@@ -150,6 +208,15 @@ async function executeOmniJSScan(node: OmniJSScan, ctx: ExecContext): Promise<Pl
 }
 
 async function executeMembershipScan(node: MembershipScan, ctx: ExecContext): Promise<PlanResult> {
+  // Check slotMap for pre-computed result
+  const slot = ctx.slotMap?.get(node);
+  if (slot && ctx.batchResults) {
+    const rawResult = ctx.batchResults[slot.index];
+    recordTiming(ctx, 'MembershipScan(cached)', 0);
+    const ids = Array.isArray(rawResult) ? new Set(rawResult as string[]) : new Set<string>();
+    return { kind: 'idSet', ids };
+  }
+
   const t = Date.now();
   const script = generateMembershipScript(node);
   const rawResult = await executeJXA(script);
