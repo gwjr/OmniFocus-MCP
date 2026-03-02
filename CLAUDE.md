@@ -12,13 +12,6 @@ Before modifying the query engine, planner, or execution pipeline, **read these 
 - **[Query Engine Architecture](docs/query-engine-architecture.md)** — plan tree execution, optimization passes, variable cost model.
 - **[Benchmark Report](benchmark/REPORT.md)** — empirical Apple Events cost data (IPC floor, bulk reads, chain properties, JXA bridge tax, OmniJS byIdentifier crossover).
 
-You can also browse the AppleScript dictionary interactively using the `browse_sdef` MCP tool:
-```
-browse_sdef("OmniFocus/documents/flattened tasks")
-browse_sdef("OmniFocus/@commands/mark complete")
-browse_sdef("OmniFocus/@enums/project status")
-```
-
 ## Critical OmniFocus Object Model Facts
 
 1. **Projects ARE tasks.** Every project has a root task in `flattenedTasks`. Query code must subtract `flattenedProjects` IDs to get pure tasks.
