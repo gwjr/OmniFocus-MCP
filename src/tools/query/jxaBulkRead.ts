@@ -14,6 +14,7 @@ import { getVarRegistry, type EntityType, type VarDef } from './variables.js';
 import type { ExecutionPlan } from './planner.js';
 import type { LoweredExpr } from './fold.js';
 import { escapeJxaString } from './backends/jxaCompiler.js';
+import type { BulkScan, MembershipScan } from './planTree.js';
 
 // ── Entity Configuration ────────────────────────────────────────────────
 
@@ -184,6 +185,130 @@ ${accessors.join(',\n')}
   }
 
   return JSON.stringify(results);
+})()`;
+}
+
+/**
+ * Generate a JXA bulk-read script from a BulkScan plan node.
+ * Columns are explicit nodeKey names — the planner is responsible for
+ * including `id` when needed by downstream nodes.
+ */
+export function generateBulkReadFromColumns(node: BulkScan): string {
+  const registry = getVarRegistry(node.entity);
+
+  // Map column names to var names (columns use nodeKeys)
+  const vars = new Set<string>();
+  let needsId = false;
+  for (const col of node.columns) {
+    // Find the var whose nodeKey matches
+    const varName = Object.keys(registry).find(k => registry[k].nodeKey === col);
+    if (varName) {
+      vars.add(varName);
+      if (col === 'id') needsId = true;
+    }
+  }
+
+  return generateScript({
+    vars,
+    includeId: needsId,
+    projectScope: node.projectScope,
+    includeCompleted: node.includeCompleted,
+    entity: node.entity,
+  });
+}
+
+/**
+ * Generate a JXA script that looks up task IDs belonging to tags
+ * matching a predicate. Returns a JSON array of task ID strings.
+ *
+ * The tag predicate is a simple {eq: [{var:'name'}, 'value']} for now.
+ * Apple Events .whose({name:}) is case-insensitive by default.
+ */
+// ── Membership Scan ─────────────────────────────────────────────────────
+
+/**
+ * Relationship config: how entity A relates to entity B via Apple Events.
+ *
+ * The JXA accessor is the property on a source entity item that yields
+ * the related target entity items (e.g., tag.tasks, project.flattenedTasks).
+ */
+interface RelationshipConfig {
+  /** JXA property on a source item to traverse to target items */
+  accessor: string;
+  /** Active-item filter on the target entity (null = no filter) */
+  activeFilter: {
+    bulkProperty: string;
+    keepWhen: 'false' | 'active';
+  } | null;
+}
+
+const relationships: Record<string, Record<string, RelationshipConfig>> = {
+  tags: {
+    tasks: { accessor: 'tasks', activeFilter: { bulkProperty: 'completed', keepWhen: 'false' } },
+  },
+  projects: {
+    tasks: { accessor: 'flattenedTasks', activeFilter: { bulkProperty: 'completed', keepWhen: 'false' } },
+  },
+  folders: {
+    projects: { accessor: 'flattenedProjects', activeFilter: { bulkProperty: 'status', keepWhen: 'active' } },
+  },
+};
+
+export function generateMembershipScript(node: MembershipScan): string {
+  // Look up relationship config
+  const rel = relationships[node.sourceEntity]?.[node.targetEntity];
+  if (!rel) {
+    throw new Error(
+      `No relationship defined: ${node.sourceEntity} → ${node.targetEntity}`
+    );
+  }
+
+  // Extract name from predicate — currently supports {op:'eq', args:[{var:'name'}, literal]}
+  const pred = node.predicate as { op: string; args: unknown[] };
+  if (pred.op !== 'eq') {
+    throw new Error(`MembershipScan predicate must be {eq: [name, value]}, got op="${pred.op}"`);
+  }
+  const nameValue = pred.args[1] as string;
+  const escaped = escapeJxaString(nameValue);
+
+  const sourceConfig = entityConfigs[node.sourceEntity as EntityType];
+  if (!sourceConfig?.collection) {
+    throw new Error(`No collection path for entity: ${node.sourceEntity}`);
+  }
+
+  // Active filter on target entity items
+  let activeFilterCode = '';
+  if (!node.includeCompleted && rel.activeFilter) {
+    const { bulkProperty, keepWhen } = rel.activeFilter;
+    const condition = keepWhen === 'false'
+      ? `!filterArr[j]`
+      : `String(filterArr[j]).indexOf("active") === 0 || String(filterArr[j]).indexOf("on hold") === 0`;
+    activeFilterCode = `
+    var filterArr = items.${bulkProperty}();
+    var filtered = [];
+    for (var j = 0; j < itemIds.length; j++) {
+      if (${condition}) filtered.push(itemIds[j]);
+    }
+    itemIds = filtered;`;
+  }
+
+  return `(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  var matches = ${sourceConfig.collection}.whose({name: "${escaped}"});
+  var ids = [];
+  for (var i = 0; i < matches.length; i++) {
+    var items = matches[i].${rel.accessor};
+    var itemIds = items.id();
+    ${activeFilterCode}
+    for (var j = 0; j < itemIds.length; j++) {
+      ids.push(itemIds[j].toString());
+    }
+  }
+
+  return JSON.stringify(ids);
 })()`;
 }
 

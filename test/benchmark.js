@@ -16,8 +16,11 @@
  */
 
 import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
-import { planFromAst } from '../dist/tools/query/planner.js';
+import { planFromAst, buildPlanTree } from '../dist/tools/query/planner.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
+import { optimize, planPathLabel } from '../dist/tools/query/planTree.js';
+import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
+import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
 import { readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -162,9 +165,9 @@ const testCases = [
 
   // ── #5: Tag-based queries (two-phase) ─────────────────────────────────
   {
-    name: 'Tasks with tag (two-phase)',
+    name: 'Tasks with tag (semi-join)',
     category: 'tags',
-    expected: 'two-phase',
+    expected: 'semijoin',
     params: {
       entity: 'tasks',
       where: { contains: [{ var: 'tags' }, 'waiting'] },
@@ -238,11 +241,11 @@ const testCases = [
     },
   },
 
-  // ── #9: Folders (always OmniJS fallback) ──────────────────────────────
+  // ── #9: Folders (two-phase: name via bulk, projectCount per-item) ──────
   {
     name: 'All folders',
     category: 'folders',
-    expected: 'omnijs-fallback',
+    expected: 'two-phase',
     params: {
       entity: 'folders',
       select: ['name', 'projectCount'],
@@ -351,8 +354,9 @@ const testCases = [
 function getPlannedPath(params) {
   try {
     const ast = params.where != null ? lowerExpr(params.where) : true;
-    const plan = planFromAst(ast, params.entity, params.select);
-    return plan.path;
+    const tree = buildPlanTree(ast, params.entity, params.select, params.includeCompleted ?? false);
+    const optimized = optimize(tree, [tagSemiJoinPass, normalizePass]);
+    return planPathLabel(optimized);
   } catch {
     return '?';
   }
@@ -464,6 +468,7 @@ function printTable(results, baseline) {
   const broad = succeeded.filter(r => r.actualPath === 'broad');
   const scoped = succeeded.filter(r => r.actualPath === 'project-scoped');
   const twoPhase = succeeded.filter(r => r.actualPath === 'two-phase');
+  const semiJoin = succeeded.filter(r => r.actualPath === 'semijoin');
   const fallback = succeeded.filter(r => r.actualPath === 'omnijs-fallback');
 
   const avg = arr => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
@@ -473,6 +478,7 @@ function printTable(results, baseline) {
   if (broad.length) console.log(`  broad:           ${broad.length} tests, avg ${avg(broad.map(r => r.medianMs))}ms`);
   if (scoped.length) console.log(`  project-scoped:  ${scoped.length} tests, avg ${avg(scoped.map(r => r.medianMs))}ms`);
   if (twoPhase.length) console.log(`  two-phase:       ${twoPhase.length} tests, avg ${avg(twoPhase.map(r => r.medianMs))}ms`);
+  if (semiJoin.length) console.log(`  semijoin:    ${semiJoin.length} tests, avg ${avg(semiJoin.map(r => r.medianMs))}ms`);
   if (fallback.length) console.log(`  omnijs-fallback: ${fallback.length} tests, avg ${avg(fallback.map(r => r.medianMs))}ms`);
 
   const mismatches = results.filter(r => !r.pathMatch);
