@@ -1,0 +1,422 @@
+══════════════════════════════════════════════════════
+Query: all tasks by name [tasks]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+BulkScan tasks [name, dueDate, flagged] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  return JSON.stringify((function() {
+  var items = doc.flattenedTasks;
+
+  // Bulk-read properties via Apple Events
+  var nameArr = items.name();
+  var dueDateArr = items.dueDate();
+  var dueDateIso = dueDateArr.map(function(v) { return v ? v.toISOString() : null; });
+  var flaggedArr = items.flagged();
+
+
+  // Alignment check
+  var _lens = {"nameArr": nameArr.length, "dueDateArr": dueDateArr.length, "flaggedArr": flaggedArr.length};
+  var _first = _lens["nameArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+  // Filter to active items only
+  var _fa0 = items.completed();
+  var _fa1 = items.dropped();
+  var len = _fa0.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
+  }
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < activeIndices.length; i++) {
+    rows.push({"name": nameArr[activeIndices[i]], "dueDate": dueDateIso[activeIndices[i]], "flagged": flaggedArr[activeIndices[i]]});
+  }
+
+  return rows;
+  })());
+})()
+
+══════════════════════════════════════════════════════
+Query: flagged tasks [tasks]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+Filter {"op":"eq","args":[{"var":"flagged"},true]}
+  BulkScan tasks [flagged, name, dueDate] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  return JSON.stringify((function() {
+  var items = doc.flattenedTasks;
+
+  // Bulk-read properties via Apple Events
+  var flaggedArr = items.flagged();
+  var nameArr = items.name();
+  var dueDateArr = items.dueDate();
+  var dueDateIso = dueDateArr.map(function(v) { return v ? v.toISOString() : null; });
+
+
+  // Alignment check
+  var _lens = {"flaggedArr": flaggedArr.length, "nameArr": nameArr.length, "dueDateArr": dueDateArr.length};
+  var _first = _lens["flaggedArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+  // Filter to active items only
+  var _fa0 = items.completed();
+  var _fa1 = items.dropped();
+  var len = _fa0.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
+  }
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < activeIndices.length; i++) {
+    rows.push({"flagged": flaggedArr[activeIndices[i]], "name": nameArr[activeIndices[i]], "dueDate": dueDateIso[activeIndices[i]]});
+  }
+
+  return rows;
+  })());
+})()
+
+══════════════════════════════════════════════════════
+Query: tasks with tag Work [tasks]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+Filter {"op":"contains","args":[{"var":"tags"},"Work"]}
+  BulkScan tasks [tags, name] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  return JSON.stringify((function() {
+  var items = doc.flattenedTasks;
+
+  // Bulk-read properties via Apple Events
+  var nameArr = items.name();
+  var tagsArr = items.tags.name();
+
+  // Alignment check
+  var _lens = {"nameArr": nameArr.length, "tagsArr": tagsArr.length};
+  var _first = _lens["nameArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+  // Filter to active items only
+  var _fa0 = items.completed();
+  var _fa1 = items.dropped();
+  var len = _fa0.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
+  }
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < activeIndices.length; i++) {
+    rows.push({"name": nameArr[activeIndices[i]], "tags": (tagsArr[activeIndices[i]] || []).map(function(t) { return t.toLowerCase(); })});
+  }
+
+  return rows;
+  })());
+})()
+
+══════════════════════════════════════════════════════
+Query: tasks due soon [tasks]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+Filter {"op":"lt","args":[{"var":"dueDate"},{"type":"date","value":"2026-04-01"}]}
+  BulkScan tasks [dueDate, name] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  return JSON.stringify((function() {
+  var items = doc.flattenedTasks;
+
+  // Bulk-read properties via Apple Events
+  var dueDateArr = items.dueDate();
+  var dueDateIso = dueDateArr.map(function(v) { return v ? v.toISOString() : null; });
+  var nameArr = items.name();
+
+
+  // Alignment check
+  var _lens = {"dueDateArr": dueDateArr.length, "nameArr": nameArr.length};
+  var _first = _lens["dueDateArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+  // Filter to active items only
+  var _fa0 = items.completed();
+  var _fa1 = items.dropped();
+  var len = _fa0.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    if (!_fa0[j] && !_fa1[j]) activeIndices.push(j);
+  }
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < activeIndices.length; i++) {
+    rows.push({"dueDate": dueDateIso[activeIndices[i]], "name": nameArr[activeIndices[i]]});
+  }
+
+  return rows;
+  })());
+})()
+
+══════════════════════════════════════════════════════
+Query: active projects [projects]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+Filter {"op":"eq","args":[{"var":"status"},"active"]}
+  BulkScan projects [status, name] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  return JSON.stringify((function() {
+  var items = doc.flattenedProjects;
+
+  // Bulk-read properties via Apple Events
+  var _rawStatusArr = items.effectiveStatus();
+  var _statusMap = {"active status":"Active","done status":"Done","on hold status":"OnHold","dropped status":"Dropped"};
+  var statusArr = _rawStatusArr.map(function(v) { return _statusMap[String(v)] || String(v); });
+  var nameArr = items.name();
+
+
+  // Alignment check
+  var _lens = {"statusArr": statusArr.length, "nameArr": nameArr.length};
+  var _first = _lens["statusArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+  // Filter to active items only
+  var _fa0 = items.status();
+  var len = _fa0.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    if ((function(){var _s=String(_fa0[j]);return _s.indexOf("active")===0||_s.indexOf("on hold")===0;})()) activeIndices.push(j);
+  }
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < activeIndices.length; i++) {
+    rows.push({"status": statusArr[activeIndices[i]], "name": nameArr[activeIndices[i]]});
+  }
+
+  return rows;
+  })());
+})()
+
+══════════════════════════════════════════════════════
+Query: projects with folderName [projects]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+Filter true
+  CrossEntityJoin sourceKey:folderId lookupKey:id
+    BulkScan projects [name, id, folderId] (includeCompleted:false)
+    BulkScan folders [id, name] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+  var _r = [];
+  _r[0] = (function() {
+  var items = doc.flattenedProjects;
+
+  // Bulk-read properties via Apple Events
+  var nameArr = items.name();
+  var idArr = items.id();
+  var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });
+  var _folderIds = items.container.id();
+  var folderIdArr = _folderIds.map(function(v) { return v ? v.toString() : null; });
+
+  // Alignment check
+  var _lens = {"nameArr": nameArr.length, "idKeys": idKeys.length, "folderIdArr": folderIdArr.length};
+  var _first = _lens["nameArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+  // Filter to active items only
+  var _fa0 = items.status();
+  var len = _fa0.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    if ((function(){var _s=String(_fa0[j]);return _s.indexOf("active")===0||_s.indexOf("on hold")===0;})()) activeIndices.push(j);
+  }
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < activeIndices.length; i++) {
+    rows.push({"name": nameArr[activeIndices[i]], "id": idKeys[activeIndices[i]], "folderId": folderIdArr[activeIndices[i]]});
+  }
+
+  return rows;
+  })();
+  _r[1] = (function() {
+  var items = doc.flattenedFolders;
+
+  // Bulk-read properties via Apple Events
+  var idArr = items.id();
+  var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });
+  var nameArr = items.name();
+
+
+  // Alignment check
+  var _lens = {"idKeys": idKeys.length, "nameArr": nameArr.length};
+  var _first = _lens["idKeys"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < idKeys.length; i++) {
+    rows.push({"id": idKeys[i], "name": nameArr[i]});
+  }
+
+  return rows;
+  })();
+  return JSON.stringify(_r);
+})()
+
+══════════════════════════════════════════════════════
+Query: all tags [tags]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+BulkScan tags [name] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  return JSON.stringify((function() {
+  var items = doc.flattenedTags;
+
+  // Bulk-read properties via Apple Events
+  var nameArr = items.name();
+
+
+  // Alignment check
+  var _lens = {"nameArr": nameArr.length};
+  var _first = _lens["nameArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+  // Filter to active items only
+  var _fa0 = items.effectivelyHidden();
+  var len = _fa0.length;
+  var activeIndices = [];
+  for (var j = 0; j < len; j++) {
+    if (!_fa0[j]) activeIndices.push(j);
+  }
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < activeIndices.length; i++) {
+    rows.push({"name": nameArr[activeIndices[i]]});
+  }
+
+  return rows;
+  })());
+})()
+
+══════════════════════════════════════════════════════
+Query: all folders [folders]
+Path:  broad
+
+── Strategy Tree ──────────────────────────────────────
+BulkScan folders [name] (includeCompleted:false)
+
+── JXA Script ─────────────────────────────────────────
+(function() {
+  var app = Application('OmniFocus');
+  app.includeStandardAdditions = true;
+  var doc = app.defaultDocument;
+
+  return JSON.stringify((function() {
+  var items = doc.flattenedFolders;
+
+  // Bulk-read properties via Apple Events
+  var nameArr = items.name();
+
+
+  // Alignment check
+  var _lens = {"nameArr": nameArr.length};
+  var _first = _lens["nameArr"];
+  for (var _k in _lens) {
+    if (_lens[_k] !== _first) {
+      return {error: "alignment mismatch", properties: Object.keys(_lens), lengths: _lens};
+    }
+  }
+
+
+  // Build row objects
+  var rows = [];
+  for (var i = 0; i < nameArr.length; i++) {
+    rows.push({"name": nameArr[i]});
+  }
+
+  return rows;
+  })());
+})()
+
