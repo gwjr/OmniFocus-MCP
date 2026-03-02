@@ -93,9 +93,11 @@ const SIMPLE_PROPS: Record<string, Record<string, FourCC>> = {
     note:   OFFolderProp.note,
   },
   tags: {
-    id:               OFTagProp.id,
-    name:             OFTagProp.name,
-    effectivelyHidden: OFTagProp.effectivelyHidden,
+    id:                 OFTagProp.id,
+    name:               OFTagProp.name,
+    hidden:             OFTagProp.hidden,
+    effectivelyHidden:  OFTagProp.effectivelyHidden,
+    availableTaskCount: OFTagProp.availableTaskCount,
   },
 };
 
@@ -116,7 +118,8 @@ const CHAIN_PROPS: Record<string, Record<string, { relation: FourCC; terminal: F
     parentFolderId: { relation: OFFolderProp.container, terminal: OFFolderProp.id },
   },
   tags: {
-    parentId: { relation: OFTagProp.container, terminal: OFTagProp.id },
+    parentId:   { relation: OFTagProp.container, terminal: OFTagProp.id },
+    parentName: { relation: OFTagProp.container, terminal: OFTagProp.name },
   },
 };
 
@@ -159,8 +162,8 @@ function activeFilterExpr(entity: EntityType): LoweredExpr {
       return {
         op: 'and',
         args: [
-          { op: 'not', args: [{ var: 'completed' }] },
-          { op: 'not', args: [{ var: 'dropped' }] },
+          { op: 'not', args: [{ var: 'effectivelyCompleted' }] },
+          { op: 'not', args: [{ var: 'effectivelyDropped' }] },
         ],
       };
     case 'projects':
@@ -177,7 +180,7 @@ function activeFilterExpr(entity: EntityType): LoweredExpr {
 /** Variable names referenced by the active filter for a given entity. */
 function activeFilterVars(entity: EntityType): string[] {
   switch (entity) {
-    case 'tasks':    return ['completed', 'dropped'];
+    case 'tasks':    return ['effectivelyCompleted', 'effectivelyDropped'];
     case 'projects': return ['status'];
     case 'tags':     return ['effectivelyHidden'];
     case 'folders':  return [];          // No folder active filter

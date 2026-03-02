@@ -167,7 +167,7 @@ describe('JxaEmitter.membershipLookup', () => {
       includeCompleted: false,
     };
     const frag = emitter.membershipLookup(node);
-    assert.ok(frag.body.includes('completed'), 'should filter completed tasks');
+    assert.ok(frag.body.includes('effectivelyCompleted'), 'should filter effectively completed tasks');
   });
 });
 

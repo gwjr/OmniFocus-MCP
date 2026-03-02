@@ -154,7 +154,7 @@ describe('lowerStrategy — BulkScan', () => {
     assert.ok(filterRef > zipRef, 'Filter should come after Zip');
 
     // The filter predicate should express active-task filtering:
-    // {op:'and', args:[{op:'not',args:[{var:'completed'}]},{op:'not',args:[{var:'dropped'}]}]}
+    // {op:'and', args:[{op:'not',args:[{var:'effectivelyCompleted'}]},{op:'not',args:[{var:'effectivelyDropped'}]}]}
     const filter = filterNode as Extract<EventNode, { kind: 'Filter' }>;
     assert.equal(filter.source, zipRef);
     const pred = filter.predicate as any;
@@ -167,8 +167,8 @@ describe('lowerStrategy — BulkScan', () => {
     }
     // Check the var names
     const varNames = pred.args.map((a: any) => a.args[0].var);
-    assert.ok(varNames.includes('completed'));
-    assert.ok(varNames.includes('dropped'));
+    assert.ok(varNames.includes('effectivelyCompleted'));
+    assert.ok(varNames.includes('effectivelyDropped'));
 
     // result should point to the project-exclusion anti-SemiJoin (after Filter)
     const semiJoins = findNodes(plan, 'SemiJoin');
@@ -491,18 +491,18 @@ describe('lowerStrategy — MembershipScan', () => {
 // ── Regression: active filter variable availability ─────────────────────
 //
 // When includeCompleted:false, the active filter predicate references
-// variables (completed/dropped for tasks, status for
+// variables (effectivelyCompleted/effectivelyDropped for tasks, status for
 // projects, etc.) that must be present in the Zip'd rows. If the user's
 // select columns don't include them, the lowering pass must inject them
 // as additional bulk-read Property nodes fed into the Zip.
 //
-// Without this, the Filter evaluates `row.completed` as
+// Without this, the Filter evaluates `row.effectivelyCompleted` as
 // undefined, and `!undefined` is truthy — silently including all rows
 // instead of filtering completed/dropped items.
 
 describe('lowerStrategy — active filter variables in Zip', () => {
 
-  it('tasks: Zip includes completed and dropped when includeCompleted:false', () => {
+  it('tasks: Zip includes effectivelyCompleted and effectivelyDropped when includeCompleted:false', () => {
     const strategy: StrategyNode = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -518,12 +518,12 @@ describe('lowerStrategy — active filter variables in Zip', () => {
 
     const colNames = zip.columns.map(c => c.name);
     assert.ok(
-      colNames.includes('completed'),
-      `Zip columns should include completed for active filter, got: [${colNames.join(', ')}]`,
+      colNames.includes('effectivelyCompleted'),
+      `Zip columns should include effectivelyCompleted for active filter, got: [${colNames.join(', ')}]`,
     );
     assert.ok(
-      colNames.includes('dropped'),
-      `Zip columns should include dropped for active filter, got: [${colNames.join(', ')}]`,
+      colNames.includes('effectivelyDropped'),
+      `Zip columns should include effectivelyDropped for active filter, got: [${colNames.join(', ')}]`,
     );
   });
 
@@ -610,7 +610,7 @@ describe('lowerStrategy — active filter variables in Zip', () => {
     const strategy: StrategyNode = {
       kind: 'BulkScan',
       entity: 'tasks',
-      columns: ['id', 'name', 'completed', 'dropped'],
+      columns: ['id', 'name', 'effectivelyCompleted', 'effectivelyDropped'],
       includeCompleted: false,
     };
     const plan = lowerStrategy(strategy);
@@ -818,16 +818,18 @@ describe('lowerStrategy — Filter nodes carry entity field', () => {
   });
 });
 
-// ── Regression: tasks active filter uses completed/dropped, not effectively (#24) ──
+// ── Regression: tasks active filter uses effectivelyCompleted/effectivelyDropped (#30) ──
 //
-// The task active filter must reference `completed` and `dropped` (direct
-// boolean Apple Events properties), NOT `effectivelyCompleted` /
-// `effectivelyDropped` (which have different semantics — they propagate
-// from parent tasks and are not what the legacy pipeline uses).
+// The task active filter must reference `effectivelyCompleted` and
+// `effectivelyDropped` (which propagate from parent tasks/projects),
+// NOT `completed` / `dropped` (direct boolean properties). The
+// "effectively" variants match OmniFocus's active-task behavior:
+// a task in a dropped project has effectivelyDropped:true even if its
+// own dropped flag is false.
 
 describe('lowerStrategy — tasks active filter uses correct variables', () => {
 
-  it('tasks active filter predicate uses completed and dropped', () => {
+  it('tasks active filter predicate uses effectivelyCompleted and effectivelyDropped', () => {
     const strategy: StrategyNode = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -850,15 +852,15 @@ describe('lowerStrategy — tasks active filter uses correct variables', () => {
     }
     collectVars(pred);
 
-    assert.ok(vars.includes('completed'), 'should reference completed');
-    assert.ok(vars.includes('dropped'), 'should reference dropped');
-    assert.ok(!vars.includes('effectivelyCompleted'),
-      'must NOT reference effectivelyCompleted — use completed instead');
-    assert.ok(!vars.includes('effectivelyDropped'),
-      'must NOT reference effectivelyDropped — use dropped instead');
+    assert.ok(vars.includes('effectivelyCompleted'), 'should reference effectivelyCompleted');
+    assert.ok(vars.includes('effectivelyDropped'), 'should reference effectivelyDropped');
+    assert.ok(!vars.includes('completed'),
+      'must NOT reference completed — use effectivelyCompleted instead');
+    assert.ok(!vars.includes('dropped'),
+      'must NOT reference dropped — use effectivelyDropped instead');
   });
 
-  it('tasks active filter Zip columns include completed and dropped, not effectively*', () => {
+  it('tasks active filter Zip columns include effectivelyCompleted and effectivelyDropped, not completed/dropped', () => {
     const strategy: StrategyNode = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -872,12 +874,12 @@ describe('lowerStrategy — tasks active filter uses correct variables', () => {
     const zip = zips[0].node as Extract<EventNode, { kind: 'Zip' }>;
     const colNames = zip.columns.map(c => c.name);
 
-    assert.ok(colNames.includes('completed'), 'Zip should include completed column');
-    assert.ok(colNames.includes('dropped'), 'Zip should include dropped column');
-    assert.ok(!colNames.includes('effectivelyCompleted'),
-      'Zip must NOT include effectivelyCompleted');
-    assert.ok(!colNames.includes('effectivelyDropped'),
-      'Zip must NOT include effectivelyDropped');
+    assert.ok(colNames.includes('effectivelyCompleted'), 'Zip should include effectivelyCompleted column');
+    assert.ok(colNames.includes('effectivelyDropped'), 'Zip should include effectivelyDropped column');
+    assert.ok(!colNames.includes('completed'),
+      'Zip must NOT include completed');
+    assert.ok(!colNames.includes('dropped'),
+      'Zip must NOT include dropped');
   });
 
   it('projects active filter uses status (not completed/dropped)', () => {

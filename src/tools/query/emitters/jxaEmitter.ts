@@ -30,8 +30,8 @@ const entityConfigs: Record<EntityType, EntityJxaConfig> = {
   tasks: {
     collection: 'doc.flattenedTasks',
     activeFilters: [
-      { bulkProperty: 'completed', keepWhen: 'false' },
-      { bulkProperty: 'dropped', keepWhen: 'false' },
+      { bulkProperty: 'effectivelyCompleted', keepWhen: 'false' },
+      { bulkProperty: 'effectivelyDropped', keepWhen: 'false' },
     ],
   },
   tags: {
@@ -106,14 +106,14 @@ interface RelationshipConfig {
 const relationships: Record<string, Record<string, RelationshipConfig>> = {
   tags: {
     tasks: { accessor: 'tasks', activeFilters: [
-      { bulkProperty: 'completed', keepWhen: 'false' },
-      { bulkProperty: 'dropped', keepWhen: 'false' },
+      { bulkProperty: 'effectivelyCompleted', keepWhen: 'false' },
+      { bulkProperty: 'effectivelyDropped', keepWhen: 'false' },
     ] },
   },
   projects: {
     tasks: { accessor: 'flattenedTasks', activeFilters: [
-      { bulkProperty: 'completed', keepWhen: 'false' },
-      { bulkProperty: 'dropped', keepWhen: 'false' },
+      { bulkProperty: 'effectivelyCompleted', keepWhen: 'false' },
+      { bulkProperty: 'effectivelyDropped', keepWhen: 'false' },
     ] },
   },
   folders: {

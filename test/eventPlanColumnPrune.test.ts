@@ -244,8 +244,8 @@ describe('pruneColumns', () => {
 
   it('end-to-end: lowerStrategy + pruneColumns preserves needed injected columns', () => {
     // BulkScan(tasks, [name], includeCompleted:false) + Project[name]
-    // Lowering injects completed+dropped (active filter) and id (project exclusion).
-    // All injected columns ARE needed: completed/dropped by Filter, id by SemiJoin.
+    // Lowering injects effectivelyCompleted+effectivelyDropped (active filter) and id (project exclusion).
+    // All injected columns ARE needed: effectivelyCompleted/effectivelyDropped by Filter, id by SemiJoin.
     // So nothing gets pruned — test verifies correctness.
     const strategy: StrategyNode = {
       kind: 'Project',
@@ -267,8 +267,8 @@ describe('pruneColumns', () => {
     const zip = findOne(pruned, 'Zip') as Extract<EventNode, { kind: 'Zip' }>;
     const colNames = zip.columns.map(c => c.name);
     assert.ok(colNames.includes('name'), 'user-selected column');
-    assert.ok(colNames.includes('completed'), 'needed by active filter');
-    assert.ok(colNames.includes('dropped'), 'needed by active filter');
+    assert.ok(colNames.includes('effectivelyCompleted'), 'needed by active filter');
+    assert.ok(colNames.includes('effectivelyDropped'), 'needed by active filter');
     assert.ok(colNames.includes('id'), 'needed by project-exclusion SemiJoin');
   });
 
