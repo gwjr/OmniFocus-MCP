@@ -247,7 +247,42 @@ The per-item cost (~7.6ms for tasks, ~4.9ms for projects) is dramatically higher
 
 ---
 
-## 8. JXA vs AppleScript
+## 8. OmniJS `byIdentifier()` vs JXA Bulk Read
+
+A different access pattern: given a set of known task IDs (e.g., from a SemiJoin or MembershipScan), is it faster to look up each item individually via OmniJS's `Task.byIdentifier()`, or to bulk-read the entire collection via JXA Apple Events and filter in-script?
+
+OmniJS `byIdentifier()` runs inside OmniFocus's JavaScript environment (via `app.evaluateJavascript()`), accessing objects directly without Apple Events serialisation. This avoids the IPC overhead per property but must be called once per item. The JXA bulk path reads 5 property arrays from all 2,137 tasks in parallel, then filters to the wanted IDs — a fixed cost regardless of how many IDs are wanted.
+
+5 runs each, alternating, reading 5 properties per item (name, id, flagged, dueDate, deferDate):
+
+| IDs wanted | OmniJS byId | JXA bulk | Winner | Per-ID (OmniJS) |
+|-----------:|------------:|---------:|--------|----------------:|
+| 1 | 123ms | 197ms | OmniJS 1.6× | 123ms |
+| 5 | 126ms | 186ms | OmniJS 1.5× | 25ms |
+| 10 | 218ms | 414ms | OmniJS 1.9× | 22ms |
+| 50 | 372ms | 428ms | OmniJS 1.2× | 7ms |
+| 100 | 497ms | 425ms | JXA bulk 1.2× | 5ms |
+| 500 | 3,741ms | 707ms | JXA bulk 5.3× | 7ms |
+
+**The crossover is around 50–100 IDs.** Below 50, `byIdentifier()` wins because it avoids reading the entire collection — the per-item cost (~7–25ms depending on count) is less than the bulk read's fixed cost (~400ms for 5 properties). Above 100, the per-item cost accumulates and the bulk read wins decisively.
+
+The `byIdentifier()` per-item cost is not constant: it starts at ~123ms for a single item (dominated by the `evaluateJavascript()` call overhead) and drops to ~5–7ms per item at scale as the fixed overhead amortises. But at 500 items the total reaches 3.7s with high variance (2.3s–15.9s), while the JXA bulk path stays stable at ~700ms. OmniJS scaling is unpredictable at volume.
+
+**Implications for the query engine:**
+
+1. **Small enrichment sets (<50 items):** After a SemiJoin or MembershipScan narrows results to a small ID set, `byIdentifier()` is the right enrichment path. It's faster than a full bulk read and avoids reading data for 2,000+ irrelevant items.
+
+2. **Large result sets (>100 items):** Bulk-read + filter remains better. The fixed cost of reading the entire collection is amortised across the result set, and the JXA path has much lower variance.
+
+3. **The crossover at ~50–100 IDs is specific to 5 properties.** With more properties, the JXA bulk-read cost increases (see §4.2 on the JXA bridge tax), which would push the crossover higher — `byIdentifier()` might win up to ~200 IDs when reading 12+ properties.
+
+4. **This creates a two-path enrichment strategy:** the planner can estimate result set size (from the SemiJoin cardinality or a `limit` clause) and choose `byIdentifier()` for small sets vs bulk-read for large ones.
+
+5. **Bridge serialisation matters for larger result sets.** The benchmark returns results as a JSON array of objects (`[{name, id, flagged, ...}]`), which repeats property keys for every item. Moving data across the `evaluateJavascript()` bridge can be surprisingly slow — the JXA↔OmniJS boundary involves string serialisation in both directions. For the `byIdentifier()` path, returning an array of arrays (positional columns, no keys) would reduce the payload size and deserialisation cost. At 500 items × 5 properties, the object-keyed JSON is roughly 2× the size of the positional form. This overhead is folded into the measurements above and may account for some of the non-linear scaling at high item counts.
+
+---
+
+## 9. JXA vs AppleScript
 
 ### At low property counts: equivalent
 
@@ -298,10 +333,12 @@ Language choice matters for scripts with many Apple Events calls. **For scripts 
 | Tier | Cost | Example |
 |------|-----:|---------|
 | IPC floor | ~100ms | Any round-trip to OmniFocus |
+| OmniJS byIdentifier() | ~120ms | Single item lookup (fixed overhead) |
 | Scalar bulk read | ~140–170ms | `flattenedTasks.name()` (2,137 items) |
 | Chain bulk read | ~200–400ms | `flattenedTasks.containingProject.name()` (high variance) |
 | Marginal prop (JXA) | ~55ms | Each additional property in same JXA script |
 | Marginal prop (AS) | ~30ms* | Each additional property in same AS script |
+| Marginal byIdentifier() | ~7ms | Each additional item in same OmniJS script |
 | Single `.whose()` | ~150ms | One predicate evaluation |
 | Relationship traversal | ~140–170ms | tag → tasks.id() |
 | Note bulk read | ~5–16s | `flattenedTasks.note()` |
@@ -326,3 +363,5 @@ All times are gross (include osascript process startup, script compilation, IPC,
 6. **Notes are a special case.** At 7.6ms per item (vs <0.1ms for scalars), notes are ~100× more expensive. Keep them out of `where` clauses and warn on large `select` result sets.
 
 7. **Use AppleScript for bulk reads with many properties.** Below ~8 properties, JXA and AS are equivalent — choose for ergonomics. Above ~8 properties, the JXA bridge tax becomes material and AppleScript is 2–4× faster. Pre-compiled AppleScript (.scpt) is faster still, saving ~1.7s of compilation overhead per invocation. For the query engine's BulkScan hot path (which routinely reads 8–15 properties), generating AppleScript instead of JXA is a concrete optimisation opportunity.
+
+8. **Use OmniJS `byIdentifier()` for small enrichment sets.** When a SemiJoin or MembershipScan narrows results to <50 IDs, `byIdentifier()` (at ~7ms/item + ~120ms overhead) is faster than a full bulk read (~400ms+ for 5 properties). Above ~100 IDs, bulk-read + filter wins decisively and with much lower variance. The planner can use estimated result set size (from SemiJoin cardinality or `limit` clauses) to choose the enrichment path.
