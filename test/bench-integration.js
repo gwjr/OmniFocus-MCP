@@ -8,7 +8,8 @@
  */
 
 import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
-import { planFromAst } from '../dist/tools/query/planner.js';
+import { buildPlanTree } from '../dist/tools/query/planner.js';
+import { planPathLabel } from '../dist/tools/query/planTree.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
 
 // ── Test Cases ────────────────────────────────────────────────────────────
@@ -87,8 +88,8 @@ async function runTest(tc) {
   let path;
   try {
     const ast = tc.params.where != null ? lowerExpr(tc.params.where) : true;
-    const plan = planFromAst(ast, tc.params.entity, tc.params.select);
-    path = plan.path;
+    const tree = buildPlanTree(ast, tc.params.entity, tc.params.select);
+    path = planPathLabel(tree);
   } catch {
     path = '?';
   }

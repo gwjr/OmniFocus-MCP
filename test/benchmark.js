@@ -16,7 +16,7 @@
  */
 
 import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
-import { planFromAst, buildPlanTree } from '../dist/tools/query/planner.js';
+import { buildPlanTree } from '../dist/tools/query/planner.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
 import { optimize, planPathLabel } from '../dist/tools/query/planTree.js';
 import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
@@ -164,11 +164,11 @@ const testCases = [
     },
   },
 
-  // ── #5: Tag-based queries (two-phase) ─────────────────────────────────
+  // ── #5: Tag-based queries (tags is now chain → broad) ─────────────────
   {
-    name: 'Tasks with tag (semi-join)',
+    name: 'Tasks with tag (chain)',
     category: 'tags',
-    expected: 'semijoin',
+    expected: 'broad',
     params: {
       entity: 'tasks',
       where: { contains: [{ var: 'tags' }, 'waiting'] },

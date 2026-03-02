@@ -77,8 +77,24 @@ describe('buildPlanTree — tree shapes', () => {
     assert.ok(tree.source.projectScope, 'should have projectScope');
   });
 
-  it('two-phase: per-item vars → Filter(PerItemEnrich(PreFilter(BulkScan)))', () => {
+  it('tags (chain) → Filter(BulkScan) — no two-phase', () => {
     const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
+    assert.equal(tree.kind, 'Filter');
+    if (tree.kind !== 'Filter') return;
+    assert.equal(tree.source.kind, 'BulkScan');
+  });
+
+  it('status (computed) → Filter(BulkScan) with computedVars', () => {
+    const tree = plan({ eq: [{ var: 'status' }, 'Available'] });
+    assert.equal(tree.kind, 'Filter');
+    if (tree.kind !== 'Filter') return;
+    assert.equal(tree.source.kind, 'BulkScan');
+    if (tree.source.kind !== 'BulkScan') return;
+    assert.ok(tree.source.computedVars?.has('status'));
+  });
+
+  it('two-phase: projects.folderName (per-item) → Filter(PerItemEnrich(PreFilter(BulkScan)))', () => {
+    const tree = plan({ contains: [{ var: 'folderName' }, 'Legal'] }, 'projects');
     assert.equal(tree.kind, 'Filter');
     if (tree.kind !== 'Filter') return;
     assert.equal(tree.source.kind, 'PerItemEnrich');
@@ -89,14 +105,14 @@ describe('buildPlanTree — tree shapes', () => {
   });
 
   it('two-phase: BulkScan includes id in columns', () => {
-    const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
+    const tree = plan({ contains: [{ var: 'folderName' }, 'Legal'] }, 'projects');
     const scan = findNode(tree, 'BulkScan');
     assert.ok(scan && scan.kind === 'BulkScan');
     assert.ok(scan.columns.includes('id'), 'columns should include id');
   });
 
   it('two-phase: PerItemEnrich has fallback to OmniJSScan', () => {
-    const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
+    const tree = plan({ contains: [{ var: 'folderName' }, 'Legal'] }, 'projects');
     const enrich = findNode(tree, 'PerItemEnrich');
     assert.ok(enrich && enrich.kind === 'PerItemEnrich');
     assert.equal(enrich.fallback.kind, 'OmniJSScan');
@@ -151,11 +167,12 @@ describe('buildPlanTree — columns and vars', () => {
     assert.ok(scan.columns.includes('projectName'));
   });
 
-  it('per-item vars go to PerItemEnrich, not BulkScan columns', () => {
+  it('tags (chain) in columns, not PerItemEnrich', () => {
     const tree = plan({ contains: [{ var: 'tags' }, 'work'] });
-    const enrich = findNode(tree, 'PerItemEnrich');
-    assert.ok(enrich && enrich.kind === 'PerItemEnrich');
-    assert.ok(enrich.perItemVars.has('tags'));
+    const scan = findNode(tree, 'BulkScan');
+    assert.ok(scan && scan.kind === 'BulkScan');
+    assert.ok(scan.columns.includes('tags'));
+    assert.equal(findNode(tree, 'PerItemEnrich'), null);
   });
 
   it('expensive var in select → PerItemEnrich (not fallback)', () => {
@@ -200,10 +217,10 @@ describe('planPathLabel', () => {
     );
   });
 
-  it('two-phase plan → two-phase', () => {
+  it('tags plan (now chain) → broad', () => {
     assert.equal(
       planPathLabel(plan({ contains: [{ var: 'tags' }, 'x'] })),
-      'two-phase'
+      'broad'
     );
   });
 
@@ -283,20 +300,19 @@ describe('extractTagPredicates', () => {
 // ── Tag Semi-Join Rewrite ────────────────────────────────────────────────
 
 describe('tagSemiJoinPass', () => {
-  it('rewrites contains(tags, literal) → SemiJoin', () => {
+  // After reclassification, tags is a chain var → no two-phase shape for tag queries.
+  // The tagSemiJoinPass pattern-matches Filter→PerItemEnrich→PreFilter→BulkScan,
+  // which no longer appears for tasks tag queries. The pass is effectively a no-op.
+
+  it('tags (now chain) → no SemiJoin rewrite (no two-phase shape)', () => {
     const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
     const rewritten = tagSemiJoinPass(tree);
-
-    // Should find a SemiJoin
-    const sj = findNode(rewritten, 'SemiJoin');
-    assert.ok(sj, 'should have SemiJoin');
-
-    // Should find a MembershipScan
-    const tms = findNode(rewritten, 'MembershipScan');
-    assert.ok(tms, 'should have MembershipScan');
+    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT have SemiJoin');
+    // Tree should be Filter(BulkScan) unchanged
+    assert.equal(rewritten.kind, 'Filter');
   });
 
-  it('multi-tag AND → chained SemiJoins', () => {
+  it('multi-tag AND → no SemiJoin rewrite (chain, not per-item)', () => {
     const tree = plan({
       and: [
         { contains: [{ var: 'tags' }, 'a'] },
@@ -304,92 +320,23 @@ describe('tagSemiJoinPass', () => {
       ]
     });
     const rewritten = tagSemiJoinPass(tree);
-    const sjCount = countNodes(rewritten, 'SemiJoin');
-    assert.equal(sjCount, 2, 'should have 2 SemiJoins');
-  });
-
-  it('tag + non-tag conjuncts → SemiJoin + Filter', () => {
-    const tree = plan({
-      and: [
-        { contains: [{ var: 'tags' }, 'waiting'] },
-        { eq: [{ var: 'flagged' }, true] }
-      ]
-    });
-    const rewritten = tagSemiJoinPass(tree);
-    assert.ok(findNode(rewritten, 'SemiJoin'), 'should have SemiJoin');
-    assert.ok(findNode(rewritten, 'Filter'), 'should have Filter for remainder');
-  });
-
-  it('does NOT rewrite tags under OR', () => {
-    const tree = plan({
-      or: [
-        { contains: [{ var: 'tags' }, 'waiting'] },
-        { eq: [{ var: 'flagged' }, true] }
-      ]
-    });
-    // This will be two-phase (tags is per-item) but OR prevents extraction
-    const rewritten = tagSemiJoinPass(tree);
-    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT have SemiJoin');
-  });
-
-  it('does NOT rewrite tags under NOT', () => {
-    const tree = plan({
-      not: [{ contains: [{ var: 'tags' }, 'waiting'] }]
-    });
-    const rewritten = tagSemiJoinPass(tree);
-    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT have SemiJoin');
+    assert.equal(countNodes(rewritten, 'SemiJoin'), 0);
   });
 
   it('does NOT rewrite for non-tasks entity', () => {
-    // projects entity — tags doesn't exist there, this would be an error
-    // Use a valid two-phase scenario on projects: folderName (per-item)
     const tree = plan({ contains: [{ var: 'folderName' }, 'Legal'] }, 'projects');
     const rewritten = tagSemiJoinPass(tree);
     assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT have SemiJoin');
   });
 
-  it('preserves BulkScan id column after rewrite', () => {
-    const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
-    const rewritten = tagSemiJoinPass(tree);
-    const scan = findNode(rewritten, 'BulkScan');
-    assert.ok(scan && scan.kind === 'BulkScan');
-    assert.ok(scan.columns.includes('id'), 'BulkScan should include id');
-  });
-
-  it('tag + other per-item var → SemiJoin with PerItemEnrich for remaining', () => {
-    // tags (per-item, rewritten) + status (per-item, kept)
-    const tree = plan({
-      and: [
-        { contains: [{ var: 'tags' }, 'waiting'] },
-        { eq: [{ var: 'status' }, 'Available'] }
-      ]
-    });
-    const rewritten = optimize(tree, [tagSemiJoinPass, normalizePass]);
-    assert.ok(findNode(rewritten, 'SemiJoin'), 'should have SemiJoin');
-    const enrich = findNode(rewritten, 'PerItemEnrich');
-    assert.ok(enrich && enrich.kind === 'PerItemEnrich', 'should have PerItemEnrich');
-    assert.ok(!enrich.perItemVars.has('tags'), 'tags should be removed from perItemVars');
-    assert.ok(enrich.perItemVars.has('status'), 'status should remain in perItemVars');
-  });
-
-  it('tags as only per-item var → no PerItemEnrich after rewrite + normalize', () => {
-    const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
-    const rewritten = optimize(tree, [tagSemiJoinPass, normalizePass]);
-    assert.equal(findNode(rewritten, 'PerItemEnrich'), null, 'PerItemEnrich should be eliminated');
-  });
-
-  it('tags in select only (not where) → no rewrite (no two-phase shape)', () => {
-    // Only easy vars in where, tags in select triggers two-phase
-    // But the PreFilter won't have tags in assumeTrue since it's select-only
+  it('tags in select only → no rewrite (chain, no two-phase shape)', () => {
     const tree = plan(
       { eq: [{ var: 'flagged' }, true] },
       'tasks',
       ['name', 'tags']
     );
-    // Two-phase shape: Filter → PerItemEnrich → PreFilter → BulkScan
-    // But the predicate doesn't contain tags, so extractTagPredicates finds nothing
     const rewritten = tagSemiJoinPass(tree);
-    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT rewrite select-only tags');
+    assert.equal(findNode(rewritten, 'SemiJoin'), null, 'should NOT rewrite');
   });
 });
 
@@ -477,10 +424,10 @@ describe('walkPlan', () => {
 // ── planPathLabel after optimization ────────────────────────────────────
 
 describe('planPathLabel after optimization', () => {
-  it('tag semi-join → semijoin', () => {
+  it('tag query (now chain) → broad after optimization', () => {
     const tree = plan({ contains: [{ var: 'tags' }, 'waiting'] });
     const rewritten = optimize(tree, [tagSemiJoinPass, normalizePass]);
-    assert.equal(planPathLabel(rewritten), 'semijoin');
+    assert.equal(planPathLabel(rewritten), 'broad');
   });
 });
 
@@ -613,8 +560,8 @@ describe('crossEntityJoinPass', () => {
   });
 
   it('does not rewrite tasks entity (no joins registered)', () => {
-    // Tasks with status (per-item) — no cross-entity join available
-    const tree = plan({ eq: [{ var: 'status' }, 'Available'] }, 'tasks');
+    // Tasks with easy/computed vars — no cross-entity join available
+    const tree = plan({ eq: [{ var: 'flagged' }, true] }, 'tasks');
     const rewritten = crossEntityJoinPass(tree);
     assert.equal(findNode(rewritten, 'CrossEntityJoin'), null, 'should NOT have CrossEntityJoin');
   });

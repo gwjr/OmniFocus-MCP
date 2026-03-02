@@ -88,6 +88,9 @@ const chainAccessors: Record<EntityType, Record<string, string>> = {
     projectName: '  var projectNameArr = items.containingProject.name();',
     projectId:   `  var _projIds = items.containingProject.id();
   var projectIdArr = _projIds.map(function(v) { return v ? v.toString() : null; });`,
+    parentId:    `  var _parentIds = items.parentTask.id();
+  var parentIdArr = _parentIds.map(function(v) { return v ? v.toString() : null; });`,
+    tags:        '  var tagsArr = items.tags.name();',
   },
   tags: {
     parentId: `  var _containerIds = items.container.id();
@@ -353,7 +356,13 @@ ${filterReadLines}
         if (name === 'id') return `"id": idKeys[${indexVar}]`;
         return `"${name}": ${name}Arr[${indexVar}]`;
       }),
-      ...chainProps.map(({ name }) => `"${name}": ${name}Arr[${indexVar}]`)
+      ...chainProps.map(({ name }) => {
+        // tags chain returns nested arrays — lowercase each tag name
+        if (name === 'tags') {
+          return `"tags": (tagsArr[${indexVar}] || []).map(function(t) { return t.toLowerCase(); })`;
+        }
+        return `"${name}": ${name}Arr[${indexVar}]`;
+      })
     ];
 
     return `  var items = ${sourceExpr};
