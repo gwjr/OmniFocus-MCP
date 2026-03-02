@@ -19,13 +19,13 @@
  */
 
 import type {
-  PlanNode,
+  StrategyNode,
   PerItemEnrich,
   BulkScan,
   CrossEntityJoin,
   OptimizationPass,
-} from '../planTree.js';
-import { walkPlan } from '../planTree.js';
+} from '../strategy.js';
+import { walkPlan } from '../strategy.js';
 import type { EntityType } from '../variables.js';
 
 // ── Join Resolution Descriptors ──────────────────────────────────────────
@@ -106,7 +106,7 @@ export const crossEntityJoinPass: OptimizationPass = (root) => {
 
 // ── Rewrite Logic ───────────────────────────────────────────────────────
 
-function rewriteNode(node: PlanNode): PlanNode {
+function rewriteNode(node: StrategyNode): StrategyNode {
   if (node.kind !== 'PerItemEnrich') return node;
   const enrich = node;
 
@@ -126,7 +126,7 @@ function rewriteNode(node: PlanNode): PlanNode {
   if (resolvable.length === 0) return node;
 
   // Build the replacement tree
-  let current: PlanNode = enrich.source;
+  let current: StrategyNode = enrich.source;
 
   for (const desc of resolvable) {
     // Ensure the source BulkScan has the join key column
@@ -181,7 +181,7 @@ function rewriteNode(node: PlanNode): PlanNode {
  * Walk through unary nodes to find and update the BulkScan with an
  * additional column if not already present.
  */
-function ensureColumnInSource(node: PlanNode, column: string): PlanNode {
+function ensureColumnInSource(node: StrategyNode, column: string): StrategyNode {
   if (node.kind === 'BulkScan') {
     if (!node.columns.includes(column)) {
       return { ...node, columns: [...node.columns, column] };

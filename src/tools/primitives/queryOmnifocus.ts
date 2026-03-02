@@ -14,7 +14,7 @@ import { buildPlanTree } from '../query/planner.js';
 import { executeCompiledQuery } from '../query/executor.js';
 import { compileQuery } from '../query/compile.js';
 import { JxaEmitter } from '../query/emitters/jxaEmitter.js';
-import { optimize, planPathLabel, type PlanNode } from '../query/planTree.js';
+import { optimize, planPathLabel, type StrategyNode } from '../query/strategy.js';
 import { tagSemiJoinPass } from '../query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../query/optimizations/normalize.js';
 import { crossEntityJoinPass } from '../query/optimizations/crossEntityJoin.js';
@@ -127,7 +127,7 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
 // ── Post-Processing Wrappers ────────────────────────────────────────────
 
-function wrapWithPostProcessing(tree: PlanNode, params: QueryOmnifocusParams): PlanNode {
+function wrapWithPostProcessing(tree: StrategyNode, params: QueryOmnifocusParams): StrategyNode {
   let current = tree;
 
   // Sort

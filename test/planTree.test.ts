@@ -2,12 +2,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { lowerExpr } from '../dist/tools/query/lower.js';
 import { buildPlanTree } from '../dist/tools/query/planner.js';
-import { optimize, walkPlan, planPathLabel } from '../dist/tools/query/planTree.js';
+import { optimize, walkPlan, planPathLabel } from '../dist/tools/query/strategy.js';
 import { tagSemiJoinPass, extractTagPredicates } from '../dist/tools/query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
 import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
 import type { LoweredExpr } from '../dist/tools/query/fold.js';
-import type { PlanNode } from '../dist/tools/query/planTree.js';
+import type { StrategyNode } from '../dist/tools/query/strategy.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -21,8 +21,8 @@ function plan(where: unknown, entity: string = 'tasks', select?: string[]) {
 }
 
 /** Find the innermost node of a given kind */
-function findNode(tree: PlanNode, kind: string): PlanNode | null {
-  let found: PlanNode | null = null;
+function findNode(tree: StrategyNode, kind: string): StrategyNode | null {
+  let found: StrategyNode | null = null;
   walkPlan(tree, n => {
     if (n.kind === kind) found = n;
     return n;
@@ -31,7 +31,7 @@ function findNode(tree: PlanNode, kind: string): PlanNode | null {
 }
 
 /** Count nodes of a given kind */
-function countNodes(tree: PlanNode, kind: string): number {
+function countNodes(tree: StrategyNode, kind: string): number {
   let count = 0;
   walkPlan(tree, n => {
     if (n.kind === kind) count++;
@@ -111,34 +111,34 @@ describe('buildPlanTree — tree shapes', () => {
     assert.ok(scan.columns.includes('id'), 'columns should include id');
   });
 
-  it('two-phase: PerItemEnrich has fallback to OmniJSScan', () => {
+  it('two-phase: PerItemEnrich has fallback to FallbackScan', () => {
     const tree = plan({ contains: [{ var: 'folderName' }, 'Legal'] }, 'projects');
     const enrich = findNode(tree, 'PerItemEnrich');
     assert.ok(enrich && enrich.kind === 'PerItemEnrich');
-    assert.equal(enrich.fallback.kind, 'OmniJSScan');
+    assert.equal(enrich.fallback.kind, 'FallbackScan');
   });
 
-  it('OmniJS fallback: perspectives → OmniJSScan', () => {
+  it('OmniJS fallback: perspectives → FallbackScan', () => {
     const tree = plan(undefined, 'perspectives');
-    assert.equal(tree.kind, 'OmniJSScan');
+    assert.equal(tree.kind, 'FallbackScan');
   });
 
-  it('OmniJS fallback: expensive var (note) in where → OmniJSScan', () => {
+  it('OmniJS fallback: expensive var (note) in where → FallbackScan', () => {
     const tree = plan({ contains: [{ var: 'note' }, 'important'] });
-    assert.equal(tree.kind, 'OmniJSScan');
+    assert.equal(tree.kind, 'FallbackScan');
   });
 
-  it('OmniJS fallback: folder container → OmniJSScan', () => {
+  it('OmniJS fallback: folder container → FallbackScan', () => {
     const tree = plan({ container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] });
-    assert.equal(tree.kind, 'OmniJSScan');
+    assert.equal(tree.kind, 'FallbackScan');
   });
 
-  it('OmniJS fallback: tags entity with container → OmniJSScan', () => {
+  it('OmniJS fallback: tags entity with container → FallbackScan', () => {
     const tree = plan(
       { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
       'tags'
     );
-    assert.equal(tree.kind, 'OmniJSScan');
+    assert.equal(tree.kind, 'FallbackScan');
   });
 });
 
@@ -195,10 +195,10 @@ describe('buildPlanTree — includeCompleted propagation', () => {
     assert.equal(tree.includeCompleted, true);
   });
 
-  it('propagates includeCompleted to OmniJSScan fallback', () => {
+  it('propagates includeCompleted to FallbackScan fallback', () => {
     const ast = lower({ contains: [{ var: 'note' }, 'test'] });
     const tree = buildPlanTree(ast, 'tasks', undefined, true);
-    assert.ok(tree.kind === 'OmniJSScan');
+    assert.ok(tree.kind === 'FallbackScan');
     assert.equal(tree.includeCompleted, true);
   });
 });
@@ -224,8 +224,8 @@ describe('planPathLabel', () => {
     );
   });
 
-  it('OmniJS fallback → omnijs-fallback', () => {
-    assert.equal(planPathLabel(plan(undefined, 'perspectives')), 'omnijs-fallback');
+  it('OmniJS fallback → fallback', () => {
+    assert.equal(planPathLabel(plan(undefined, 'perspectives')), 'fallback');
   });
 });
 
@@ -322,20 +322,20 @@ describe('tagSemiJoinPass', () => {
 describe('normalizePass', () => {
   it('drops empty PerItemEnrich', () => {
     // Manually build a tree with empty perItemVars
-    const tree: PlanNode = {
+    const tree: StrategyNode = {
       kind: 'PerItemEnrich',
       source: { kind: 'BulkScan', entity: 'tasks', columns: ['name'], includeCompleted: false },
       perItemVars: new Set(),
       entity: 'tasks',
       threshold: 20,
-      fallback: { kind: 'OmniJSScan', entity: 'tasks', filterAst: true, includeCompleted: false },
+      fallback: { kind: 'FallbackScan', entity: 'tasks', filterAst: true, includeCompleted: false },
     };
     const result = normalizePass(tree);
     assert.equal(result.kind, 'BulkScan');
   });
 
   it('removes PreFilter with no assumeTrue vars', () => {
-    const tree: PlanNode = {
+    const tree: StrategyNode = {
       kind: 'PreFilter',
       source: { kind: 'BulkScan', entity: 'tasks', columns: ['name'], includeCompleted: false },
       predicate: { op: 'eq', args: [{ var: 'flagged' }, true] },
@@ -348,7 +348,7 @@ describe('normalizePass', () => {
   });
 
   it('merges adjacent Filters', () => {
-    const tree: PlanNode = {
+    const tree: StrategyNode = {
       kind: 'Filter',
       source: {
         kind: 'Filter',
@@ -384,7 +384,7 @@ describe('walkPlan', () => {
   });
 
   it('can transform nodes', () => {
-    const tree: PlanNode = {
+    const tree: StrategyNode = {
       kind: 'Limit',
       source: { kind: 'BulkScan', entity: 'tasks', columns: ['name'], includeCompleted: false },
       count: 10,
@@ -547,7 +547,7 @@ describe('crossEntityJoinPass', () => {
     const tree = plan(undefined, 'projects', ['name', 'folderName']);
     const rewritten = crossEntityJoinPass(tree);
     // Find the folders BulkScan (the lookup)
-    let folderScan: PlanNode | null = null;
+    let folderScan: StrategyNode | null = null;
     walkPlan(rewritten, n => {
       if (n.kind === 'BulkScan' && n.entity === 'folders') folderScan = n;
       return n;

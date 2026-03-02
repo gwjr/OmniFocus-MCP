@@ -9,7 +9,7 @@
 
 import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
 import { buildPlanTree } from '../dist/tools/query/planner.js';
-import { planPathLabel } from '../dist/tools/query/planTree.js';
+import { planPathLabel } from '../dist/tools/query/strategy.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
 
 // ── Test Cases ────────────────────────────────────────────────────────────

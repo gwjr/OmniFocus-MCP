@@ -29,22 +29,12 @@ export interface BulkScan {
   selectColumns?: Set<string>;
   projectScope?: LoweredExpr;
   includeCompleted: boolean;
-  /** Pushed-down Apple Events .whose() predicates (optional). */
-  whoseFilters?: WhoseFilter[];
   /** Computed vars to derive in Node after scan (e.g., tasks.status from bulk booleans). */
   computedVars?: Set<string>;
 }
 
-/**
- * A predicate expressible as an Apple Events .whose() clause.
- * These are pushed down from Filter nodes to reduce the scan set.
- */
-export type WhoseFilter =
-  | { type: 'eq'; property: string; value: string | number | boolean }
-  | { type: 'contains'; property: string; value: string };
-
-export interface OmniJSScan {
-  kind: 'OmniJSScan';
+export interface FallbackScan {
+  kind: 'FallbackScan';
   entity: EntityType;
   filterAst: LoweredExpr;
   includeCompleted: boolean;
@@ -66,14 +56,14 @@ export interface MembershipScan {
 
 export interface Filter {
   kind: 'Filter';
-  source: PlanNode;
+  source: StrategyNode;
   predicate: LoweredExpr;
   entity: EntityType;
 }
 
 export interface PreFilter {
   kind: 'PreFilter';
-  source: PlanNode;
+  source: StrategyNode;
   predicate: LoweredExpr;
   entity: EntityType;
   assumeTrue: Set<string>;
@@ -81,16 +71,16 @@ export interface PreFilter {
 
 export interface PerItemEnrich {
   kind: 'PerItemEnrich';
-  source: PlanNode;
+  source: StrategyNode;
   perItemVars: Set<string>;
   entity: EntityType;
   threshold: number;
-  fallback: PlanNode;
+  fallback: StrategyNode;
 }
 
 export interface Sort {
   kind: 'Sort';
-  source: PlanNode;
+  source: StrategyNode;
   by: string;
   direction: 'asc' | 'desc';
   entity: EntityType;
@@ -98,13 +88,13 @@ export interface Sort {
 
 export interface Limit {
   kind: 'Limit';
-  source: PlanNode;
+  source: StrategyNode;
   count: number;
 }
 
 export interface Project {
   kind: 'Project';
-  source: PlanNode;
+  source: StrategyNode;
   fields: string[];
 }
 
@@ -112,16 +102,16 @@ export interface Project {
 
 export interface SemiJoin {
   kind: 'SemiJoin';
-  source: PlanNode;
-  lookup: PlanNode;
+  source: StrategyNode;
+  lookup: StrategyNode;
 }
 
 export interface CrossEntityJoin {
   kind: 'CrossEntityJoin';
   /** Source rows (e.g., projects with folderId) */
-  source: PlanNode;
+  source: StrategyNode;
   /** Lookup rows (e.g., folders with id + name) */
-  lookup: PlanNode;
+  lookup: StrategyNode;
   /** Field in source rows containing the foreign key (e.g., 'folderId') */
   sourceKey: string;
   /** Field in lookup rows to match against (e.g., 'id') */
@@ -131,9 +121,9 @@ export interface CrossEntityJoin {
 }
 
 // Discriminated union
-export type PlanNode =
+export type StrategyNode =
   | BulkScan
-  | OmniJSScan
+  | FallbackScan
   | MembershipScan
   | Filter
   | PreFilter
@@ -151,14 +141,14 @@ export type PlanNode =
  * Bottom-up recursive transform. Descends into children first,
  * then applies `fn` to the rebuilt node.
  */
-export function walkPlan(node: PlanNode, fn: (n: PlanNode) => PlanNode): PlanNode {
+export function walkPlan(node: StrategyNode, fn: (n: StrategyNode) => StrategyNode): StrategyNode {
   // First, rebuild children
-  let rebuilt: PlanNode;
+  let rebuilt: StrategyNode;
 
   switch (node.kind) {
     // Leaf nodes — no children
     case 'BulkScan':
-    case 'OmniJSScan':
+    case 'FallbackScan':
     case 'MembershipScan':
       rebuilt = node;
       break;
@@ -215,12 +205,12 @@ export function walkPlan(node: PlanNode, fn: (n: PlanNode) => PlanNode): PlanNod
 
 // ── Optimization Pipeline ────────────────────────────────────────────────
 
-export type OptimizationPass = (root: PlanNode) => PlanNode;
+export type OptimizationPass = (root: StrategyNode) => StrategyNode;
 
 /**
  * Apply optimization passes in order.
  */
-export function optimize(root: PlanNode, passes: OptimizationPass[]): PlanNode {
+export function optimize(root: StrategyNode, passes: OptimizationPass[]): StrategyNode {
   let current = root;
   for (const pass of passes) {
     current = pass(current);
@@ -233,13 +223,13 @@ export function optimize(root: PlanNode, passes: OptimizationPass[]): PlanNode {
 /**
  * Get the legacy execution path name from a plan tree (for logging).
  */
-export function planPathLabel(node: PlanNode): string {
+export function planPathLabel(node: StrategyNode): string {
   // Walk to find the innermost scan type
   switch (node.kind) {
     case 'BulkScan':
       return node.projectScope ? 'project-scoped' : 'broad';
-    case 'OmniJSScan':
-      return 'omnijs-fallback';
+    case 'FallbackScan':
+      return 'fallback';
     case 'MembershipScan':
       return 'semijoin';
     case 'SemiJoin':

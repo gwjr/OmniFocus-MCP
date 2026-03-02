@@ -18,7 +18,7 @@
 import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
 import { buildPlanTree } from '../dist/tools/query/planner.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
-import { optimize, planPathLabel } from '../dist/tools/query/planTree.js';
+import { optimize, planPathLabel } from '../dist/tools/query/strategy.js';
 import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
 import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';

@@ -8,7 +8,7 @@
 import { type LoweredExpr } from './fold.js';
 import { getVarRegistry, computedVarDeps, type EntityType, type VarDef } from './variables.js';
 import { collectVarsFromAst } from './backends/varCollector.js';
-import type { PlanNode } from './planTree.js';
+import type { StrategyNode } from './strategy.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -75,7 +75,7 @@ function expandComputedDeps(
 const PER_ITEM_THRESHOLD = 20;
 
 /**
- * Build a PlanNode tree from a pre-lowered AST.
+ * Build a StrategyNode tree from a pre-lowered AST.
  * This is the new primary planning API.
  */
 export function buildPlanTree(
@@ -83,20 +83,20 @@ export function buildPlanTree(
   entity: EntityType,
   selectVars?: string[],
   includeCompleted = false,
-): PlanNode {
+): StrategyNode {
   // Rule 0: Perspectives → OmniJS fallback
   if (entity === 'perspectives') {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
   // Rule 1: Tags with any container → OmniJS fallback
   if (entity === 'tags' && containsAnyContainer(ast)) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
   // Rule 2: folder container at any depth → OmniJS fallback
   if (containsFolderContainer(ast)) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
   // Collect referenced variables
@@ -106,7 +106,7 @@ export function buildPlanTree(
 
   // Rule 3: expensive vars in the where clause → OmniJS fallback
   if (costMap.expensive.size > 0) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
   // Try to extract a project-scoped container
@@ -114,7 +114,7 @@ export function buildPlanTree(
 
   // Rule 4: container present but not extractable → OmniJS fallback
   if (extraction === null && containsAnyContainer(ast)) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
   // Compute bulk columns (nodeKeys)
@@ -164,7 +164,7 @@ export function buildPlanTree(
   const projectScope = extraction?.scope;
 
   // Build the inner scan
-  const scan: PlanNode = {
+  const scan: StrategyNode = {
     kind: 'BulkScan',
     entity,
     columns,
@@ -184,19 +184,19 @@ export function buildPlanTree(
   const stubVars = new Set(costMap.perItem); // only where-clause per-item vars get stubbed
 
   // OmniJS fallback for if threshold is exceeded
-  const fallback: PlanNode = {
-    kind: 'OmniJSScan',
+  const fallback: StrategyNode = {
+    kind: 'FallbackScan',
     entity,
     filterAst: ast, // full AST for fallback (includes container if any)
     includeCompleted,
   };
 
   // Build: Filter → PerItemEnrich → PreFilter → BulkScan
-  const preFilter: PlanNode = stubVars.size > 0
+  const preFilter: StrategyNode = stubVars.size > 0
     ? { kind: 'PreFilter', source: scan, predicate: filterAst, entity, assumeTrue: stubVars }
     : scan;
 
-  const enrich: PlanNode = {
+  const enrich: StrategyNode = {
     kind: 'PerItemEnrich',
     source: preFilter,
     perItemVars,
@@ -206,7 +206,7 @@ export function buildPlanTree(
   };
 
   // Exact re-filter after enrichment (no stubs)
-  const filter: PlanNode = {
+  const filter: StrategyNode = {
     kind: 'Filter',
     source: enrich,
     predicate: filterAst,

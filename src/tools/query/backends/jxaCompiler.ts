@@ -7,6 +7,7 @@
 
 import { type ExprBackend, type LoweredExpr, foldExpr } from '../fold.js';
 import { getVarRegistry, type EntityType } from '../variables.js';
+import { getJxaAccessorRegistry } from './jxaVarAccessors.js';
 import { lowerExpr, LowerError } from '../lower.js';
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -103,7 +104,16 @@ class JxaCompilerBackend implements ExprBackend<string> {
       );
     }
 
-    return varDef.jxa(this._itemVar);
+    const accessors = getJxaAccessorRegistry(entity);
+    const accessor = accessors[name];
+    if (!accessor) {
+      throw new CompileError(
+        `No JXA accessor for variable "${name}" (entity "${entity}")`,
+        'where',
+        { var: name }
+      );
+    }
+    return accessor(this._itemVar);
   }
 
   dateLiteral(isoDate: string): string {

@@ -4,12 +4,12 @@ import { JxaEmitter } from '../dist/tools/query/emitters/jxaEmitter.js';
 import { compileQuery } from '../dist/tools/query/compile.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
 import { buildPlanTree } from '../dist/tools/query/planner.js';
-import { optimize, walkPlan } from '../dist/tools/query/planTree.js';
+import { optimize, walkPlan } from '../dist/tools/query/strategy.js';
 import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
 import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
 import { selfJoinEliminationPass } from '../dist/tools/query/optimizations/selfJoinElimination.js';
-import type { PlanNode, BulkScan, MembershipScan } from '../dist/tools/query/planTree.js';
+import type { StrategyNode, BulkScan, MembershipScan } from '../dist/tools/query/strategy.js';
 import type { LoweredExpr } from '../dist/tools/query/fold.js';
 
 const emitter = new JxaEmitter();
@@ -30,8 +30,8 @@ function optimizedPlan(where: unknown, entity: string = 'tasks', select?: string
   return optimize(plan(where, entity, select), PASSES);
 }
 
-function findNode(tree: PlanNode, kind: string): PlanNode | null {
-  let found: PlanNode | null = null;
+function findNode(tree: StrategyNode, kind: string): StrategyNode | null {
+  let found: StrategyNode | null = null;
   walkPlan(tree, n => {
     if (n.kind === kind) found = n;
     return n;
@@ -326,7 +326,7 @@ describe('compileQuery', () => {
       ['name', 'folderName']
     );
 
-    // Should have PerItemEnrich with BulkScan source and OmniJSScan fallback
+    // Should have PerItemEnrich with BulkScan source and FallbackScan fallback
     const enrich = findNode(rawTree, 'PerItemEnrich');
     assert.ok(enrich, 'should have PerItemEnrich');
 

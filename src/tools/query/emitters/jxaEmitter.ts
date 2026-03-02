@@ -8,7 +8,7 @@
  */
 
 import type { Emitter, ScriptFragment } from '../emitter.js';
-import type { BulkScan, MembershipScan } from '../planTree.js';
+import type { BulkScan, MembershipScan } from '../strategy.js';
 import type { EntityType, VarDef } from '../variables.js';
 import { getVarRegistry } from '../variables.js';
 import { escapeJxaString } from '../backends/jxaCompiler.js';
@@ -121,29 +121,6 @@ const relationships: Record<string, Record<string, RelationshipConfig>> = {
   },
 };
 
-// ── Whose Filter Compilation ─────────────────────────────────────────────
-
-import type { WhoseFilter } from '../planTree.js';
-
-function compileWhoseFilters(filters: WhoseFilter[]): string {
-  const parts: string[] = [];
-  for (const f of filters) {
-    const propName = escapeJxaString(f.property);
-    if (f.type === 'eq') {
-      if (typeof f.value === 'string') {
-        parts.push(`${propName}: "${escapeJxaString(f.value)}"`);
-      } else if (typeof f.value === 'boolean') {
-        parts.push(`${propName}: ${f.value}`);
-      } else {
-        parts.push(`${propName}: ${f.value}`);
-      }
-    } else if (f.type === 'contains') {
-      parts.push(`${propName}: {_contains: "${escapeJxaString(f.value)}"}`);
-    }
-  }
-  return `{${parts.join(', ')}}`;
-}
-
 function generateScopeWhose(scopeExpr: LoweredExpr): string | null {
   if (typeof scopeExpr !== 'object' || scopeExpr === null || Array.isArray(scopeExpr)) {
     return null;
@@ -170,10 +147,11 @@ function isVarNode(node: LoweredExpr, expectedName?: string): boolean {
 function generatePerItemAccessor(name: string, def: VarDef, entity: EntityType): string {
   const overrides = perItemOverrides[entity];
   if (overrides[name]) return overrides[name];
+  const prop = def.appleEventsProperty || name;
   if (def.type === 'date') {
-    return `(function() { var v = item.${def.bulk || name}(); return v ? v.toISOString() : null; })()`;
+    return `(function() { var v = item.${prop}(); return v ? v.toISOString() : null; })()`;
   }
-  return `item.${def.bulk || name}()`;
+  return `item.${prop}()`;
 }
 
 // ── JxaEmitter ───────────────────────────────────────────────────────────
@@ -227,7 +205,7 @@ ${slotIIFEs}
     const entityChains = chainAccessors[node.entity];
 
     // Group vars by their bulk-read method
-    const directProps: { name: string; bulk: string; def: VarDef }[] = [];
+    const directProps: { name: string; appleEventsProperty: string; def: VarDef }[] = [];
     const chainProps: { name: string; def: VarDef }[] = [];
 
     // Map column names (nodeKeys) to var names
@@ -245,8 +223,8 @@ ${slotIIFEs}
       if (varName === 'now') continue;
       const def = registry[varName];
       if (!def) continue;
-      if (def.bulk && def.cost === 'easy') {
-        directProps.push({ name: varName, bulk: def.bulk, def });
+      if (def.appleEventsProperty && def.cost === 'easy') {
+        directProps.push({ name: varName, appleEventsProperty: def.appleEventsProperty, def });
       } else if (def.cost === 'chain') {
         chainProps.push({ name: varName, def });
       }
@@ -255,7 +233,7 @@ ${slotIIFEs}
     // id is always bulk-readable
     if (needsId && !directProps.some(p => p.name === 'id')) {
       const idDef = registry['id'];
-      if (idDef) directProps.push({ name: 'id', bulk: idDef.bulk || 'id', def: idDef });
+      if (idDef) directProps.push({ name: 'id', appleEventsProperty: idDef.appleEventsProperty || 'id', def: idDef });
     }
 
     // Source collection expression
@@ -271,19 +249,13 @@ ${slotIIFEs}
       sourceExpr = entityConfig.collection;
     }
 
-    // Apply pushed-down .whose() filters
-    if (node.whoseFilters && node.whoseFilters.length > 0) {
-      const whoseObj = compileWhoseFilters(node.whoseFilters);
-      sourceExpr = `${sourceExpr}.whose(${whoseObj})`;
-    }
-
     const PROJECT_STATUS_MAP = '{"active status":"Active","done status":"Done","on hold status":"OnHold","dropped status":"Dropped"}';
 
     // Generate bulk read lines for direct properties
-    const readLines = directProps.map(({ name, bulk, def }) => {
+    const readLines = directProps.map(({ name, appleEventsProperty, def }) => {
       const isDate = def.type === 'date';
       if (isDate) {
-        return `  var ${name}Arr = items.${bulk}();
+        return `  var ${name}Arr = items.${appleEventsProperty}();
   var ${name}Iso = ${name}Arr.map(function(v) { return v ? v.toISOString() : null; });`;
       }
       if (name === 'id') {
@@ -291,11 +263,11 @@ ${slotIIFEs}
   var idKeys = idArr.map(function(v) { return v ? v.toString() : null; });`;
       }
       if (name === 'status' && node.entity === 'projects') {
-        return `  var _rawStatusArr = items.${bulk}();
+        return `  var _rawStatusArr = items.${appleEventsProperty}();
   var _statusMap = ${PROJECT_STATUS_MAP};
   var statusArr = _rawStatusArr.map(function(v) { return _statusMap[String(v)] || String(v); });`;
       }
-      return `  var ${name}Arr = items.${bulk}();`;
+      return `  var ${name}Arr = items.${appleEventsProperty}();`;
     });
 
     // Chain properties

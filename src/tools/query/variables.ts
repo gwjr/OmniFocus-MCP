@@ -1,18 +1,18 @@
 /**
  * Variable registries for each entity type.
- * Maps user-facing var names to JXA access expressions, type metadata,
- * bulk-read properties, and cost classification.
+ * Maps user-facing var names to type metadata, Apple Events property names,
+ * and cost classification.
+ *
+ * JXA accessor expressions live in backends/jxaVarAccessors.ts.
  */
 
 export interface VarDef {
-  /** JXA expression generator — takes the current item variable name */
-  jxa: (itemVar: string) => string;
   /** Type hint for compile-time checking */
   type: 'string' | 'number' | 'boolean' | 'date' | 'enum' | 'array';
   /** Property name in bulk-read row objects */
   nodeKey: string;
-  /** JXA Apple Events bulk property name, or null if per-item only */
-  bulk: string | null;
+  /** Apple Events bulk property name, or null if per-item only */
+  appleEventsProperty: string | null;
   /** Read cost classification */
   cost: 'easy' | 'chain' | 'per-item' | 'expensive' | 'computed';
 }
@@ -37,143 +37,143 @@ export const computedVarDeps: Record<string, Record<string, string[]>> = {
 };
 
 // Helpers for concise registry definitions
-const str  = (accessor: (v: string) => string, nodeKey: string, bulk: string | null, cost: VarDef['cost']): VarDef =>
-  ({ jxa: accessor, type: 'string', nodeKey, bulk, cost });
-const num  = (accessor: (v: string) => string, nodeKey: string, bulk: string | null, cost: VarDef['cost']): VarDef =>
-  ({ jxa: accessor, type: 'number', nodeKey, bulk, cost });
-const bool = (accessor: (v: string) => string, nodeKey: string, bulk: string | null, cost: VarDef['cost']): VarDef =>
-  ({ jxa: accessor, type: 'boolean', nodeKey, bulk, cost });
-const date = (accessor: (v: string) => string, nodeKey: string, bulk: string | null, cost: VarDef['cost']): VarDef =>
-  ({ jxa: accessor, type: 'date', nodeKey, bulk, cost });
-const enm  = (accessor: (v: string) => string, nodeKey: string, bulk: string | null, cost: VarDef['cost']): VarDef =>
-  ({ jxa: accessor, type: 'enum', nodeKey, bulk, cost });
-const arr  = (accessor: (v: string) => string, nodeKey: string, bulk: string | null, cost: VarDef['cost']): VarDef =>
-  ({ jxa: accessor, type: 'array', nodeKey, bulk, cost });
+const str  = (nodeKey: string, appleEventsProperty: string | null, cost: VarDef['cost']): VarDef =>
+  ({ type: 'string', nodeKey, appleEventsProperty, cost });
+const num  = (nodeKey: string, appleEventsProperty: string | null, cost: VarDef['cost']): VarDef =>
+  ({ type: 'number', nodeKey, appleEventsProperty, cost });
+const bool = (nodeKey: string, appleEventsProperty: string | null, cost: VarDef['cost']): VarDef =>
+  ({ type: 'boolean', nodeKey, appleEventsProperty, cost });
+const date = (nodeKey: string, appleEventsProperty: string | null, cost: VarDef['cost']): VarDef =>
+  ({ type: 'date', nodeKey, appleEventsProperty, cost });
+const enm  = (nodeKey: string, appleEventsProperty: string | null, cost: VarDef['cost']): VarDef =>
+  ({ type: 'enum', nodeKey, appleEventsProperty, cost });
+const arr  = (nodeKey: string, appleEventsProperty: string | null, cost: VarDef['cost']): VarDef =>
+  ({ type: 'array', nodeKey, appleEventsProperty, cost });
 
 export const taskVars: VarRegistry = {
   // easy: direct Apple Events bulk-readable properties
-  id:                   str(v  => `${v}.id.primaryKey`,                                                      'id',                   'id',                    'easy'),
-  name:                 str(v  => `(${v}.name || "")`,                                                       'name',                 'name',                  'easy'),
-  flagged:              bool(v => `${v}.flagged`,                                                             'flagged',              'flagged',               'easy'),
-  dueDate:              date(v => `${v}.dueDate`,                                                             'dueDate',              'dueDate',               'easy'),
-  deferDate:            date(v => `${v}.deferDate`,                                                           'deferDate',            'deferDate',             'easy'),
-  plannedDate:          date(v => `${v}.plannedDate`,                                                         'plannedDate',          'plannedDate',           'easy'),
-  effectiveDueDate:     date(v => `${v}.effectiveDueDate`,                                                    'effectiveDueDate',     'effectiveDueDate',      'easy'),
-  effectiveDeferDate:   date(v => `${v}.effectiveDeferDate`,                                                  'effectiveDeferDate',   'effectiveDeferDate',    'easy'),
-  effectivePlannedDate: date(v => `${v}.effectivePlannedDate`,                                                'effectivePlannedDate', 'effectivePlannedDate',  'easy'),
-  completionDate:       date(v => `${v}.completionDate`,                                                      'completionDate',       'completionDate',        'easy'),
-  modificationDate:     date(v => `${v}.modified`,                                                            'modificationDate',     'modificationDate',      'easy'),
-  creationDate:         date(v => `${v}.added`,                                                               'creationDate',         'creationDate',          'easy'),
-  estimatedMinutes:     num(v  => `${v}.estimatedMinutes`,                                                    'estimatedMinutes',     'estimatedMinutes',      'easy'),
-  blocked:              bool(v => `${v}.blocked`,                                                             'blocked',              'blocked',               'easy'),
-  effectivelyCompleted: bool(v => `${v}.effectivelyCompleted`,                                                'effectivelyCompleted', 'effectivelyCompleted',  'easy'),
-  effectivelyDropped:   bool(v => `${v}.effectivelyDropped`,                                                  'effectivelyDropped',   'effectivelyDropped',    'easy'),
-  completed:            bool(v => `(${v}.taskStatus === Task.Status.Completed)`,                              'completed',            'completed',             'easy'),
-  dropped:              bool(v => `(${v}.taskStatus === Task.Status.Dropped)`,                                'dropped',              'dropped',               'easy'),
+  id:                   str( 'id',                   'id',                    'easy'),
+  name:                 str( 'name',                 'name',                  'easy'),
+  flagged:              bool('flagged',              'flagged',               'easy'),
+  dueDate:              date('dueDate',              'dueDate',               'easy'),
+  deferDate:            date('deferDate',            'deferDate',             'easy'),
+  plannedDate:          date('plannedDate',          'plannedDate',           'easy'),
+  effectiveDueDate:     date('effectiveDueDate',     'effectiveDueDate',      'easy'),
+  effectiveDeferDate:   date('effectiveDeferDate',   'effectiveDeferDate',    'easy'),
+  effectivePlannedDate: date('effectivePlannedDate', 'effectivePlannedDate',  'easy'),
+  completionDate:       date('completionDate',       'completionDate',        'easy'),
+  modificationDate:     date('modificationDate',     'modificationDate',      'easy'),
+  creationDate:         date('creationDate',         'creationDate',          'easy'),
+  estimatedMinutes:     num( 'estimatedMinutes',     'estimatedMinutes',      'easy'),
+  blocked:              bool('blocked',              'blocked',               'easy'),
+  effectivelyCompleted: bool('effectivelyCompleted', 'effectivelyCompleted',  'easy'),
+  effectivelyDropped:   bool('effectivelyDropped',   'effectivelyDropped',    'easy'),
+  completed:            bool('completed',            'completed',             'easy'),
+  dropped:              bool('dropped',              'dropped',               'easy'),
 
   // chain: requires traversing containingProject
-  projectName:          str(v  => `(${v}.containingProject ? ${v}.containingProject.name || "" : "")`,        'projectName',          'containingProject',     'chain'),
-  projectId:            str(v  => `(${v}.containingProject ? ${v}.containingProject.id.primaryKey : null)`,   'projectId',            'containingProject',     'chain'),
+  projectName:          str( 'projectName',          'containingProject',     'chain'),
+  projectId:            str( 'projectId',            'containingProject',     'chain'),
 
   // easy: reclassified from per-item (verified bulk Apple Events accessors)
-  inInbox:              bool(v => `${v}.inInbox`,                                                             'inInbox',              'inInbox',               'easy'),
-  sequential:           bool(v => `${v}.sequential`,                                                          'sequential',           'sequential',            'easy'),
-  childCount:           num(v  => `(${v}.children ? ${v}.children.length : 0)`,                               'childCount',           'numberOfTasks',         'easy'),
+  inInbox:              bool('inInbox',              'inInbox',               'easy'),
+  sequential:           bool('sequential',           'sequential',            'easy'),
+  childCount:           num( 'childCount',           'numberOfTasks',         'easy'),
 
   // chain: reclassified from per-item (chained bulk Apple Events)
-  parentId:             str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                         'parentId',             'parentTask',            'chain'),
-  tags:                 arr(v  => `${v}.tags.map(function(t){return t.name.toLowerCase();})`,                  'tags',                 'tags',                  'chain'),
+  parentId:             str( 'parentId',             'parentTask',            'chain'),
+  tags:                 arr( 'tags',                 'tags',                  'chain'),
 
   // computed: derived in Node from other bulk-readable properties
-  status:               enm(v  => `taskStatusMap[${v}.taskStatus]`,                                           'status',               null,                    'computed'),
-  hasChildren:          bool(v => `(${v}.children ? ${v}.children.length > 0 : false)`,                       'hasChildren',          null,                    'computed'),
+  status:               enm( 'status',               null,                    'computed'),
+  hasChildren:          bool('hasChildren',          null,                    'computed'),
 
   // expensive
-  note:                 str(v  => `(${v}.note || "")`,                                                        'note',                 null,                    'expensive'),
+  note:                 str( 'note',                 null,                    'expensive'),
 
   // special
-  now:                  date(_ => '_now',                                                                      'now',                  null,                    'easy'),
+  now:                  date('now',                  null,                    'easy'),
 };
 
 export const projectVars: VarRegistry = {
   // easy: bulk Apple Events readable properties
-  id:                 str(v  => `${v}.id.primaryKey`,                                                          'id',               'id',                    'easy'),
-  name:               str(v  => `(${v}.name || "")`,                                                           'name',             'name',                  'easy'),
-  status:             enm(v  => `projectStatusMap[${v}.status]`,                                                'status',           'effectiveStatus',       'easy'),
-  flagged:            bool(v => `${v}.flagged`,                                                                 'flagged',          'flagged',               'easy'),
-  completed:          bool(v => `(${v}.status === Project.Status.Done)`,                                        'completed',        'completed',             'easy'),
-  dueDate:            date(v => `${v}.dueDate`,                                                                 'dueDate',          'dueDate',               'easy'),
-  deferDate:          date(v => `${v}.deferDate`,                                                               'deferDate',        'deferDate',             'easy'),
-  effectiveDueDate:   date(v => `${v}.effectiveDueDate`,                                                        'effectiveDueDate', 'effectiveDueDate',      'easy'),
-  effectiveDeferDate: date(v => `${v}.effectiveDeferDate`,                                                      'effectiveDeferDate','effectiveDeferDate',   'easy'),
-  completionDate:     date(v => `${v}.completionDate`,                                                          'completionDate',   'completionDate',        'easy'),
-  modificationDate:   date(v => `${v}.task.modified`,                                                           'modificationDate', 'modificationDate',      'easy'),
-  creationDate:       date(v => `${v}.task.added`,                                                              'creationDate',     'creationDate',          'easy'),
-  estimatedMinutes:   num(v  => `${v}.estimatedMinutes`,                                                        'estimatedMinutes', 'estimatedMinutes',      'easy'),
-  sequential:         bool(v => `${v}.sequential`,                                                              'sequential',       'sequential',            'easy'),
-  taskCount:          num(v  => `(${v}.tasks ? ${v}.tasks.length : 0)`,                                         'taskCount',        'numberOfTasks',         'easy'),
-  activeTaskCount:    num(v  => `(${v}.tasks ? ${v}.tasks.filter(t => t.taskStatus !== Task.Status.Completed && t.taskStatus !== Task.Status.Dropped).length : 0)`, 'activeTaskCount', 'numberOfAvailableTasks', 'easy'),
+  id:                 str( 'id',                 'id',                    'easy'),
+  name:               str( 'name',               'name',                  'easy'),
+  status:             enm( 'status',             'effectiveStatus',       'easy'),
+  flagged:            bool('flagged',            'flagged',               'easy'),
+  completed:          bool('completed',          'completed',             'easy'),
+  dueDate:            date('dueDate',            'dueDate',               'easy'),
+  deferDate:          date('deferDate',          'deferDate',             'easy'),
+  effectiveDueDate:   date('effectiveDueDate',   'effectiveDueDate',      'easy'),
+  effectiveDeferDate: date('effectiveDeferDate', 'effectiveDeferDate',    'easy'),
+  completionDate:     date('completionDate',     'completionDate',        'easy'),
+  modificationDate:   date('modificationDate',   'modificationDate',      'easy'),
+  creationDate:       date('creationDate',       'creationDate',          'easy'),
+  estimatedMinutes:   num( 'estimatedMinutes',   'estimatedMinutes',      'easy'),
+  sequential:         bool('sequential',         'sequential',            'easy'),
+  taskCount:          num( 'taskCount',          'numberOfTasks',         'easy'),
+  activeTaskCount:    num( 'activeTaskCount',    'numberOfAvailableTasks','easy'),
 
   // chain: chained bulk via container.id() (Apple Events)
   // Note: root-level projects have the document as container, not a folder — callers
   // must cross-reference against known folder IDs and treat non-folder containers as null.
-  folderId:           str(v  => `(${v}.parentFolder ? ${v}.parentFolder.id.primaryKey : null)`,                 'folderId',         'container',             'chain'),
+  folderId:           str( 'folderId',           'container',             'chain'),
 
   // per-item: container.name() returns null for folders, so folderName must use per-item
-  folderName:         str(v  => `(${v}.parentFolder ? ${v}.parentFolder.name : null)`,                          'folderName',       null,                    'per-item'),
+  folderName:         str( 'folderName',         null,                    'per-item'),
 
   // expensive
-  note:               str(v  => `(${v}.note || "")`,                                                            'note',             null,                    'expensive'),
+  note:               str( 'note',               null,                    'expensive'),
 
   // special
-  now:                date(_ => '_now',                                                                          'now',              null,                    'easy'),
+  now:                date('now',                null,                    'easy'),
 };
 
 export const folderVars: VarRegistry = {
   // easy: bulk Apple Events readable
-  id:             str(v  => `${v}.id.primaryKey`,                                                               'id',               'id',                    'easy'),
-  name:           str(v  => `(${v}.name || "")`,                                                                'name',             'name',                  'easy'),
-  hidden:         bool(v => `${v}.hidden`,                                                                      'hidden',           'hidden',                'easy'),
+  id:             str( 'id',             'id',       'easy'),
+  name:           str( 'name',           'name',     'easy'),
+  hidden:         bool('hidden',         'hidden',   'easy'),
 
   // chain: chained bulk via container
-  parentFolderId: str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                                 'parentFolderId',   'container',             'chain'),
+  parentFolderId: str( 'parentFolderId', 'container','chain'),
 
   // per-item: resolved by crossEntityJoinPass
-  projectCount:   num(v  => `(${v}.projects ? ${v}.projects.length : 0)`,                                       'projectCount',     null,                    'per-item'),
+  projectCount:   num( 'projectCount',   null,       'per-item'),
 
   // computed: derived in Node from bulk-readable hidden property
-  status:         enm(v  => `folderStatusMap[${v}.status]`,                                                     'status',           null,                    'computed'),
+  status:         enm( 'status',         null,       'computed'),
 
   // special
-  now:            date(_ => '_now',                                                                              'now',              null,                    'easy'),
+  now:            date('now',            null,       'easy'),
 };
 
 export const perspectiveVars: VarRegistry = {
-  id:   str(v => `${v}.id.primaryKey`, 'id',   'id',   'easy'),
-  name: str(v => `(${v}.name || "")`,  'name', 'name', 'easy'),
+  id:   str('id',   'id',   'easy'),
+  name: str('name', 'name', 'easy'),
 };
 
 export const tagVars: VarRegistry = {
   // easy: direct Apple Events bulk-readable properties
-  id:                 str(v  => `${v}.id.primaryKey`,                                                            'id',                'id',                   'easy'),
-  name:               str(v  => `(${v}.name || "")`,                                                             'name',              'name',                 'easy'),
-  allowsNextAction:   bool(v => `${v}.allowsNextAction`,                                                         'allowsNextAction',  'allowsNextAction',     'easy'),
-  hidden:             bool(v => `${v}.hidden`,                                                                   'hidden',            'hidden',               'easy'),
-  effectivelyHidden:  bool(v => `${v}.effectivelyHidden`,                                                        'effectivelyHidden', 'effectivelyHidden',    'easy'),
-  availableTaskCount: num(v  => `(${v}.availableTasks ? ${v}.availableTasks.length : 0)`,                         'availableTaskCount','availableTaskCount',   'easy'),
-  remainingTaskCount: num(v  => `(${v}.remainingTasks ? ${v}.remainingTasks.length : 0)`,                         'remainingTaskCount','remainingTaskCount',   'easy'),
+  id:                 str( 'id',                 'id',                  'easy'),
+  name:               str( 'name',               'name',                'easy'),
+  allowsNextAction:   bool('allowsNextAction',   'allowsNextAction',    'easy'),
+  hidden:             bool('hidden',             'hidden',              'easy'),
+  effectivelyHidden:  bool('effectivelyHidden',  'effectivelyHidden',   'easy'),
+  availableTaskCount: num( 'availableTaskCount', 'availableTaskCount',  'easy'),
+  remainingTaskCount: num( 'remainingTaskCount', 'remainingTaskCount',  'easy'),
 
   // chain: chained bulk via container.id() (parent tag ID)
-  parentId:           str(v  => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,                                'parentId',          'container',            'chain'),
+  parentId:           str( 'parentId',           'container',           'chain'),
 
   // per-item: requires per-item access
-  parentName:         str(v  => `(${v}.parent ? ${v}.parent.name : null)`,                                        'parentName',        null,                   'per-item'),
+  parentName:         str( 'parentName',         null,                  'per-item'),
 
   // expensive
-  note:               str(v  => `(${v}.note || "")`,                                                              'note',              null,                   'expensive'),
+  note:               str( 'note',               null,                  'expensive'),
 
   // special
-  now:                date(_ => '_now',                                                                            'now',               null,                   'easy'),
+  now:                date('now',                null,                  'easy'),
 };
 
 export type EntityType = 'tasks' | 'projects' | 'folders' | 'tags' | 'perspectives';
