@@ -54,6 +54,16 @@ execute). Get expert eyes on: the IR design, the pass architecture, CSE
 correctness, the cost model, and whether the StrategyNode → EventPlan
 split is the right abstraction boundary.
 
+**Candidate simplification (subject to review):** The cost model in
+practice makes four decisions, not N: bulk read, bulk read + SemiJoin,
+bulk read + cross-entity join, bulk read + PerItemEnrich(note). The
+planner has 12 StrategyNode types to express what is really four fixed
+emission templates selected by pattern-matching on referenced variables.
+Collapsing StrategyNode to ~4 types would simplify both lowerings
+(AST → Strategy and Strategy → EventPlan) and may make it feasible to
+lower AST → EventPlan directly, eliminating the intermediate IR. Worth
+doing in TypeScript before the Swift port to validate the simplification.
+
 ## Longer term
 
 ### 14. Plan Swift rewrite
