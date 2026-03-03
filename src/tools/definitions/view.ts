@@ -81,12 +81,12 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     } else if (args.folder) {
       queryParams = {
         entity: 'projects',
-        where: { container: ['folder', { contains: [{ var: 'name' }, args.folder] }] },
+        where: { contains: [{ var: 'folderName' }, args.folder] },
       };
     } else if (args.tag) {
       queryParams = {
         entity: 'tasks',
-        where: { container: ['tag', { contains: [{ var: 'name' }, args.tag] }] },
+        where: { contains: [{ var: 'tags' }, args.tag] },
       };
     } else if (args.inbox) {
       queryParams = {
