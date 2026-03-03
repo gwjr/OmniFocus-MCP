@@ -7,7 +7,7 @@
  */
 
 import type { EventNode, Ref, Specifier, FourCC } from '../eventPlan.js';
-import type { TargetedEventPlan } from '../targetedEventPlan.js';
+import type { TargetedEventPlan, Input } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import { OFClass, OFTaskProp, OFProjectProp, OFFolderProp, OFTagProp } from '../../../generated/omnifocus-sdef.js';
 
@@ -100,6 +100,8 @@ interface EmitCtx {
   plan: TargetedEventPlan;
   unit: ExecutionUnit;
   inputs: Map<number, string>;
+  /** Specifier inputs: ref → specifier to reconstruct (for cross-EU AE specifiers). */
+  specifierInputs: Map<number, Specifier>;
   /** Set of refs owned by this unit (for quick membership check). */
   ownedRefs: Set<number>;
   /** Lines of emitted code. */
@@ -126,9 +128,19 @@ function refVar(ctx: EmitCtx, ref: Ref): string {
   // Check computed vars for this unit
   const v = ctx.vars.get(ref);
   if (v) return v;
-  // Check cross-unit inputs
+  // Check cross-unit value inputs (JSON-deserialized)
   const inp = ctx.inputs.get(ref);
   if (inp) return inp;
+  // Check cross-unit specifier inputs (reconstructed in-place)
+  const specInput = ctx.specifierInputs.get(ref);
+  if (specInput) {
+    // Lazily emit the specifier reconstruction and cache the variable
+    const varName = freshVar(ctx, 'spec');
+    const specExpr = emitSpecifier(ctx, specInput);
+    ctx.lines.push(`var ${varName} = ${specExpr};`);
+    ctx.vars.set(ref, varName);
+    return varName;
+  }
   throw new Error(`jxaUnit: unresolved ref %${ref}`);
 }
 
@@ -361,10 +373,19 @@ export function emitJxaUnit(
     throw new Error(`emitJxaUnit: expected runtime 'jxa', got '${unit.runtime}'`);
   }
 
+  // Build specifier input map from unit's Input bindings
+  const specifierInputs = new Map<number, Specifier>();
+  for (const inp of unit.inputs) {
+    if (inp.kind === 'specifier') {
+      specifierInputs.set(inp.ref, inp.spec);
+    }
+  }
+
   const ctx: EmitCtx = {
     plan,
     unit,
     inputs,
+    specifierInputs,
     ownedRefs: new Set(unit.nodes),
     lines: [],
     vars: new Map(),

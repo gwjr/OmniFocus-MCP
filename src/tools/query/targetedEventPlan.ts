@@ -6,7 +6,7 @@
  * knows its runtime and the nodes it owns; codegens are per-unit.
  */
 
-import type { EventNode, Ref, Runtime, RuntimeAllocation } from './eventPlan.js';
+import type { EventNode, Ref, Runtime, RuntimeAllocation, Specifier } from './eventPlan.js';
 
 // ── TargetedNode ──────────────────────────────────────────────────────────────
 
@@ -27,6 +27,38 @@ export interface TargetedEventPlan {
   result: Ref;
 }
 
+// ── EU boundary bindings ─────────────────────────────────────────────────────
+
+/**
+ * How a cross-unit value enters an ExecutionUnit.
+ *
+ * - 'value': the producing unit serializes the value as JSON and this unit
+ *   deserializes it with JSON.parse(). This is the common case and is a
+ *   no-op for node→jxa or jxa→node transitions where the value is already
+ *   JSON-safe (arrays, strings, numbers, nulls).
+ *
+ * - 'specifier': the value is an AE specifier (non-materializing Get) that
+ *   cannot be JSON-serialized. The consuming JXA unit reconstructs the
+ *   specifier from `spec` instead of deserializing a runtime value.
+ */
+export type Input =
+  | { ref: Ref; kind: 'value' }
+  | { ref: Ref; kind: 'specifier'; spec: Specifier };
+
+/**
+ * How a cross-unit value leaves an ExecutionUnit.
+ *
+ * - 'value': the producing unit includes the value in its JSON.stringify()
+ *   return. This is the common case.
+ *
+ * - 'specifier': the value is an AE specifier that cannot be serialized.
+ *   The producing unit omits it from the return value; the consuming unit
+ *   reconstructs it from the specifier definition in its Input binding.
+ */
+export type Output =
+  | { ref: Ref; kind: 'value' }
+  | { ref: Ref; kind: 'specifier' };
+
 // ── ExecutionUnit ─────────────────────────────────────────────────────────────
 
 /**
@@ -34,7 +66,10 @@ export interface TargetedEventPlan {
  *
  * nodes: the EventNode slice owned by this unit (refs relative to the
  *        full plan — consumers resolve cross-unit refs via inputs).
- * inputs: refs from other units whose values this unit consumes.
+ * inputs/outputs: the unit's boundary contract. Each entry describes how
+ *        a cross-unit value is serialized (output) or deserialized (input).
+ *        Often no-ops ('value' kind), but AE specifier refs require
+ *        explicit reconstruction ('specifier' kind).
  * result: the ref whose value this unit exposes to downstream units.
  *
  * Each unit's codegen/executor is responsible for materializing its nodes
@@ -43,7 +78,8 @@ export interface TargetedEventPlan {
 export interface ExecutionUnit {
   runtime:    Runtime;
   nodes:      Ref[];        // refs into the full TargetedEventPlan
-  inputs:     Ref[];        // cross-unit input refs (produced by upstream units)
+  inputs:     Input[];      // cross-unit input bindings
+  outputs:    Output[];     // cross-unit output bindings
   result:     Ref;          // the ref this unit exposes downstream
   dependsOn:  ExecutionUnit[];
 }

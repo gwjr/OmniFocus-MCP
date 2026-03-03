@@ -99,6 +99,9 @@ export function opCost(runtime: Runtime, kind: EventNode['kind'], cardinality: n
     case 'Limit':
     case 'Pick':
     case 'Derive':
+    case 'Union':
+    case 'RowCount':
+    case 'AddSwitch':
       // These are data-manipulation ops. If running in JXA, they operate
       // on in-memory arrays with no AE overhead.
       return nodeOpCost(kind, cardinality);
@@ -149,6 +152,18 @@ function nodeOpCost(kind: EventNode['kind'], cardinality: number): number {
 
     case 'Derive':
       // Computed field derivation: ~0.05ms per row (may involve date math etc.)
+      return 0.05 * cardinality;
+
+    case 'Union':
+      // Concat + dedup by id: ~0.02ms per row
+      return 0.02 * cardinality;
+
+    case 'RowCount':
+      // Array length: negligible
+      return 0.01;
+
+    case 'AddSwitch':
+      // Predicate evaluation + column assignment per row: ~0.05ms
       return 0.05 * cardinality;
 
     // AE ops should not be assigned to node, but return safe high estimates

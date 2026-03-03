@@ -107,6 +107,12 @@ function rewriteNode(node: EventNode, remap: (r: Ref) => Ref): EventNode {
       return { ...node, source: remap(node.source) };
     case 'Derive':
       return { ...node, source: remap(node.source) };
+    case 'Union':
+      return { ...node, left: remap(node.left), right: remap(node.right) };
+    case 'RowCount':
+      return { ...node, source: remap(node.source) };
+    case 'AddSwitch':
+      return { ...node, source: remap(node.source) };
   }
 }
 

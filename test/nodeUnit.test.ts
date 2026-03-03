@@ -11,7 +11,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { EventNode, Ref, RuntimeAllocation } from '../dist/tools/query/eventPlan.js';
-import type { TargetedEventPlan, TargetedNode, ExecutionUnit } from '../dist/tools/query/targetedEventPlan.js';
+import type { TargetedEventPlan, TargetedNode, ExecutionUnit, Input } from '../dist/tools/query/targetedEventPlan.js';
 import { executeNodeUnit } from '../dist/tools/query/executionUnits/nodeUnit.js';
 import { executeTargetedPlan, computeExportedRefs, unpackResult, buildInputMap } from '../dist/tools/query/executionUnits/orchestrator.js';
 import { splitExecutionUnits } from '../dist/tools/query/targetedEventPlanLowering.js';
@@ -26,6 +26,11 @@ function makeTargetedNode(node: EventNode, runtime: string, kind: 'proposed' | '
 
 function makeTargetedPlan(nodes: TargetedNode[], result?: Ref): TargetedEventPlan {
   return { nodes, result: result ?? nodes.length - 1 };
+}
+
+/** Convert Ref[] to Input[] (all 'value' kind). */
+function vi(...refs: Ref[]): Input[] {
+  return refs.map(ref => ({ ref, kind: 'value' as const }));
 }
 
 /** Placeholder JXA node at index 0 for plans that need an upstream ref. */
@@ -45,7 +50,7 @@ describe('executeNodeUnit — Zip', () => {
       makeTargetedNode({ kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 2);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, ['id1', 'id2', 'id3']);
     results.set(1, ['Task A', 'Task B', 'Task C']);
@@ -63,7 +68,7 @@ describe('executeNodeUnit — Zip', () => {
       makeTargetedNode({ kind: 'Zip', columns: [] }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 0);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [0], inputs: [], result: 0, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [0], inputs: vi(), outputs: [], result: 0, dependsOn: [] };
 
     const value = executeNodeUnit(unit, plan, new Map());
     assert.deepEqual(value, []);
@@ -80,7 +85,7 @@ describe('executeNodeUnit — Filter', () => {
       makeTargetedNode({ kind: 'Filter', source: 0, predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { id: 'id1', name: 'Buy milk', flagged: true },
@@ -100,7 +105,7 @@ describe('executeNodeUnit — Filter', () => {
       makeTargetedNode({ kind: 'Filter', source: 0, predicate: null as any }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     const rows = [
       { id: 'id1', name: 'A' },
@@ -118,7 +123,7 @@ describe('executeNodeUnit — Filter', () => {
       makeTargetedNode({ kind: 'Filter', source: 0, predicate: true as any }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     const rows = [
       { id: 'id1', name: 'A' },
@@ -136,7 +141,7 @@ describe('executeNodeUnit — Filter', () => {
       makeTargetedNode({ kind: 'Filter', source: 0, predicate: { op: 'contains', args: [{ var: 'name' }, 'review'] } }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { name: 'Code Review' },
@@ -162,7 +167,7 @@ describe('executeNodeUnit — SemiJoin', () => {
       makeTargetedNode({ kind: 'SemiJoin', source: 0, ids: 1 }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 2);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { id: 'id1', name: 'A' },
@@ -184,7 +189,7 @@ describe('executeNodeUnit — SemiJoin', () => {
       makeTargetedNode({ kind: 'SemiJoin', source: 0, ids: 1 }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 2);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ id: 'a', name: 'X' }, { id: 'b', name: 'Y' }]);
     results.set(1, ['b']);
@@ -205,7 +210,7 @@ describe('executeNodeUnit — Sort', () => {
       makeTargetedNode({ kind: 'Sort', source: 0, by: 'name', dir: 'asc' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ name: 'Charlie' }, { name: 'Alice' }, { name: 'Bob' }]);
 
@@ -219,7 +224,7 @@ describe('executeNodeUnit — Sort', () => {
       makeTargetedNode({ kind: 'Sort', source: 0, by: 'name', dir: 'desc' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ name: 'A' }, { name: 'C' }, { name: 'B' }]);
 
@@ -233,7 +238,7 @@ describe('executeNodeUnit — Sort', () => {
       makeTargetedNode({ kind: 'Sort', source: 0, by: 'dueDate', dir: 'asc' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { name: 'No date', dueDate: null },
@@ -251,7 +256,7 @@ describe('executeNodeUnit — Sort', () => {
       makeTargetedNode({ kind: 'Sort', source: 0, by: 'estimatedMinutes', dir: 'asc' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { name: 'Big', estimatedMinutes: 120 },
@@ -269,7 +274,7 @@ describe('executeNodeUnit — Sort', () => {
       makeTargetedNode({ kind: 'Sort', source: 0, by: 'name', dir: 'asc' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const original = [{ name: 'B' }, { name: 'A' }];
     const results = new Map<number, unknown>();
     results.set(0, original);
@@ -289,7 +294,7 @@ describe('executeNodeUnit — Limit', () => {
       makeTargetedNode({ kind: 'Limit', source: 0, n: 2 }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ id: '1' }, { id: '2' }, { id: '3' }, { id: '4' }]);
 
@@ -305,7 +310,7 @@ describe('executeNodeUnit — Limit', () => {
       makeTargetedNode({ kind: 'Limit', source: 0, n: 100 }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ id: '1' }, { id: '2' }]);
 
@@ -324,7 +329,7 @@ describe('executeNodeUnit — Pick', () => {
       makeTargetedNode({ kind: 'Pick', source: 0, fields: ['name'] }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { id: '1', name: 'A', flagged: true },
@@ -341,7 +346,7 @@ describe('executeNodeUnit — Pick', () => {
       makeTargetedNode({ kind: 'Pick', source: 0, fields: ['id', 'name'] }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ id: '1', name: 'A', flagged: true, dueDate: null }]);
 
@@ -360,7 +365,7 @@ describe('executeNodeUnit — ColumnValues', () => {
       makeTargetedNode({ kind: 'ColumnValues', source: 0, field: 'id' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ id: 'a', name: 'X' }, { id: 'b', name: 'Y' }]);
 
@@ -379,7 +384,7 @@ describe('executeNodeUnit — Flatten', () => {
       makeTargetedNode({ kind: 'Flatten', source: 0 }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [['a', 'b'], [], ['c']]);
 
@@ -393,7 +398,7 @@ describe('executeNodeUnit — Flatten', () => {
       makeTargetedNode({ kind: 'Flatten', source: 0 }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, []);
 
@@ -420,7 +425,7 @@ describe('executeNodeUnit — HashJoin', () => {
       }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 2);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { id: 'p1', name: 'Project A', folderId: 'f1' },
@@ -453,7 +458,7 @@ describe('executeNodeUnit — HashJoin', () => {
       }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 2);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ id: 'p1', folderId: 'f_nonexistent' }]);
     results.set(1, [{ id: 'f1', name: 'Work' }]);
@@ -476,7 +481,7 @@ describe('executeNodeUnit — HashJoin', () => {
       }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 2);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { id: 'f1', name: 'Work' },
@@ -508,7 +513,7 @@ describe('executeNodeUnit — HashJoin', () => {
       }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 2);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ id: 'f1', name: 'Empty folder' }]);
     results.set(1, []); // no projects
@@ -532,7 +537,7 @@ describe('executeNodeUnit — Derive', () => {
       }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { completed: true, dropped: false, blocked: false, dueDate: null },
@@ -558,7 +563,7 @@ describe('executeNodeUnit — Derive', () => {
       }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [
       { name: 'Active', hidden: false },
@@ -580,7 +585,7 @@ describe('executeNodeUnit — Derive', () => {
       }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     const results = new Map<number, unknown>();
     results.set(0, [{ name: 'A' }]);
 
@@ -610,7 +615,7 @@ describe('executeNodeUnit — multi-op pipeline', () => {
       makeTargetedNode({ kind: 'Limit', source: 4, n: 2 }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 5);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2, 3, 4, 5], inputs: [0, 1], result: 5, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2, 3, 4, 5], inputs: vi(0, 1), outputs: [], result: 5, dependsOn: [] };
 
     const results = new Map<number, unknown>();
     results.set(0, ['id1', 'id2', 'id3', 'id4', 'id5']);
@@ -640,7 +645,7 @@ describe('executeNodeUnit — multi-op pipeline', () => {
       makeTargetedNode({ kind: 'Pick', source: 3, fields: ['id', 'folderName'] }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 4);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [2, 3, 4], inputs: [0, 1], result: 4, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [2, 3, 4], inputs: vi(0, 1), outputs: [], result: 4, dependsOn: [] };
 
     const results = new Map<number, unknown>();
     results.set(0, ['p1', 'p2']);
@@ -665,7 +670,7 @@ describe('executeNodeUnit — error handling', () => {
   it('rejects non-node runtime unit', () => {
     const nodes: TargetedNode[] = [jxaPlaceholder];
     const plan = makeTargetedPlan(nodes, 0);
-    const unit: ExecutionUnit = { runtime: 'jxa', nodes: [0], inputs: [], result: 0, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'jxa', nodes: [0], inputs: vi(), outputs: [], result: 0, dependsOn: [] };
     assert.throws(() => executeNodeUnit(unit, plan, new Map()), /expected runtime 'node'/);
   });
 
@@ -674,7 +679,7 @@ describe('executeNodeUnit — error handling', () => {
       makeTargetedNode({ kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 0);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [0], inputs: [], result: 0, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [0], inputs: vi(), outputs: [], result: 0, dependsOn: [] };
     assert.throws(() => executeNodeUnit(unit, plan, new Map()), /unexpected node kind/);
   });
 
@@ -684,7 +689,7 @@ describe('executeNodeUnit — error handling', () => {
       makeTargetedNode({ kind: 'Sort', source: 0, by: 'name', dir: 'asc' }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
-    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [] };
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
     // Don't set ref 0 in results
     assert.throws(() => executeNodeUnit(unit, plan, new Map()), /unresolved ref/);
   });
@@ -810,7 +815,7 @@ describe('computeExportedRefs — cross-unit export detection', () => {
 
   it('includes unit.result even when no downstream consumers exist', () => {
     const unitA: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1], inputs: [], result: 1, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1], inputs: vi(), outputs: [], result: 1, dependsOn: [],
     };
     const refs = computeExportedRefs(unitA, [unitA]);
     assert.deepEqual(refs, [1], 'should include unit.result');
@@ -820,10 +825,10 @@ describe('computeExportedRefs — cross-unit export detection', () => {
     // JXA unit produces refs 0 (elements) and 1 (names).
     // Node unit consumes both 0 and 1 for a Zip.
     const unitA: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1], inputs: [], result: 1, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1], inputs: vi(), outputs: [], result: 1, dependsOn: [],
     };
     const unitB: ExecutionUnit = {
-      runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [unitA],
+      runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [unitA],
     };
     const refs = computeExportedRefs(unitA, [unitA, unitB]);
     assert.deepEqual(refs, [0, 1], 'should export both refs consumed by unitB');
@@ -832,10 +837,10 @@ describe('computeExportedRefs — cross-unit export detection', () => {
   it('does not include refs not consumed by any downstream unit', () => {
     // JXA unit has nodes [0, 1, 2], but downstream only needs ref 2
     const unitA: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1, 2], inputs: [], result: 2, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1, 2], inputs: vi(), outputs: [], result: 2, dependsOn: [],
     };
     const unitB: ExecutionUnit = {
-      runtime: 'node', nodes: [3], inputs: [2], result: 3, dependsOn: [unitA],
+      runtime: 'node', nodes: [3], inputs: vi(2), outputs: [], result: 3, dependsOn: [unitA],
     };
     const refs = computeExportedRefs(unitA, [unitA, unitB]);
     assert.deepEqual(refs, [2], 'should only export ref 2 (result and consumed)');
@@ -843,13 +848,13 @@ describe('computeExportedRefs — cross-unit export detection', () => {
 
   it('exports refs consumed by multiple downstream units', () => {
     const unitA: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1, 2], inputs: [], result: 2, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1, 2], inputs: vi(), outputs: [], result: 2, dependsOn: [],
     };
     const unitB: ExecutionUnit = {
-      runtime: 'node', nodes: [3], inputs: [0, 2], result: 3, dependsOn: [unitA],
+      runtime: 'node', nodes: [3], inputs: vi(0, 2), outputs: [], result: 3, dependsOn: [unitA],
     };
     const unitC: ExecutionUnit = {
-      runtime: 'node', nodes: [4], inputs: [1, 2], result: 4, dependsOn: [unitA],
+      runtime: 'node', nodes: [4], inputs: vi(1, 2), outputs: [], result: 4, dependsOn: [unitA],
     };
     const refs = computeExportedRefs(unitA, [unitA, unitB, unitC]);
     assert.deepEqual(refs, [0, 1, 2], 'should export all three consumed refs');
@@ -857,10 +862,10 @@ describe('computeExportedRefs — cross-unit export detection', () => {
 
   it('returns sorted refs for deterministic codegen', () => {
     const unitA: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1, 2], inputs: [], result: 0, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1, 2], inputs: vi(), outputs: [], result: 0, dependsOn: [],
     };
     const unitB: ExecutionUnit = {
-      runtime: 'node', nodes: [3], inputs: [2, 1], result: 3, dependsOn: [unitA],
+      runtime: 'node', nodes: [3], inputs: vi(2, 1), outputs: [], result: 3, dependsOn: [unitA],
     };
     const refs = computeExportedRefs(unitA, [unitA, unitB]);
     // result=0 plus consumed 1,2 → sorted [0, 1, 2]
@@ -876,7 +881,7 @@ describe('unpackResult — multi-ref unpacking', () => {
 
   it('unpacks multi-export object into results map', () => {
     const unit: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1], inputs: [], result: 1, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1], inputs: vi(), outputs: [], result: 1, dependsOn: [],
     };
     const results = new Map<number, unknown>();
     const rawResult = { '0': ['id1', 'id2'], '1': ['Task A', 'Task B'] };
@@ -889,7 +894,7 @@ describe('unpackResult — multi-ref unpacking', () => {
 
   it('unpacks single-export as plain result at unit.result', () => {
     const unit: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0], inputs: [], result: 0, dependsOn: [],
+      runtime: 'jxa', nodes: [0], inputs: vi(), outputs: [], result: 0, dependsOn: [],
     };
     const results = new Map<number, unknown>();
     const rawResult = ['id1', 'id2', 'id3'];
@@ -901,7 +906,7 @@ describe('unpackResult — multi-ref unpacking', () => {
 
   it('handles null and undefined values in multi-export', () => {
     const unit: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1, 2], inputs: [], result: 2, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1, 2], inputs: vi(), outputs: [], result: 2, dependsOn: [],
     };
     const results = new Map<number, unknown>();
     const rawResult = { '0': null, '1': undefined, '2': [1, 2, 3] };
@@ -915,7 +920,7 @@ describe('unpackResult — multi-ref unpacking', () => {
 
   it('multi-export with 3+ refs populates all entries', () => {
     const unit: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1, 2, 3], inputs: [], result: 3, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1, 2, 3], inputs: vi(), outputs: [], result: 3, dependsOn: [],
     };
     const results = new Map<number, unknown>();
     const rawResult = {
@@ -939,7 +944,7 @@ describe('buildInputMap — cross-unit input serialisation', () => {
 
   it('serialises upstream results as JSON.parse() expressions', () => {
     const unit: ExecutionUnit = {
-      runtime: 'jxa', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [],
+      runtime: 'jxa', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [],
     };
     const results = new Map<number, unknown>();
     results.set(0, ['id1', 'id2']);
@@ -960,7 +965,7 @@ describe('buildInputMap — cross-unit input serialisation', () => {
 
   it('throws on unresolved input ref', () => {
     const unit: ExecutionUnit = {
-      runtime: 'jxa', nodes: [1], inputs: [0], result: 1, dependsOn: [],
+      runtime: 'jxa', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [],
     };
     const results = new Map<number, unknown>(); // ref 0 not set
 
@@ -969,7 +974,7 @@ describe('buildInputMap — cross-unit input serialisation', () => {
 
   it('handles null and empty array values', () => {
     const unit: ExecutionUnit = {
-      runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [],
+      runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [],
     };
     const results = new Map<number, unknown>();
     results.set(0, null);
@@ -991,10 +996,10 @@ describe('cross-unit multi-ref regression — end-to-end handoff', () => {
     // This is the exact pattern that was broken before task #15.
 
     const unitA: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0, 1], inputs: [], result: 1, dependsOn: [],
+      runtime: 'jxa', nodes: [0, 1], inputs: vi(), outputs: [], result: 1, dependsOn: [],
     };
     const unitB: ExecutionUnit = {
-      runtime: 'node', nodes: [2], inputs: [0, 1], result: 2, dependsOn: [unitA],
+      runtime: 'node', nodes: [2], inputs: vi(0, 1), outputs: [], result: 2, dependsOn: [unitA],
     };
     const allUnits = [unitA, unitB];
 
@@ -1036,10 +1041,10 @@ describe('cross-unit multi-ref regression — end-to-end handoff', () => {
     // and unpackResult should store the raw value directly (not as an object).
 
     const unitA: ExecutionUnit = {
-      runtime: 'jxa', nodes: [0], inputs: [], result: 0, dependsOn: [],
+      runtime: 'jxa', nodes: [0], inputs: vi(), outputs: [], result: 0, dependsOn: [],
     };
     const unitB: ExecutionUnit = {
-      runtime: 'node', nodes: [1], inputs: [0], result: 1, dependsOn: [unitA],
+      runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [unitA],
     };
     const allUnits = [unitA, unitB];
 

@@ -177,6 +177,22 @@ function computeNeededColumns(
         break;
       }
 
+      case 'AddSwitch': {
+        // AddSwitch adds node.column to rows from source.
+        // Source needs: downstream columns (minus node.column, which AddSwitch provides)
+        // plus all variables referenced in the case predicates.
+        if (myNeeded === null) {
+          propagate(needed, node.source, null);
+        } else {
+          const fromSource = new Set([...myNeeded].filter(f => f !== node.column));
+          for (const c of node.cases) {
+            for (const v of predicateVars(c.predicate)) fromSource.add(v);
+          }
+          propagate(needed, node.source, fromSource);
+        }
+        break;
+      }
+
       case 'Zip':
       case 'Get':
       case 'Count':
@@ -265,7 +281,12 @@ function collectAllRefs(node: EventNode): Ref[] {
     case 'Derive':
     case 'ColumnValues':
     case 'Flatten':
+    case 'RowCount':
+    case 'AddSwitch':
       refs.push(node.source);
+      break;
+    case 'Union':
+      refs.push(node.left, node.right);
       break;
   }
 
@@ -345,6 +366,12 @@ function rewriteNode(node: EventNode, remap: (r: Ref) => Ref): EventNode {
     case 'Pick':
       return { ...node, source: remap(node.source) };
     case 'Derive':
+      return { ...node, source: remap(node.source) };
+    case 'Union':
+      return { ...node, left: remap(node.left), right: remap(node.right) };
+    case 'RowCount':
+      return { ...node, source: remap(node.source) };
+    case 'AddSwitch':
       return { ...node, source: remap(node.source) };
   }
 }

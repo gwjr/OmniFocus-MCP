@@ -83,6 +83,9 @@ function execNode(ctx: ExecCtx, ref: Ref): unknown {
     case 'Derive':       return execDerive(ctx, node);
     case 'ColumnValues': return execColumnValues(ctx, node);
     case 'Flatten':      return execFlatten(ctx, node);
+    case 'Union':        return execUnion(ctx, node);
+    case 'RowCount':     return execRowCount(ctx, node);
+    case 'AddSwitch':    return execAddSwitch(ctx, ref, node);
     default:
       throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
   }
@@ -311,6 +314,79 @@ function execFlatten(
 ): unknown[] {
   const source = resolve(ctx, node.source) as unknown[][];
   return ([] as unknown[]).concat(...source);
+}
+
+function execUnion(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'Union' }>,
+): Row[] {
+  const left  = resolve(ctx, node.left)  as Row[];
+  const right = resolve(ctx, node.right) as Row[];
+  const seen   = new Set<string>();
+  const result: Row[] = [];
+  for (const row of left) {
+    const id = row.id as string;
+    if (!seen.has(id)) { seen.add(id); result.push(row); }
+  }
+  for (const row of right) {
+    const id = row.id as string;
+    if (!seen.has(id)) { seen.add(id); result.push(row); }
+  }
+  return result;
+}
+
+function execAddSwitch(
+  ctx: ExecCtx,
+  ref: Ref,
+  node: Extract<EventNode, { kind: 'AddSwitch' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+  const entity = node.entity ?? inferEntity(ctx, node.source);
+
+  // Pre-compile all case predicates once
+  const compiledCases = node.cases.map(c => ({
+    test: compileNodePredicate(c.predicate, entity),
+    value: c.value,
+  }));
+
+  const isError = node.default === 'error';
+
+  for (const row of source) {
+    let matched = false;
+    for (const { test, value } of compiledCases) {
+      if (test(row)) {
+        row[node.column] = evalSwitchValue(value);
+        matched = true;
+        break;
+      }
+    }
+    if (!matched) {
+      if (isError) {
+        throw new Error(
+          `AddSwitch: exhaustive switch on '${node.column}' had no matching case ` +
+          `(ref %${ref})`
+        );
+      }
+      row[node.column] = evalSwitchValue(node.default as import('../fold.js').LoweredExpr);
+    }
+  }
+
+  return source;
+}
+
+/** Evaluate a literal LoweredExpr value (string, number, boolean, null only). */
+function evalSwitchValue(expr: import('../fold.js').LoweredExpr): unknown {
+  if (expr === null || typeof expr === 'boolean' || typeof expr === 'number' || typeof expr === 'string') {
+    return expr;
+  }
+  throw new Error(`AddSwitch: unsupported non-literal value expression: ${JSON.stringify(expr)}`);
+}
+
+function execRowCount(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'RowCount' }>,
+): number {
+  return (resolve(ctx, node.source) as Row[]).length;
 }
 
 // ── Entity inference ────────────────────────────────────────────────────

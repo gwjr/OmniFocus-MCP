@@ -16,7 +16,7 @@ import type { EventPlan, Ref } from '../eventPlan.js';
 import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import type { StrategyNode } from '../strategy.js';
-import { assignRuntimes, splitExecutionUnits } from '../targetedEventPlanLowering.js';
+import { assignRuntimes, splitExecutionUnits, computeBindings } from '../targetedEventPlanLowering.js';
 import { lowerStrategy } from '../strategyToEventPlan.js';
 import { cseEventPlan } from '../eventPlanCSE.js';
 import { pruneColumns } from '../eventPlanColumnPrune.js';
@@ -121,23 +121,37 @@ export function fuseSchedule(sorted: ExecutionUnit[]): ExecutionUnit[] {
 
 /**
  * Compute the set of refs within a unit that are consumed by downstream
- * units. These are the refs the unit must return to the orchestrator.
+ * units as serialized values. These are the refs the unit must include
+ * in its JSON.stringify return.
  *
- * Always includes the unit's result ref. Also includes any internal ref
- * that appears in another unit's inputs list.
+ * Includes the unit's result ref (unless it's only consumed as a
+ * specifier). Also includes any internal ref that appears in another
+ * unit's value-kind inputs list.
+ *
+ * Specifier-kind inputs are excluded — they are reconstructed in the
+ * consuming unit and don't need to be serialized by this unit.
  */
 export function computeExportedRefs(unit: ExecutionUnit, allUnits: ExecutionUnit[]): Ref[] {
   const nodeSet = new Set(unit.nodes);
   const exported = new Set<Ref>();
-  exported.add(unit.result);
 
+  // Collect refs consumed as values by other units
   for (const other of allUnits) {
     if (other === unit) continue;
     for (const inp of other.inputs) {
-      if (nodeSet.has(inp)) {
-        exported.add(inp);
+      if (inp.kind === 'specifier') continue;  // reconstructed, not serialized
+      if (nodeSet.has(inp.ref)) {
+        exported.add(inp.ref);
       }
     }
+  }
+
+  // Always include the result ref — the orchestrator reads it for the
+  // final plan result. Only omit if an output binding explicitly marks
+  // it as specifier-kind (non-serializable).
+  const resultOutput = unit.outputs.find(o => o.ref === unit.result);
+  if (!resultOutput || resultOutput.kind !== 'specifier') {
+    exported.add(unit.result);
   }
 
   // Return sorted for deterministic codegen
@@ -285,13 +299,18 @@ export function buildInputMap(
   results: Map<Ref, unknown>,
 ): Map<number, string> {
   const inputs = new Map<number, string>();
-  for (const ref of unit.inputs) {
-    const value = results.get(ref);
-    if (value === undefined && !results.has(ref)) {
-      throw new Error(`orchestrator: unresolved input ref %${ref} for ${unit.runtime} unit`);
+  for (const input of unit.inputs) {
+    if (input.kind === 'specifier') {
+      // Specifier inputs are reconstructed by the emitter — no runtime value needed.
+      // The emitter handles these via the Input binding's spec field.
+      continue;
+    }
+    const value = results.get(input.ref);
+    if (value === undefined && !results.has(input.ref)) {
+      throw new Error(`orchestrator: unresolved input ref %${input.ref} for ${unit.runtime} unit`);
     }
     // Inline the value as a JSON literal in the script
-    inputs.set(ref, `JSON.parse(${JSON.stringify(JSON.stringify(value))})`);
+    inputs.set(input.ref, `JSON.parse(${JSON.stringify(JSON.stringify(value))})`);
   }
   return inputs;
 }
@@ -316,6 +335,7 @@ export async function executeTargetedPlan(
   plan: TargetedEventPlan,
 ): Promise<OrchestratorResult> {
   const units = splitExecutionUnits(plan);
+  computeBindings(units, plan);
   const sorted = fuseSchedule(topoSort(units));
   const results = new Map<Ref, unknown>();
   const timings: OrchestratorResult['timings'] = [];
@@ -399,6 +419,7 @@ export function compileEventPlan(node: StrategyNode): {
   const optimized = pruneColumns(csed);
   const targeted = assignRuntimes(optimized);
   const units = splitExecutionUnits(targeted);
+  computeBindings(units, targeted);
   return { targeted, units };
 }
 

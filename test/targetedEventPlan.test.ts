@@ -60,54 +60,59 @@ describe('targetEventPlan — runtime assignment', () => {
   it('Filter → node', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
-      { kind: 'Filter', source: 2, predicate: { op: 'contains', args: [{ var: 'name' }, 'review'] } },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
+      { kind: 'Filter', source: 3, predicate: { op: 'contains', args: [{ var: 'name' }, 'review'] } },
     ]);
     const { targeted } = targetEventPlan(plan);
-    assert.equal(nodeRuntime(targeted, 3), 'node');
+    assert.equal(nodeRuntime(targeted, 4), 'node');
   });
 
   it('Zip → node', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
     ]);
     const { targeted } = targetEventPlan(plan);
-    assert.equal(nodeRuntime(targeted, 2), 'node');
+    assert.equal(nodeRuntime(targeted, 3), 'node');
   });
 
   it('Sort → node', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
-      { kind: 'Sort', source: 2, by: 'name', dir: 'asc' },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
+      { kind: 'Sort', source: 3, by: 'name', dir: 'asc' },
     ]);
     const { targeted } = targetEventPlan(plan);
-    assert.equal(nodeRuntime(targeted, 3), 'node');
+    assert.equal(nodeRuntime(targeted, 4), 'node');
   });
 
   it('Limit → node', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }] },
-      { kind: 'Limit', source: 1, n: 10 },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }] },
+      { kind: 'Limit', source: 2, n: 10 },
     ]);
     const { targeted } = targetEventPlan(plan);
-    assert.equal(nodeRuntime(targeted, 2), 'node');
+    assert.equal(nodeRuntime(targeted, 3), 'node');
   });
 
   it('Pick → node', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
-      { kind: 'Pick', source: 2, fields: ['name'] },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
+      { kind: 'Pick', source: 3, fields: ['name'] },
     ]);
     const { targeted } = targetEventPlan(plan);
-    assert.equal(nodeRuntime(targeted, 3), 'node');
+    assert.equal(nodeRuntime(targeted, 4), 'node');
   });
 
   it('Hint consumed — no node has kind Hint', () => {
@@ -182,12 +187,13 @@ describe('targetEventPlan — ExecutionUnit grouping', () => {
   it('jxa + node → separate ExecutionUnits', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
     ]);
     const { units } = targetEventPlan(plan);
     const jxaUnit = unitOf(units, 0);
-    const nodeUnit = unitOf(units, 2);
+    const nodeUnit = unitOf(units, 3);
     assert.notStrictEqual(jxaUnit, nodeUnit, 'Get and Zip should be in different ExecutionUnits');
     assert.equal(jxaUnit.runtime, 'jxa');
     assert.equal(nodeUnit.runtime, 'node');
@@ -197,12 +203,13 @@ describe('targetEventPlan — ExecutionUnit grouping', () => {
   it('ExecutionUnit dependsOn reflects data dependency', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
     ]);
     const { units } = targetEventPlan(plan);
     const jxaUnit = unitOf(units, 0);
-    const nodeUnit = unitOf(units, 2);
+    const nodeUnit = unitOf(units, 3);
     assert.ok(
       nodeUnit.dependsOn.includes(jxaUnit),
       `node unit dependsOn should include jxa unit`
@@ -211,29 +218,32 @@ describe('targetEventPlan — ExecutionUnit grouping', () => {
 
   it('mixed: jxa reads then node filter → correct ExecutionUnit structure', () => {
     const plan = makePlan([
-      // 0: Get elements (ids)
+      // 0: Get elements
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
-      // 1: Get property (name)
+      // 1: Get property (id)
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
+      // 2: Get property (name)
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      // 2: Get property (flagged)
+      // 3: Get property (flagged)
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'FCfl' }, effect: 'nonMutating' },
-      // 3: Zip
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }, { name: 'flagged', ref: 2 }] },
-      // 4: Filter
-      { kind: 'Filter', source: 3, predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } },
+      // 4: Zip
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }, { name: 'flagged', ref: 3 }] },
+      // 5: Filter
+      { kind: 'Filter', source: 4, predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } },
     ]);
     const { units } = targetEventPlan(plan);
 
-    // All 3 Get nodes should be in the same jxa ExecutionUnit
+    // All 4 Get nodes should be in the same jxa ExecutionUnit
     const jxaUnit = unitOf(units, 0);
     assert.strictEqual(unitOf(units, 1), jxaUnit, 'ref 1 should share jxa unit');
     assert.strictEqual(unitOf(units, 2), jxaUnit, 'ref 2 should share jxa unit');
+    assert.strictEqual(unitOf(units, 3), jxaUnit, 'ref 3 should share jxa unit');
     assert.equal(jxaUnit.runtime, 'jxa');
-    assert.equal(jxaUnit.nodes.length, 3);
+    assert.equal(jxaUnit.nodes.length, 4);
 
     // Zip and Filter should be in a node ExecutionUnit
-    const nodeUnit = unitOf(units, 3);
-    assert.strictEqual(unitOf(units, 4), nodeUnit, 'ref 4 should share node unit');
+    const nodeUnit = unitOf(units, 4);
+    assert.strictEqual(unitOf(units, 5), nodeUnit, 'ref 5 should share node unit');
     assert.equal(nodeUnit.runtime, 'node');
 
     // node unit depends on jxa unit
@@ -243,26 +253,29 @@ describe('targetEventPlan — ExecutionUnit grouping', () => {
   it('result Ref preserved from EventPlan', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
-      { kind: 'Filter', source: 2, predicate: { op: 'contains', args: [{ var: 'name' }, 'review'] } },
-    ], 3);
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
+      { kind: 'Filter', source: 3, predicate: { op: 'contains', args: [{ var: 'name' }, 'review'] } },
+    ], 4);
     const { targeted } = targetEventPlan(plan);
-    assert.equal(targeted.result, 3);
+    assert.equal(targeted.result, 4);
   });
 
   it('ExecutionUnit inputs lists cross-unit refs', () => {
-    // Zip at ref 2 consumes refs 0 and 1 which belong to the jxa unit.
-    // The node unit's inputs should therefore include refs 0 and 1.
+    // Zip at ref 3 consumes refs 1 and 2 which belong to the jxa unit.
+    // The node unit's inputs should therefore include refs 1 and 2.
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
     ]);
     const { units } = targetEventPlan(plan);
-    const nodeUnit = unitOf(units, 2);
-    assert.ok(nodeUnit.inputs.includes(0), 'node unit inputs should include ref 0');
-    assert.ok(nodeUnit.inputs.includes(1), 'node unit inputs should include ref 1');
+    const nodeUnit = unitOf(units, 3);
+    const inputRefs = nodeUnit.inputs.map(i => i.ref);
+    assert.ok(inputRefs.includes(1), 'node unit inputs should include ref 1');
+    assert.ok(inputRefs.includes(2), 'node unit inputs should include ref 2');
   });
 
   it('hinted node lands in its own runtime ExecutionUnit', () => {

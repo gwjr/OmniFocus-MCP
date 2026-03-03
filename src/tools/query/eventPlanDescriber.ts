@@ -91,7 +91,7 @@ export function describeExecutionUnit(unit: ExecutionUnit, plan: TargetedEventPl
   lines.push(`${label} [${unit.runtime}]`);
   lines.push(`  nodes: [${unit.nodes.map(r => `%${r}`).join(', ')}]`);
   if (unit.inputs.length > 0) {
-    lines.push(`  inputs: [${unit.inputs.map(r => `%${r}`).join(', ')}]`);
+    lines.push(`  inputs: [${unit.inputs.map(i => `%${i.ref}${i.kind === 'specifier' ? '(spec)' : ''}`).join(', ')}]`);
   }
   lines.push(`  result: %${unit.result}`);
   if (unit.dependsOn.length > 0) {
@@ -186,6 +186,17 @@ function describeNode(node: EventNode, idx: string, prefix: string): string[] {
     case 'Derive': {
       const specs = node.derivations.map(d => `${d.var}@${d.entity}`).join(', ');
       return [`${lhs} = Derive(${fmtRef(node.source)}, [${specs}])`];
+    }
+
+    case 'Union':
+      return [`${lhs} = Union(${fmtRef(node.left)}, ${fmtRef(node.right)})`];
+
+    case 'RowCount':
+      return [`${lhs} = RowCount(${fmtRef(node.source)})`];
+
+    case 'AddSwitch': {
+      const defStr = node.default === 'error' ? 'Error' : JSON.stringify(node.default);
+      return [`${lhs} = AddSwitch(${fmtRef(node.source)}, '${node.column}', ${node.cases.length} cases, default:${defStr})`];
     }
 
     case 'ForEach': {

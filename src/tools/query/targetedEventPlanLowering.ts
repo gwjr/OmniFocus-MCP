@@ -14,7 +14,7 @@
  */
 
 import type { EventNode, EventPlan, Hinted, Ref, Runtime, RuntimeAllocation, Specifier } from './eventPlan.js';
-import type { ExecutionUnit, TargetedEventPlan, TargetedNode } from './targetedEventPlan.js';
+import type { ExecutionUnit, Input, TargetedEventPlan, TargetedNode } from './targetedEventPlan.js';
 
 // ── Default runtime per node kind ────────────────────────────────────────────
 
@@ -36,6 +36,9 @@ function defaultRuntime(node: EventNode): Runtime {
     case 'Derive':
     case 'ColumnValues':
     case 'Flatten':
+    case 'Union':
+    case 'RowCount':
+    case 'AddSwitch':
       return 'node';
   }
 }
@@ -81,7 +84,12 @@ function collectRefs(node: EventNode): Ref[] {
     case 'Derive':
     case 'ColumnValues':
     case 'Flatten':
+    case 'RowCount':
+    case 'AddSwitch':
       refs.push(node.source);
+      break;
+    case 'Union':
+      refs.push(node.left, node.right);
       break;
   }
 
@@ -155,8 +163,8 @@ export function splitExecutionUnits(targeted: TargetedEventPlan): ExecutionUnit[
   // Compute dependsOn
   for (const unit of units) {
     const deps = new Set<ExecutionUnit>();
-    for (const inputRef of unit.inputs) {
-      const dep = refToUnit.get(inputRef);
+    for (const input of unit.inputs) {
+      const dep = refToUnit.get(input.ref);
       if (dep && dep !== unit) deps.add(dep);
     }
     unit.dependsOn = [...deps];
@@ -181,10 +189,12 @@ function buildUnit(
     }
   }
 
+  const sortedInputs = [...inputSet].sort((a, b) => a - b);
   const unit: ExecutionUnit = {
     runtime,
     nodes: nodeRefs,
-    inputs: [...inputSet].sort((a, b) => a - b),
+    inputs: sortedInputs.map(ref => ({ ref, kind: 'value' as const })),
+    outputs: [],  // computed by computeBindings after all units are built
     result: nodeRefs[nodeRefs.length - 1],
     dependsOn: [], // filled by caller
   };
@@ -192,7 +202,91 @@ function buildUnit(
   return unit;
 }
 
-// ── Convenience: assign + split in one step ──────────────────────────────────
+// ── Pass 3: compute cross-unit bindings ──────────────────────────────────────
+
+/**
+ * Returns true if a node produces an AE specifier reference rather than
+ * a JSON-serializable value. Only Get(Property(...)) materializes — it
+ * calls .propCode() and returns actual data. All other Get specifier
+ * kinds (Elements, ByID, ByName, ByIndex, Whose, Document) produce AE
+ * object specifier references that are NOT JSON-serializable.
+ */
+function isNonMaterializing(node: EventNode): boolean {
+  return node.kind === 'Get' && node.specifier.kind !== 'Property';
+}
+
+/**
+ * Post-pass after splitExecutionUnits: refine Input/Output bindings.
+ *
+ * For each cross-unit input ref:
+ *   - If the producing node is a non-materializing Get:
+ *     • Consuming unit is 'node' → compile error (can't deserialize AE specifiers)
+ *     • Consuming unit is 'jxa'/'omniJS' → set kind='specifier' with the
+ *       specifier from the producing Get, so the emitter can reconstruct it.
+ *   - Otherwise: keep kind='value' (JSON-serializable).
+ *
+ * Also computes output bindings for each unit.
+ */
+export function computeBindings(
+  units: ExecutionUnit[],
+  plan: TargetedEventPlan,
+): void {
+  // Pass 1: refine inputs
+  for (const unit of units) {
+    const refinedInputs: Input[] = [];
+    for (const input of unit.inputs) {
+      const producingNode = plan.nodes[input.ref];
+      if (producingNode.kind === 'Get' && producingNode.specifier.kind !== 'Property') {
+        if (unit.runtime === 'node') {
+          throw new Error(
+            `compile error: non-serializable AE specifier ref %${input.ref} ` +
+            `(Get(${producingNode.specifier.kind})) ` +
+            `cannot cross to node execution unit`,
+          );
+        }
+        // JXA or omniJS: reconstruct specifier in-place
+        refinedInputs.push({
+          ref: input.ref,
+          kind: 'specifier',
+          spec: producingNode.specifier,
+        });
+      } else {
+        refinedInputs.push(input);
+      }
+    }
+    unit.inputs = refinedInputs;
+  }
+
+  // Pass 2: compute outputs — which refs are consumed by other units?
+  for (const unit of units) {
+    const nodeSet = new Set(unit.nodes);
+    const outputMap = new Map<Ref, 'value' | 'specifier'>();
+
+    for (const other of units) {
+      if (other === unit) continue;
+      for (const inp of other.inputs) {
+        if (nodeSet.has(inp.ref) && !outputMap.has(inp.ref)) {
+          outputMap.set(inp.ref, inp.kind === 'specifier' ? 'specifier' : 'value');
+        }
+      }
+    }
+
+    // Always include result — downstream orchestrator reads it
+    if (!outputMap.has(unit.result)) {
+      const resultNode = plan.nodes[unit.result];
+      outputMap.set(
+        unit.result,
+        isNonMaterializing(resultNode) ? 'specifier' : 'value',
+      );
+    }
+
+    unit.outputs = [...outputMap.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([ref, kind]) => ({ ref, kind }));
+  }
+}
+
+// ── Convenience: assign + split + bind in one step ───────────────────────────
 
 export function targetEventPlan(plan: EventPlan): {
   targeted: TargetedEventPlan;
@@ -200,5 +294,6 @@ export function targetEventPlan(plan: EventPlan): {
 } {
   const targeted = assignRuntimes(plan);
   const units = splitExecutionUnits(targeted);
+  computeBindings(units, targeted);
   return { targeted, units };
 }
