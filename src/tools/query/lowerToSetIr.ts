@@ -11,7 +11,7 @@
  *   not(P)           → Filter(scanVarsOf(P), not(P))   [always Node-side]
  *   simple_pred(var) → Filter(Scan(entity, [id, var]), pred)
  *   expensive(var)   → Filter(Enrich(Scan(entity, [id]), [var]), pred)
- *   container(t, p)  → ContainerMembers(entity, t, p)
+ *   container(t, p)  → Restriction(Scan(entity,[id,fk]), fk, lowerPredicate(p, containerEntity))
  *
  * Output columns are added separately at the top:
  *   cheap select cols  → Intersect(Scan(entity, [id, ...cheapCols]), filterTree)
@@ -27,6 +27,7 @@
 
 import type { LoweredExpr } from './fold.js';
 import { getVarRegistry, type EntityType } from './variables.js';
+import { getChildToParentFk } from './aeProps.js';
 import type {
   SetIrNode,
   ScanNode,
@@ -35,6 +36,9 @@ import type {
   SwitchCase,
   SwitchDefault,
 } from './setIr.js';
+
+/** All entity types that participate in FK relationships. */
+const ENTITY_TYPES: EntityType[] = ['tasks', 'projects', 'folders', 'tags'];
 
 // ── Variable classification ────────────────────────────────────────────────
 
@@ -95,11 +99,15 @@ function splitColumns(
   const computed: string[] = [];
 
   for (const v of varNames) {
-    const cost = reg[v]?.cost;
+    const varDef = reg[v];
+    const cost = varDef?.cost;
     if (cost === 'expensive' || cost === 'per-item') {
       expensive.push(v);
     } else if (cost === 'computed') {
       computed.push(v);
+    } else if (varDef?.appleEventsProperty === null) {
+      // Virtual variable — no AE property (e.g. 'now'). Evaluated at Node-side
+      // runtime by nodeEval; must not appear in Scan columns.
     } else {
       cheap.push(v);
     }
@@ -204,6 +212,46 @@ function buildFilterSource(varNames: Set<string>, entity: EntityType): SetIrNode
   return source;
 }
 
+// ── Containing helper ─────────────────────────────────────────────────────
+
+/**
+ * Build a Restriction that keeps parentEntity rows where at least one
+ * childEntity row (with fkColumn pointing to parentEntity.id) satisfies childPred.
+ *
+ * Produces:
+ *   Restriction(
+ *     source:       Scan(parentEntity, [id]),
+ *     fkColumn:     'id',
+ *     lookup:       Intersect(Scan(childEntity, [id, fkColumn]), lowerPredicate(childPred, childEntity)),
+ *     lookupColumn: fkColumn,
+ *     flattenLookup: isArray,
+ *   )
+ *
+ * The Intersect feeds the optimizer: Intersect(Scan(A,c1), Filter(Scan(A,c2),p))
+ * → Filter(Scan(A, c1∪c2), p) — collapses to a single scan with both columns.
+ */
+function makeContainingRestriction(
+  parentEntity: EntityType,
+  childEntity: EntityType,
+  childPred: LoweredExpr,
+  fkColumn: string,
+  isArray: boolean,
+): SetIrNode {
+  const filteredChildren: SetIrNode = {
+    kind: 'Intersect',
+    left:  scan(childEntity, [fkColumn]),
+    right: lowerPredicate(childPred, childEntity),
+  };
+  return {
+    kind:          'Restriction',
+    source:        scan(parentEntity, []),
+    fkColumn:      'id',
+    lookup:        filteredChildren,
+    lookupColumn:  fkColumn,
+    flattenLookup: isArray || undefined,
+  };
+}
+
 // ── Predicate lowering ────────────────────────────────────────────────────
 
 /**
@@ -268,22 +316,100 @@ export function lowerPredicate(pred: LoweredExpr, entity: EntityType): SetIrNode
     }
 
     case 'container': {
-      // container(type, subPred) — membership scan.
-      // Produces {id}-only rows for target entity items in matching containers.
+      // container(type, subPred) — FK-based restriction (relational semi-join).
+      // Keeps rows of `entity` where the FK column references a container matching subPred.
       const containerType = args[0] as 'tag' | 'folder' | 'project';
-      const containerPred = args[1];
-      return {
-        kind: 'ContainerMembers',
-        targetEntity: entity,
-        containerType,
-        containerPredicate: containerPred,
-      };
+      const containerPred = args[1] as LoweredExpr;
+
+      switch (containerType) {
+        case 'project': {
+          // tasks/projects whose containingProject satisfies containerPred
+          const source = scan(entity, ['projectId']);
+          const lookup = lowerPredicate(containerPred, 'projects');
+          return { kind: 'Restriction', source, fkColumn: 'projectId', lookup };
+        }
+
+        case 'folder': {
+          if (entity === 'tasks') {
+            // tasks → projects via projectId, projects → folders via folderId
+            const projectSource = scan('projects', ['folderId']);
+            const folderLookup  = lowerPredicate(containerPred, 'folders');
+            const projectsInFolder: SetIrNode = { kind: 'Restriction', source: projectSource, fkColumn: 'folderId', lookup: folderLookup };
+            const taskSource = scan(entity, ['projectId']);
+            return { kind: 'Restriction', source: taskSource, fkColumn: 'projectId', lookup: projectsInFolder };
+          }
+          if (entity === 'projects') {
+            const source = scan(entity, ['folderId']);
+            const lookup = lowerPredicate(containerPred, 'folders');
+            return { kind: 'Restriction', source, fkColumn: 'folderId', lookup };
+          }
+          // Fallback: Node-side filter (shouldn't arise in practice)
+          const varsFb = collectVarNames(pred);
+          const sourceFb = buildFilterSource(varsFb, entity);
+          return { kind: 'Filter', source: sourceFb, predicate: pred, entity };
+        }
+
+        case 'tag': {
+          // tasks/projects whose tag set intersects the tags matching containerPred.
+          // tagIds = task.tags.id() — bulk nested-array chain read.
+          const source = scan(entity, ['tagIds']);
+          const lookup = lowerPredicate(containerPred, 'tags');
+          return { kind: 'Restriction', source, fkColumn: 'tagIds', lookup, arrayFk: true };
+        }
+      }
     }
 
     case 'containing': {
-      // containing(childEntity, childPred) — reverse join.
-      // For now: Node-side filter with a full scan.
-      // TODO: lower as CrossEntityJoin or equivalent set operation.
+      // containing(childEntity, childPred) — FK-inverse restriction.
+      // Keeps rows of `entity` where entity.id appears in {child[childFk] | child matches childPred}.
+      // This is the transpose of `container`: instead of "tasks in project X", it's
+      // "projects that contain tasks matching X".
+      //
+      // FK graph: look up metadata in aeProps to find the FK column generically.
+      // Supports both direct (one FK hop) and indirect (two FK hops) relationships.
+      const childEntity = args[0] as EntityType;
+      const childPred   = args[1] as LoweredExpr;
+
+      // Direct FK: childEntity has a column pointing to entity.
+      // e.g. tasks.projectId → 'projects', tasks.tagIds → 'tags'
+      const direct = getChildToParentFk(childEntity, entity);
+      if (direct) {
+        return makeContainingRestriction(entity, childEntity, childPred, direct.fkColumn, direct.isArray);
+      }
+
+      // One-hop: childEntity → intermediate → entity.
+      // e.g. tasks → projects (projectId) → folders (folderId)
+      for (const intermediate of ENTITY_TYPES) {
+        const leg1 = getChildToParentFk(childEntity, intermediate);
+        const leg2 = getChildToParentFk(intermediate, entity);
+        if (leg1 && leg2 && !leg1.isArray && !leg2.isArray) {
+          // Step 1: intermediate rows containing matching children.
+          // Include leg2.fkColumn in the intermediate scan so step2 can extract it.
+          const childLookup: SetIrNode = {
+            kind: 'Intersect',
+            left:  scan(childEntity, [leg1.fkColumn]),
+            right: lowerPredicate(childPred, childEntity),
+          };
+          const intermediateWithFk: SetIrNode = {
+            kind:        'Restriction',
+            source:      scan(intermediate, [leg2.fkColumn]),  // leg2.fkColumn needed by step 2
+            fkColumn:    'id',
+            lookup:      childLookup,
+            lookupColumn: leg1.fkColumn,
+          };
+          // Step 2: parent rows containing those intermediates.
+          return {
+            kind:        'Restriction',
+            source:      scan(entity, []),
+            fkColumn:    'id',
+            lookup:      intermediateWithFk,
+            lookupColumn: leg2.fkColumn,
+          };
+        }
+      }
+
+      // Fallback for unhandled combinations — Node-side filter (may not produce
+      // correct results for cross-entity predicates, but avoids a crash).
       const vars = collectVarNames(pred);
       const source = buildFilterSource(vars, entity);
       return { kind: 'Filter', source, predicate: pred, entity };
@@ -499,9 +625,10 @@ function applyMergeScanPass(node: SetIrNode): SetIrNode {
 function rebuildChildren(node: SetIrNode): SetIrNode {
   switch (node.kind) {
     case 'Scan':
-    case 'ContainerMembers':
     case 'Error':
       return node;
+    case 'Restriction':
+      return { ...node, source: applyMergeScanPass(node.source), lookup: applyMergeScanPass(node.lookup) };
     case 'Filter':
       return { ...node, source: applyMergeScanPass(node.source) };
     case 'Enrich':

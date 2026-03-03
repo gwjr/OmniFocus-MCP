@@ -166,8 +166,12 @@ function describeNode(node: EventNode, idx: string, prefix: string): string[] {
     case 'Filter':
       return [`${lhs} = Filter(${fmtRef(node.source)}, ${JSON.stringify(node.predicate)})`];
 
-    case 'SemiJoin':
-      return [`${lhs} = SemiJoin(${fmtRef(node.source)}, ids:${fmtRef(node.ids)})`];
+    case 'SemiJoin': {
+      const fieldPart = node.field && node.field !== 'id' ? `, field:'${node.field}'` : '';
+      const arrayPart = node.arrayField ? ', arrayField' : '';
+      const excludePart = node.exclude ? ', exclude' : '';
+      return [`${lhs} = SemiJoin(${fmtRef(node.source)}, ids:${fmtRef(node.ids)}${fieldPart}${arrayPart}${excludePart})`];
+    }
 
     case 'HashJoin': {
       const fm = Object.entries(node.fieldMap).map(([k, v]) => `${k}:${v}`).join(', ');

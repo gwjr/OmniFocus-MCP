@@ -13,8 +13,7 @@
  * Design notes:
  *   • Intersect(L, R): rows from L whose id appears in R. L's columns are kept.
  *   • Union(L, R):     all rows from L and R, deduped by id (L wins on collision).
- *   • ContainerMembers: produces {id}-only rows — must be on the R side of
- *     Intersect (or Union) to contribute ids, not column data.
+ *   • Restriction(src, fk, lookup): semi-join — keeps src rows where src[fk] ∈ lookup.id
  *   • Count/Limit are scalar/terminal — they do not produce row sets.
  */
 
@@ -102,26 +101,56 @@ export interface EnrichNode {
 }
 
 /**
- * Container membership scan.
- * Produces rows with just {id} for `targetEntity` items that belong to
- * containers of `containerType` matching `containerPredicate`.
+ * FK-based restriction (relational semi-join).
+ * General form: keep source rows where source[fkColumn] ∈ { lookup[lookupColumn] }.
  *
- * Example: container('tag', eq(name, 'Work'))
- *   → ids of tasks that are in the tag named 'Work'
+ * Default (lookupColumn omitted): keeps rows where source[fkColumn] ∈ lookup.id.
+ *   Used for `container(type, pred)` — items whose container satisfies a predicate.
  *
- * `containerPredicate` is evaluated against the container entity
- * (tags, folders, or projects), not the target entity.
+ *   container('project', pred) on tasks:
+ *     source=Scan(tasks,[id,projectId]),  fkColumn='projectId',
+ *     lookup=lowerPredicate(pred,'projects')
  *
- * For simple name equality, this lowers to a by-name AE specifier
- * (e.g. flattenedTags["Work"].tasks.id()).
- * For complex predicates, it requires querying the container entity first.
+ *   container('folder', pred) on tasks:
+ *     outer Restriction(tasks,'projectId',
+ *       inner Restriction(projects,'folderId', lowerPredicate(pred,'folders')))
+ *
+ *   container('tag', pred) on tasks:
+ *     source=Scan(tasks,[id,tagIds]),  fkColumn='tagIds',  arrayFk=true,
+ *     lookup=lowerPredicate(pred,'tags')
+ *     (tagIds = task.tags.id() — nested-array bulk read)
+ *
+ * lookupColumn (non-default): keeps rows where source[fkColumn] ∈ { lookup[lookupColumn] }.
+ *   Used for `containing(childEntity, pred)` — items that have a matching child.
+ *
+ *   containing('tasks', pred) on projects:
+ *     source=Scan(projects,[id]),  fkColumn='id',
+ *     lookup=Intersect(Scan(tasks,['projectId']), lowerPredicate(pred,'tasks')),
+ *     lookupColumn='projectId'
+ *     → projects whose id appears in any matching task's projectId
+ *
+ *   containing('tasks', pred) on tags:
+ *     source=Scan(tags,[id]),  fkColumn='id',
+ *     lookup=Intersect(Scan(tasks,['tagIds']), lowerPredicate(pred,'tasks')),
+ *     lookupColumn='tagIds',  flattenLookup=true
+ *     → tags whose id appears in any element of any matching task's tagIds array
+ *
+ * source:       must include 'id' and fkColumn
+ * lookup:       provides the allowed FK values via lookupColumn
+ * lookupColumn: column in lookup to extract values from (default: 'id')
+ * arrayFk:      true → fkColumn contains an array; any-element match semantics
+ * flattenLookup: true → lookup[lookupColumn] is a nested array; flatten before matching
  */
-export interface ContainerMembersNode {
-  kind: 'ContainerMembers';
-  targetEntity: EntityType;
-  containerType: 'tag' | 'folder' | 'project';
-  /** Predicate on the container entity (e.g. tags where name contains 'X'). */
-  containerPredicate: LoweredExpr;
+export interface RestrictionNode {
+  kind: 'Restriction';
+  source: SetIrNode;
+  fkColumn: string;
+  lookup: SetIrNode;
+  arrayFk?: boolean;
+  /** Column in lookup to use as the id set (default: 'id'). */
+  lookupColumn?: string;
+  /** When true, lookup[lookupColumn] is a nested array; flatten before matching. */
+  flattenLookup?: boolean;
 }
 
 /** Count of rows in source. Terminal — does not produce a row set. */
@@ -192,7 +221,7 @@ export type SetIrNode =
   | UnionNode
   | DifferenceNode
   | EnrichNode
-  | ContainerMembersNode
+  | RestrictionNode
   | CountNode
   | SortNode
   | LimitNode
@@ -211,7 +240,6 @@ export function walkSetIr(node: SetIrNode, fn: (n: SetIrNode) => SetIrNode): Set
   switch (node.kind) {
     // Leaves — no children
     case 'Scan':
-    case 'ContainerMembers':
     case 'Error':
       rebuilt = node;
       break;
@@ -236,7 +264,16 @@ export function walkSetIr(node: SetIrNode, fn: (n: SetIrNode) => SetIrNode): Set
       rebuilt = { ...node, source: walkSetIr(node.source, fn) };
       break;
 
-    // Binary
+    // Binary (source + lookup)
+    case 'Restriction':
+      rebuilt = {
+        ...node,
+        source: walkSetIr(node.source, fn),
+        lookup: walkSetIr(node.lookup, fn),
+      };
+      break;
+
+    // Binary (left + right)
     case 'Intersect':
     case 'Union':
     case 'Difference':

@@ -1,30 +1,47 @@
 /**
- * Codegen Dump — baseline regression output for the existing pipeline.
+ * Codegen Dump — static analysis of the SetIR pipeline.
  *
- * Runs representative queries through:
- *   lowerExpr → buildPlanTree → optimize → compileQuery
- * and dumps the strategy tree + generated JXA for each, WITHOUT
- * executing anything against OmniFocus.
+ * For each representative query, runs:
+ *   lowerExpr → normalizeAst → [inject active filter] → executeQueryFromAst
+ *   (via inspectEventPlan) and dumps:
+ *     - SetIR plan (JSON)
+ *     - EventPlan IR (via describeEventPlan)
+ *     - Per-unit emitted JXA/OmniJS scripts
  *
+ * Uses the same pipeline entry points as production — no reimplementation.
  * Usage:  node scripts/dump-codegen.mjs
  */
 
-import { lowerExpr } from '../dist/tools/query/lower.js';
-import { buildPlanTree } from '../dist/tools/query/planner.js';
-import { optimize, planPathLabel } from '../dist/tools/query/strategy.js';
-import { compileQuery } from '../dist/tools/query/compile.js';
-import { JxaEmitter } from '../dist/tools/query/emitters/jxaEmitter.js';
-import { describeStrategyNode } from '../dist/tools/query/strategyDescriber.js';
-import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
-import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
-import { selfJoinEliminationPass } from '../dist/tools/query/optimizations/selfJoinElimination.js';
-import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
+import { lowerExpr }          from '../dist/tools/query/lower.js';
+import { normalizeAst }       from '../dist/tools/query/normalizeAst.js';
+import { lowerToSetIr, optimizeSetIr } from '../dist/tools/query/lowerToSetIr.js';
+import { lowerSetIrToEventPlan } from '../dist/tools/query/lowerSetIrToEventPlan.js';
+import { cseEventPlan }       from '../dist/tools/query/eventPlanCSE.js';
+import { pruneColumns }       from '../dist/tools/query/eventPlanColumnPrune.js';
+import { inspectEventPlan }   from '../dist/tools/query/executionUnits/orchestrator.js';
+import { describeEventPlan }  from '../dist/tools/query/eventPlanDescriber.js';
 
-// ── Optimization passes (same order as queryOmnifocus.ts) ────────────
+// ── Active-filter (mirrors queryOmnifocus default: includeCompleted=false) ───
 
-const PASSES = [tagSemiJoinPass, crossEntityJoinPass, selfJoinEliminationPass, normalizePass];
+function activeFilterForEntity(entity) {
+  switch (entity) {
+    case 'tasks':
+      return {
+        op: 'and', args: [
+          { op: 'not', args: [{ var: 'effectivelyCompleted' }] },
+          { op: 'not', args: [{ var: 'effectivelyDropped'   }] },
+        ],
+      };
+    case 'projects':
+      return { op: 'in', args: [{ var: 'status' }, ['Active', 'OnHold']] };
+    case 'tags':
+      return { op: 'not', args: [{ var: 'effectivelyHidden' }] };
+    default:
+      return null;
+  }
+}
 
-// ── Representative queries ───────────────────────────────────────────
+// ── Representative queries ────────────────────────────────────────────────────
 
 const queries = [
   {
@@ -77,54 +94,83 @@ const queries = [
   },
 ];
 
-// ── Main ─────────────────────────────────────────────────────────────
+// ── Main ──────────────────────────────────────────────────────────────────────
 
-const emitter = new JxaEmitter();
-const HR = '\u2550'.repeat(54);
-const THIN = '\u2500'.repeat(54);
+const HR   = '═'.repeat(60);
+const THIN = '─'.repeat(60);
 
 for (const q of queries) {
-  console.log(`${HR}`);
+  console.log(`\n${HR}`);
   console.log(`Query: ${q.label} [${q.entity}]`);
 
   let ast;
   try {
-    ast = q.where != null ? lowerExpr(q.where) : true;
+    const raw = q.where != null ? lowerExpr(q.where) : null;
+    ast = raw != null ? normalizeAst(raw) : null;
   } catch (e) {
     console.log(`LOWER ERROR: ${e.message}\n`);
     continue;
   }
 
-  let tree;
+  // Inject active filter
+  const activeFilter = activeFilterForEntity(q.entity);
+  let predicate;
+  if (activeFilter !== null) {
+    predicate = ast !== null ? { op: 'and', args: [ast, activeFilter] } : activeFilter;
+  } else {
+    predicate = ast ?? true;
+  }
+
+  // Build SetIR plan
+  let setIrPlan;
   try {
-    tree = buildPlanTree(ast, q.entity, q.select, false);
+    setIrPlan = lowerToSetIr({ predicate, entity: q.entity, op: 'get', select: q.select });
+
+    if (q.entity === 'tasks') {
+      setIrPlan = {
+        kind: 'Difference',
+        left: setIrPlan,
+        right: { kind: 'Scan', entity: 'projects', columns: ['id'] },
+      };
+    }
+
+    setIrPlan = optimizeSetIr(setIrPlan);
   } catch (e) {
-    console.log(`PLANNER ERROR: ${e.message}\n`);
+    console.log(`SETIR ERROR: ${e.message}\n`);
     continue;
   }
 
-  // Optimise
-  tree = optimize(tree, PASSES);
+  console.log(`\n── SetIR Plan ${THIN.slice(14)}`);
+  console.log(JSON.stringify(setIrPlan, null, 2));
 
-  const path = planPathLabel(tree);
-  console.log(`Path:  ${path}`);
-
-  // Strategy tree
-  console.log(`\n\u2500\u2500 Strategy Tree ${THIN.slice(16)}`);
-  console.log(describeStrategyNode(tree));
-
-  // Compile to JXA
-  let compiled;
+  // Lower to EventPlan and apply CSE + pruning
+  let eventPlan;
   try {
-    compiled = compileQuery(tree, emitter);
+    const raw = lowerSetIrToEventPlan(setIrPlan, q.select);
+    const csed = cseEventPlan(raw);
+    eventPlan = pruneColumns(csed);
   } catch (e) {
-    console.log(`\nCOMPILE ERROR: ${e.message}\n`);
+    console.log(`EVENTPLAN ERROR: ${e.message}\n`);
     continue;
   }
 
-  const jxa = compiled.batchScript || compiled.standaloneScript || '(no JXA — fallback only)';
+  console.log(`\n── EventPlan IR ${THIN.slice(16)}`);
+  console.log(describeEventPlan(eventPlan));
 
-  console.log(`\n\u2500\u2500 JXA Script ${THIN.slice(13)}`);
-  console.log(jxa);
-  console.log('');
+  // Inspect execution units and emitted scripts
+  let inspection;
+  try {
+    inspection = inspectEventPlan(eventPlan);
+  } catch (e) {
+    console.log(`INSPECT ERROR: ${e.message}\n`);
+    continue;
+  }
+
+  console.log(`\n── Execution Units (${inspection.units.length}) ${THIN.slice(22 + String(inspection.units.length).length)}`);
+  for (const entry of inspection.emittedScripts) {
+    console.log(`\n  [${entry.runtime}] refs: ${JSON.stringify(entry.refs)}`);
+    console.log(entry.script);
+  }
 }
+
+console.log(`\n${HR}\nDone.\n`);

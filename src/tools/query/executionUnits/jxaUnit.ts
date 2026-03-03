@@ -205,6 +205,21 @@ function emitParent(ctx: EmitCtx, parent: Specifier | Ref): string {
   if (typeof parent === 'number') {
     return refVar(ctx, parent);
   }
+  // When a Property specifier is used as an intermediate parent in a chain,
+  // CHAIN_ACCESSORS entries like 'tags.name' must be reduced to just the base
+  // accessor ('tags') so that the outer terminal can complete the path correctly.
+  // e.g. Property(Property(elements,'FCtg'),'ID  ') → elements.tags.id()
+  //   not elements.tags.name.id()
+  if (parent.kind === 'Property') {
+    const grandparent = emitParent(ctx, parent.parent);
+    const chain = CHAIN_ACCESSORS[parent.propCode];
+    if (chain) {
+      return `${grandparent}.${chain.split('.')[0]}`;
+    }
+    const prop = PROP_TO_ACCESSOR[parent.propCode];
+    if (!prop) throw new Error(`jxaUnit: unknown property code '${parent.propCode}'`);
+    return `${grandparent}.${prop}`;
+  }
   return emitSpecifier(ctx, parent);
 }
 
@@ -223,7 +238,13 @@ function emitNode(ctx: EmitCtx, ref: Ref): void {
       // onto. Calling () on Elements would materialise the collection as a
       // JS array, breaking subsequent bulk reads like .name().
       if (node.specifier.kind === 'Property') {
-        const transform = PROP_VALUE_TRANSFORMS[node.specifier.propCode] ?? '';
+        // Skip scalar transforms when the parent is a chain-accessor Property
+        // (e.g. tags.id() returns nested string arrays — no .map() needed).
+        const parentIsChain =
+          typeof node.specifier.parent !== 'number' &&
+          node.specifier.parent.kind === 'Property' &&
+          !!CHAIN_ACCESSORS[(node.specifier.parent as { propCode: string }).propCode];
+        const transform = parentIsChain ? '' : (PROP_VALUE_TRANSFORMS[node.specifier.propCode] ?? '');
         ctx.lines.push(`var ${varName} = ${specExpr}()${transform};`);
       } else {
         ctx.lines.push(`var ${varName} = ${specExpr};`);

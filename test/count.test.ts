@@ -3,22 +3,6 @@
  *
  * Syntax: {count: [{var: "tags"}]}
  * Returns: a number (the length of the array variable)
- *
- * `count` is a value-producing function, not a predicate. It composes with
- * comparison operators to form predicates:
- *   {gt: [{count: [{var: "tags"}]}, 0]}   — tasks with at least one tag
- *   {eq: [{count: [{var: "tags"}]}, 3]}   — tasks with exactly 3 tags
- *
- * This is analogous to `offset` — a unary function that transforms a value
- * and returns a derived value, composed into larger expressions.
- *
- * Implementation options for JXA:
- *   A) Fold-level: add `count` case to ExprBackend, each backend implements it
- *   B) Variable-level: register `tagCount` as a chain var with JXA accessor
- *      `tasks.tags.count()` — but this only works if the Apple Events bulk
- *      accessor returns per-item counts (unverified).
- *
- * TDD: these tests are expected to FAIL until the operator is implemented.
  */
 
 import { describe, it } from 'node:test';
@@ -87,7 +71,6 @@ import { describeExpr } from '../dist/tools/query/backends/describer.js';
 describe('describeExpr — count function', () => {
   it('describes count of tags', () => {
     const result = describeExpr({ count: [{ var: 'tags' }] });
-    // Accept "count of tags", "count(tags)", "tags count", etc.
     assert.ok(
       result.includes('count') && result.includes('tags'),
       `Expected description mentioning "count" and "tags", got: ${result}`
@@ -257,10 +240,6 @@ describe('nodeEval — count in comparisons', () => {
 
 describe('nodeEval — count type validation', () => {
   it('count on non-array var (name) throws at runtime', () => {
-    // count({var:"name"}) where name is a string, not an array.
-    // Non-null non-array values are a type error — 0 would be misleading
-    // (it would imply the item has an empty collection, not that the field
-    // is the wrong type). Throw to surface the programming error.
     assert.throws(
       () => evalValue({ count: [{ var: 'name' }] }, { name: 'hello' }),
       (err: Error) => err instanceof Error
@@ -272,147 +251,5 @@ describe('nodeEval — count type validation', () => {
       () => evalValue({ count: [{ var: 'flagged' }] }, { flagged: true }),
       (err: Error) => err instanceof Error
     );
-  });
-});
-
-// ── JXA compiler tests ──────────────────────────────────────────────────
-
-import { compileWhere } from '../dist/tools/query/backends/jxaCompiler.js';
-
-function jxa(where: unknown, entity: 'tasks' | 'projects' | 'folders' | 'tags' = 'tasks') {
-  return compileWhere(where, entity);
-}
-
-describe('jxaCompiler — count function', () => {
-  it('count(tags) compiles to a length expression', () => {
-    const r = jxa({ gt: [{ count: [{ var: 'tags' }] }, 0] });
-    // Should produce something involving .length or .count()
-    assert.ok(
-      r.condition.includes('length') || r.condition.includes('count'),
-      `Expected length or count in JXA output, got: ${r.condition}`
-    );
-  });
-
-  it('count in combined expression', () => {
-    const r = jxa({
-      and: [
-        { gt: [{ count: [{ var: 'tags' }] }, 0] },
-        { eq: [{ var: 'flagged' }, true] }
-      ]
-    });
-    assert.match(r.condition, /&&/);
-  });
-});
-
-// Pending verification: does `tasks.tags.count()` in Apple Events return
-// per-item arrays like `tasks.tags.name()` does? If yes, a chain-variable
-// approach (`tagCount` mapped to `.tags.count()` or `.numberOfTags`) could
-// be used in BulkScan for optimal performance.
-describe('jxaCompiler — count via chain variable accessor (pending AE verification)', { skip: 'pending verification that tags.count() returns per-task array in JXA' }, () => {
-  it('tagCount accessor produces correct JXA expression', () => {
-    // If implemented as a chain variable, this would be:
-    //   taskJxaAccessors.tagCount = v => `${v}.tags.length`
-    // and used via {var: "tagCount"} instead of {count: [{var: "tags"}]}
-    //
-    // This test verifies the accessor IF it exists.
-    const r = jxa({ gt: [{ var: 'tagCount' }, 0] });
-    assert.ok(
-      r.condition.includes('tags') && (r.condition.includes('length') || r.condition.includes('count')),
-      `Expected tags length/count accessor, got: ${r.condition}`
-    );
-  });
-});
-
-// ── Planner tests ────────────────────────────────────────────────────────
-
-import { buildPlanTree } from '../dist/tools/query/planner.js';
-import { planPathLabel, walkPlan } from '../dist/tools/query/strategy.js';
-import type { StrategyNode } from '../dist/tools/query/strategy.js';
-
-function lower(where: unknown): LoweredExpr {
-  return (where != null ? lowerExpr(where) : true) as LoweredExpr;
-}
-
-function plan(where: unknown, entity: string = 'tasks', select?: string[]) {
-  const ast = lower(where);
-  return buildPlanTree(ast, entity as any, select, false);
-}
-
-function findNode(tree: StrategyNode, kind: string): StrategyNode | null {
-  let found: StrategyNode | null = null;
-  walkPlan(tree, n => {
-    if (n.kind === kind) found = n;
-    return n;
-  });
-  return found;
-}
-
-describe('planner — count function', () => {
-  it('gt(count(tags), 0) → broad path (tags is a chain var)', () => {
-    const tree = plan({ gt: [{ count: [{ var: 'tags' }] }, 0] }, 'tasks');
-    assert.equal(planPathLabel(tree), 'broad');
-  });
-
-  it('BulkScan includes tags in columns', () => {
-    const tree = plan({ gt: [{ count: [{ var: 'tags' }] }, 0] }, 'tasks');
-    const scan = findNode(tree, 'BulkScan');
-    assert.ok(scan && scan.kind === 'BulkScan');
-    assert.ok(scan.columns.includes('tags'), 'BulkScan should include tags column');
-  });
-
-  it('count combined with other predicates', () => {
-    const tree = plan({
-      and: [
-        { gt: [{ count: [{ var: 'tags' }] }, 0] },
-        { eq: [{ var: 'flagged' }, true] }
-      ]
-    }, 'tasks');
-    assert.equal(planPathLabel(tree), 'broad');
-    const scan = findNode(tree, 'BulkScan');
-    assert.ok(scan && scan.kind === 'BulkScan');
-    assert.ok(scan.columns.includes('tags'));
-    assert.ok(scan.columns.includes('flagged'));
-  });
-
-  it('count in select + where', () => {
-    // count(tags) in where, plus tags in select — should not duplicate
-    const tree = plan(
-      { gt: [{ count: [{ var: 'tags' }] }, 0] },
-      'tasks',
-      ['name', 'tags']
-    );
-    assert.equal(planPathLabel(tree), 'broad');
-  });
-});
-
-// ── VarCollector tests ───────────────────────────────────────────────────
-
-import { collectVarsFromAst } from '../dist/tools/query/backends/varCollector.js';
-
-describe('varCollector — count function', () => {
-  it('collects inner variable from count(tags)', () => {
-    const ast = lower({ count: [{ var: 'tags' }] });
-    const vars = collectVarsFromAst(ast, 'tasks');
-    assert.ok(vars.has('tags'), 'should collect "tags" from count({var:"tags"})');
-  });
-
-  it('collects all vars from expression with count', () => {
-    const ast = lower({
-      and: [
-        { gt: [{ count: [{ var: 'tags' }] }, 0] },
-        { eq: [{ var: 'flagged' }, true] }
-      ]
-    });
-    const vars = collectVarsFromAst(ast, 'tasks');
-    assert.ok(vars.has('tags'));
-    assert.ok(vars.has('flagged'));
-  });
-
-  it('count does not introduce phantom variables', () => {
-    const ast = lower({ gt: [{ count: [{ var: 'tags' }] }, 0] });
-    const vars = collectVarsFromAst(ast, 'tasks');
-    // Should only have 'tags', not 'count' or any phantom
-    assert.ok(vars.has('tags'));
-    assert.equal(vars.size, 1, `expected only 1 var (tags), got: ${[...vars].join(', ')}`);
   });
 });

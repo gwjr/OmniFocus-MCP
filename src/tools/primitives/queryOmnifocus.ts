@@ -1,41 +1,23 @@
 /**
  * Query OmniFocus — Execution Router.
  *
- * Wires the full pipeline:
+ * Responsibilities:
  *   1. Lower compact syntax → AST
- *   2. Build plan tree (planner)
- *   3. Optimize plan tree (tag semi-join, normalization)
- *   4. Execute plan tree (executor)
- *   5. Sort, limit, select in Node (via tree wrapper nodes)
+ *   2. Inject active filter (includeCompleted=false default)
+ *   3. Delegate to orchestrator.executeQueryFromAst for full pipeline execution
  *
- * Two execution backends:
- *   - Legacy: compileQuery(JxaEmitter) → executeCompiledQuery (StrategyNode codegen)
- *   - EventPlan: lowerStrategy → cseEventPlan → executeEventPlan (new IR pipeline)
- *
- * Set USE_EVENT_PLAN_PIPELINE=1 env var to use the new pipeline.
+ * Perspectives are handled separately via OmniJS (no Apple Events class code).
  */
 
 import { lowerExpr, LowerError } from '../query/lower.js';
 import { normalizeAst } from '../query/normalizeAst.js';
-import { buildPlanTree } from '../query/planner.js';
-import { executeCompiledQuery } from '../query/executor.js';
-import { compileQuery } from '../query/compile.js';
-import { JxaEmitter } from '../query/emitters/jxaEmitter.js';
-import { optimize, planPathLabel, type StrategyNode } from '../query/strategy.js';
-import { tagSemiJoinPass } from '../query/optimizations/tagSemiJoin.js';
-import { normalizePass } from '../query/optimizations/normalize.js';
-import { crossEntityJoinPass } from '../query/optimizations/crossEntityJoin.js';
-import { selfJoinEliminationPass } from '../query/optimizations/selfJoinElimination.js';
-import { executeEventPlanPipeline } from '../query/executionUnits/orchestrator.js';
+import { executeQueryFromAst } from '../query/executionUnits/orchestrator.js';
+import { queryPerspectives } from './queryPerspectives.js';
 import type { LoweredExpr } from '../query/fold.js';
 import type { EntityType } from '../query/variables.js';
 import type { Row } from '../query/backends/nodeEval.js';
 
-// ── Feature flag ─────────────────────────────────────────────────────
-
-const USE_EVENT_PLAN = process.env.USE_EVENT_PLAN_PIPELINE !== '0';
-
-// ── Query Logging ──────────────────────────────────────────────────────
+// ── Query Logging ──────────────────────────────────────────────────────────────
 
 function logQuery(entry: {
   where: unknown;
@@ -80,9 +62,32 @@ interface QueryResult {
   error?: string;
 }
 
-// ── Optimization Passes ─────────────────────────────────────────────────
+// ── Active filter ─────────────────────────────────────────────────────────────
 
-const PASSES = [tagSemiJoinPass, crossEntityJoinPass, selfJoinEliminationPass, normalizePass];
+/**
+ * Build the default active-item predicate for an entity.
+ * Returns null if no active filter is needed (folders, perspectives).
+ */
+function activeFilterForEntity(entity: EntityType, includeCompleted: boolean): LoweredExpr | null {
+  if (includeCompleted) return null;
+
+  switch (entity) {
+    case 'tasks':
+      return {
+        op: 'and', args: [
+          { op: 'not', args: [{ var: 'effectivelyCompleted' }] },
+          { op: 'not', args: [{ var: 'effectivelyDropped'   }] },
+        ],
+      } as LoweredExpr;
+    case 'projects':
+      return { op: 'in', args: [{ var: 'status' }, ['Active', 'OnHold']] } as LoweredExpr;
+    case 'tags':
+      return { op: 'not', args: [{ var: 'effectivelyHidden' }] } as LoweredExpr;
+    case 'folders':
+    default:
+      return null;
+  }
+}
 
 // ── Main Entry Point ────────────────────────────────────────────────────
 
@@ -97,8 +102,8 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     // Step 1: Lower and normalise the WHERE predicate.
     let ast: LoweredExpr;
     try {
-      const lowered = params.where != null ? lowerExpr(params.where) : true;
-      ast = normalizeAst(lowered as LoweredExpr) as LoweredExpr;
+      const lowered = params.where != null ? lowerExpr(params.where) : null;
+      ast = lowered != null ? normalizeAst(lowered as LoweredExpr) as LoweredExpr : null;
     } catch (e) {
       if (e instanceof LowerError) {
         logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: e.message });
@@ -107,70 +112,77 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       throw e;
     }
 
-    // Step 1b: For 'get', expand select to include mandatory minimum task fields
-    // so the planner bulk-reads them. For count/exists, select is irrelevant —
-    // the planner only needs to read columns referenced in the WHERE clause.
-    const expandedSelect = effectiveOp === 'get' && params.entity === 'tasks' && params.select
+    const entity = params.entity;
+
+    // Special case: perspectives have no Apple Events class code.
+    if (entity === 'perspectives') {
+      const filterAst: LoweredExpr | true = ast ?? true;
+      const rows = await queryPerspectives(filterAst);
+      const totalCount = rows.length;
+
+      logQuery({ where: params.where, entity, op: effectiveOp, strategy: 'perspectives', totalMs: Date.now() - t0, resultCount: totalCount });
+
+      if (effectiveOp === 'count') return { success: true, count: totalCount };
+      if (effectiveOp === 'exists') return { success: true, exists: totalCount > 0 };
+
+      let items = params.select ? selectFields(rows, params.select) : rows;
+      return { success: true, items, count: totalCount };
+    }
+
+    // Step 2: Inject active filter unless includeCompleted.
+    const activeFilter = activeFilterForEntity(entity, params.includeCompleted ?? false);
+    let predicate: LoweredExpr | true;
+    if (activeFilter !== null) {
+      predicate = ast !== null
+        ? { op: 'and', args: [ast, activeFilter] } as LoweredExpr
+        : activeFilter;
+    } else {
+      predicate = ast ?? true;
+    }
+
+    // Step 3: For 'get', expand select to include mandatory minimum task fields.
+    const expandedSelect = effectiveOp === 'get' && entity === 'tasks' && params.select
       ? augmentTaskSelect(params.select)
       : effectiveOp === 'get' ? params.select : undefined;
 
-    // Step 2: Build plan tree
-    let tree = buildPlanTree(ast, params.entity, expandedSelect, params.includeCompleted ?? false);
+    // Step 4: Delegate full pipeline (SetIR → EventPlan → execute) to orchestrator.
+    const orchResult = await executeQueryFromAst({
+      predicate,
+      entity,
+      op: effectiveOp,
+      select: expandedSelect,
+      sort: params.sort,
+      limit: params.limit,
+    });
 
-    // Step 3: Wrap with sort/limit nodes
-    tree = wrapWithPostProcessing(tree, params, effectiveOp);
-
-    // Step 4: Optimize
-    tree = optimize(tree, PASSES);
-
-    const strategy = planPathLabel(tree);
-
-    // Step 5: Compile and execute (legacy or EventPlan pipeline)
-    // Perspectives have no Apple Events class code; FallbackScan queries
-    // have unextractable container predicates that the EventPlan pipeline
-    // can't evaluate. Both use the legacy executor.
-    let rows: Row[];
-
-    if (USE_EVENT_PLAN && params.entity !== 'perspectives' && strategy !== 'fallback') {
-      // New EventPlan IR pipeline:
-      // StrategyNode → EventPlan → CSE → assignRuntimes → split → execute
-      const orchResult = await executeEventPlanPipeline(tree);
-      if (!Array.isArray(orchResult.value)) {
-        throw new Error(`EventPlan pipeline produced non-array result — pipeline bug`);
-      }
-      rows = orchResult.value as Row[];
-    } else {
-      // Legacy pipeline: compile to JXA script and execute
-      const compiled = compileQuery(tree, new JxaEmitter());
-      const result = await executeCompiledQuery(compiled);
-      if (result.kind !== 'rows') {
-        throw new Error(`Plan tree produced ${result.kind} instead of rows — planner bug`);
-      }
-      rows = result.rows;
+    // op:'count' produces a numeric result from the RowCount EventPlan node.
+    // Handle it before the Row[] check to avoid a false "pipeline bug" error.
+    if (effectiveOp === 'count') {
+      const count = typeof orchResult.value === 'number'
+        ? orchResult.value
+        : Array.isArray(orchResult.value) ? orchResult.value.length : 0;
+      logQuery({ where: params.where, entity, op: effectiveOp, strategy: 'setIr', totalMs: Date.now() - t0, resultCount: count });
+      return { success: true, count };
     }
 
+    if (!Array.isArray(orchResult.value)) {
+      throw new Error(`EventPlan pipeline produced non-array result — pipeline bug`);
+    }
+    const rows: Row[] = orchResult.value as Row[];
     const totalCount = rows.length;
 
-    logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy, totalMs: Date.now() - t0, resultCount: totalCount });
-
-    // Return shape depends on the operation
-    if (effectiveOp === 'count') {
-      return { success: true, count: totalCount };
-    }
+    logQuery({ where: params.where, entity, op: effectiveOp, strategy: 'setIr', totalMs: Date.now() - t0, resultCount: totalCount });
 
     if (effectiveOp === 'exists') {
       return { success: true, exists: totalCount > 0 };
     }
 
     // 'get': return items
-    // Select fields (if not already handled by Project node, which only
-    // applies to tree-internal usage — for the public API, we always apply
-    // select here to handle the full field mapping including OmniJS results)
     let items = params.select ? selectFields(rows, params.select) : rows;
 
     // For tasks, inject mandatory minimum fields (id, flagged, taskStatus)
     // into every row regardless of what the user selected.
-    if (params.entity === 'tasks') {
+    if (entity === 'tasks') {
       items = injectMandatoryTaskFields(items);
     }
 
@@ -182,38 +194,7 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
   }
 }
 
-// ── Post-Processing Wrappers ────────────────────────────────────────────
-
-function wrapWithPostProcessing(
-  tree: StrategyNode,
-  params: QueryOmnifocusParams,
-  op: 'get' | 'count' | 'exists'
-): StrategyNode {
-  let current = tree;
-
-  // Sort only meaningful for 'get' (count/exists don't order results)
-  if (op === 'get' && params.sort) {
-    current = {
-      kind: 'Sort',
-      source: current,
-      by: params.sort.by,
-      direction: params.sort.direction ?? 'asc',
-      entity: params.entity,
-    };
-  }
-
-  // Limit: 'exists' always uses 1 (stop after first match);
-  // 'get'/'count' use the caller-supplied limit if present.
-  if (op === 'exists') {
-    current = { kind: 'Limit', source: current, count: 1 };
-  } else if (params.limit) {
-    current = { kind: 'Limit', source: current, count: params.limit };
-  }
-
-  return current;
-}
-
-// ── Field Selection ─────────────────────────────────────────────────────
+// ── Field Selection ─────────────────────────────────────────────────────────
 
 function selectFields(rows: Row[], fields: string[]): Row[] {
   return rows.map(row => {

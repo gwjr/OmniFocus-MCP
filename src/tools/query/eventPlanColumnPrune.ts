@@ -115,8 +115,9 @@ function computeNeededColumns(
       }
 
       case 'SemiJoin': {
-        // SemiJoin needs `id` for the join key, plus downstream columns
-        const joinVars = new Set(['id']);
+        // SemiJoin needs the join field (default 'id') plus downstream columns
+        const joinField = node.field ?? 'id';
+        const joinVars = new Set([joinField]);
         const combined = myNeeded ? union(myNeeded, joinVars) : null;
         propagate(needed, node.source, combined);
         // ids ref is a separate data flow (not row columns)

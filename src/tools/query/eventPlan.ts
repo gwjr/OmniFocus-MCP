@@ -172,7 +172,9 @@ export type EventNode =
   | { kind: 'SemiJoin';
       source: Ref;
       ids:    Ref;              // Ref to a string[] / Set<string>
-      exclude?: boolean;        // true = anti-join (exclude matching IDs)
+      field?: string;           // row field to match against ids (default: 'id')
+      arrayField?: boolean;     // true → field contains an array; any-element match
+      exclude?: boolean;        // true = anti-join (keep rows NOT matching)
     }
 
   | { kind: 'HashJoin';

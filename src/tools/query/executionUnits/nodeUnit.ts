@@ -153,17 +153,27 @@ function execSemiJoin(
     ? idsRaw as Set<string>
     : new Set(idsRaw as string[]);
 
+  const field      = node.field ?? 'id';
+  const arrayField = node.arrayField ?? false;
+
   if (node.exclude) {
-    // Anti-join: keep rows whose id is NOT in the set
     return source.filter(row => {
-      const id = row.id;
-      return id == null || !ids.has(id as string);
+      const fk = row[field];
+      if (arrayField) {
+        if (!Array.isArray(fk) || fk.length === 0) return true;
+        return !(fk as string[]).some(v => ids.has(v));
+      }
+      return fk == null || !ids.has(fk as string);
     });
   }
 
   return source.filter(row => {
-    const id = row.id;
-    return id != null && ids.has(id as string);
+    const fk = row[field];
+    if (arrayField) {
+      if (!Array.isArray(fk) || fk.length === 0) return false;
+      return (fk as string[]).some(v => ids.has(v));
+    }
+    return fk != null && ids.has(fk as string);
   });
 }
 

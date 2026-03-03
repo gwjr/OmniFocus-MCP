@@ -4,20 +4,23 @@
  * Wires JXA and Node ExecutionUnits together into a runnable pipeline.
  *
  * Pipeline:
- *   StrategyNode → lowerStrategy → cseEventPlan → assignRuntimes
- *   → splitExecutionUnits → topoSort
+ *   predicate+entity → SetIR → EventPlan → assignRuntimes → splitExecutionUnits → topoSort
  *   → fuse JXA units into composite osascript calls where possible
  *   → execute units in dependency order
  *   → thread results between units via shared results map
  *   → return final result
+ *
+ * Public API:
+ *   executeQueryFromAst — full pipeline from lowered predicate to results
+ *   executeEventPlan    — convenience entry from a raw EventPlan
+ *   executeTargetedPlan — entry from a TargetedEventPlan
+ *   inspectEventPlan    — static analysis: units + emitted scripts (no execution)
  */
 
 import type { EventPlan, Ref } from '../eventPlan.js';
 import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
-import type { StrategyNode } from '../strategy.js';
 import { assignRuntimes, splitExecutionUnits, computeBindings } from '../targetedEventPlanLowering.js';
-import { lowerStrategy } from '../strategyToEventPlan.js';
 import { cseEventPlan } from '../eventPlanCSE.js';
 import { pruneColumns } from '../eventPlanColumnPrune.js';
 import { reorderEventPlan } from '../eventPlanReorder.js';
@@ -25,6 +28,10 @@ import { emitJxaUnit } from './jxaUnit.js';
 import { emitOmniJsUnit } from './omniJsUnit.js';
 import { executeNodeUnit } from './nodeUnit.js';
 import { executeJXA } from '../../../utils/scriptExecution.js';
+import { lowerToSetIr, optimizeSetIr } from '../lowerToSetIr.js';
+import { lowerSetIrToEventPlan } from '../lowerSetIrToEventPlan.js';
+import type { LoweredExpr } from '../fold.js';
+import type { EntityType } from '../variables.js';
 
 // ── Topological sort ────────────────────────────────────────────────────
 
@@ -406,35 +413,124 @@ export async function executeEventPlan(
   return executeTargetedPlan(targeted);
 }
 
-// ── Full pipeline from StrategyNode ─────────────────────────────────────
+// ── Query pipeline entry point ───────────────────────────────────────────────
 
-/**
- * Sync helper: compile a StrategyNode all the way to a TargetedEventPlan
- * and ExecutionUnits, without executing. Useful for testing and debugging.
- */
-export function compileEventPlan(node: StrategyNode): {
-  targeted: TargetedEventPlan;
-  units: ExecutionUnit[];
-} {
-  const eventPlan = lowerStrategy(node);
-  const csed = cseEventPlan(eventPlan);
-  const pruned = pruneColumns(csed);
-  const reordered = reorderEventPlan(pruned);
-  const targeted = assignRuntimes(reordered);
-  const units = splitExecutionUnits(targeted);
-  computeBindings(units, targeted);
-  return { targeted, units };
+export interface QueryPlanParams {
+  /** Lowered, normalised predicate (with active filter already injected). */
+  predicate: LoweredExpr | true;
+  entity: EntityType;
+  op: 'get' | 'count' | 'exists';
+  /** Output columns requested. */
+  select?: string[];
+  sort?: { by: string; direction?: 'asc' | 'desc' };
+  limit?: number;
 }
 
 /**
- * Full pipeline: StrategyNode → EventPlan → CSE → target → execute.
+ * Full pipeline from a lowered predicate to query results.
  *
- * This is the new-IR replacement for the old compileQuery + executeCompiledQuery
- * path. Wire this into queryOmnifocus.ts as the execution backend.
+ * Handles: lowerToSetIr → project-exclusion (tasks) → Sort/Limit →
+ *   optimizeSetIr → lowerSetIrToEventPlan → cseEventPlan → pruneColumns →
+ *   executeEventPlan → OrchestratorResult
+ *
+ * The caller is responsible for lowering the compact where clause, normalising
+ * the AST, and injecting any active-filter predicates before calling this.
  */
-export async function executeEventPlanPipeline(
-  node: StrategyNode,
+/**
+ * Build the SetIR plan for a query — pure, no I/O.
+ *
+ * Order of operations:
+ *   1. Lower predicate + select columns to SetIR (op:'get' — no terminal wrapping yet)
+ *   2. Subtract project root tasks for task queries (projects appear in flattenedTasks)
+ *   3. Apply terminal wrapping (Count / Limit / Sort) for the actual op
+ *
+ * Count/Limit must come AFTER project-exclusion so they operate on the
+ * already-filtered row set, not on a terminal scalar.
+ */
+export function buildSetIrPlan(params: QueryPlanParams): import('../setIr.js').SetIrNode {
+  const { predicate, entity, op, select, sort, limit } = params;
+
+  // Step 1: lower predicate + output columns — always as 'get' (no terminal node yet)
+  let plan = lowerToSetIr({ predicate, entity, op: 'get', select });
+
+  // Step 2: subtract project root tasks (projects appear in flattenedTasks)
+  if (entity === 'tasks') {
+    plan = {
+      kind:  'Difference',
+      left:  plan,
+      right: { kind: 'Scan', entity: 'projects', columns: ['id'] },
+    };
+  }
+
+  // Step 3: terminal wrapping for the actual op
+  switch (op) {
+    case 'count':
+      plan = { kind: 'Count', source: plan };
+      break;
+    case 'exists':
+      plan = { kind: 'Limit', source: plan, n: 1 };
+      break;
+    case 'get':
+      if (sort) {
+        plan = { kind: 'Sort', source: plan, by: sort.by, direction: sort.direction ?? 'asc', entity };
+      }
+      if (limit) {
+        plan = { kind: 'Limit', source: plan, n: limit };
+      }
+      break;
+  }
+
+  return plan;
+}
+
+export async function executeQueryFromAst(
+  params: QueryPlanParams,
 ): Promise<OrchestratorResult> {
-  const { targeted } = compileEventPlan(node);
-  return executeTargetedPlan(targeted);
+  const { select } = params;
+  let plan = buildSetIrPlan(params);
+  plan = optimizeSetIr(plan);
+  const ep     = lowerSetIrToEventPlan(plan, select);
+  const csed   = cseEventPlan(ep);
+  const pruned = pruneColumns(csed);
+  return executeEventPlan(pruned);
+}
+
+// ── Inspection (no execution) ────────────────────────────────────────────────
+
+export interface InspectResult {
+  units: ExecutionUnit[];
+  emittedScripts: { runtime: string; refs: number[]; script: string }[];
+}
+
+/**
+ * Static analysis of an EventPlan: splits into ExecutionUnits, computes
+ * bindings, and emits each unit's script — without executing anything.
+ *
+ * The plan should already have CSE and column pruning applied.
+ * Used by the dump-codegen script.
+ */
+export function inspectEventPlan(plan: EventPlan): InspectResult {
+  const reordered = reorderEventPlan(plan);
+  const targeted  = assignRuntimes(reordered);
+  const units     = splitExecutionUnits(targeted);
+  computeBindings(units, targeted);
+  const sorted    = fuseSchedule(topoSort(units));
+
+  const emptyInputs = new Map<number, string>();
+  const emittedScripts: InspectResult['emittedScripts'] = [];
+
+  for (const unit of sorted) {
+    const exports = computeExportedRefs(unit, units);
+    let script: string;
+    if (unit.runtime === 'jxa') {
+      script = emitJxaUnit(unit, targeted, emptyInputs, exports);
+    } else if (unit.runtime === 'omniJS') {
+      script = emitOmniJsUnit(unit, targeted, emptyInputs, exports);
+    } else {
+      script = `(node-side unit — no emitted script)`;
+    }
+    emittedScripts.push({ runtime: unit.runtime, refs: unit.nodes, script });
+  }
+
+  return { units: sorted, emittedScripts };
 }

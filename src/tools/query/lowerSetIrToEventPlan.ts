@@ -12,20 +12,20 @@
  *   Intersect(L, R)             → SemiJoin(L, ColumnValues(R, 'id'))
  *   Union(L, R)                 → Union(L, R)
  *   Enrich(src, entity, cols)   → ColumnValues(id) + ForEach(ByID+props) + HashJoin
- *   ContainerMembers(...)       → Whose + ForEach(elements+id) + Flatten + Zip({id})
+ *   Restriction(src,fk,lookup)  → SemiJoin(src, ColumnValues(lookup,'id'), field:fk)
  *   Count(src)                  → RowCount(src)
  *   Sort(src, by, dir)          → Sort
  *   Limit(src, n)               → Limit
  */
 
 import type { EventNode, EventPlan, Ref } from './eventPlan.js';
-import type { SetIrNode, ContainerMembersNode } from './setIr.js';
+import type { SetIrNode, RestrictionNode } from './setIr.js';
 import type { EntityType } from './variables.js';
 import {
   classCode,
   propSpec,
   type PropSpec,
-} from './strategyToEventPlan.js';
+} from './aeProps.js';
 
 // ── Builder ──────────────────────────────────────────────────────────────
 
@@ -249,117 +249,39 @@ function lowerEnrich(
   });
 }
 
-// ── ContainerMembers ─────────────────────────────────────────────────────
+// ── Restriction ───────────────────────────────────────────────────────────
 
 /**
- * Lower a ContainerMembers node.
+ * Lower a Restriction node (FK-based semi-join).
  *
- * Mirrors the forward-direction MembershipScan lowering in strategyToEventPlan:
- *   1. Whose(Elements(Document, containerClass), name, eq|contains, value)
- *      → matching container AE objects
- *   2. ForEach: for each container, Get(Elements(container, targetClass))
- *              then Get(Property(elements, 'ID  '))
- *   3. Flatten nested ID arrays → flat string[]
- *   4. Zip into {id: string}[] rows so Intersect can use ColumnValues(R, 'id')
+ * Strategy:
+ *   1. Lower source → rows with {id, fkColumn}
+ *   2. Lower lookup → rows of the container entity satisfying its predicate
+ *   3. Extract container IDs: ColumnValues(lookup, 'id') → string[]
+ *   4. SemiJoin(source, ids, field: fkColumn [, arrayField: true for tag arrays])
+ *      → rows from source where source[fkColumn] ∈ ids
  *
- * Complex containerPredicates (not simple eq/contains on name) are not yet
- * supported and will throw. The fallback is to execute the container query
- * as a separate sub-plan — a future extension.
+ * All operations are bulk AE reads + node-side filtering — no per-item round-trips.
  */
-function lowerContainerMembers(
-  node: ContainerMembersNode,
+function lowerRestriction(
+  node: RestrictionNode,
+  lower: (n: SetIrNode) => Ref,
   push: (n: EventNode) => Ref,
-  nodes: EventNode[],
 ): Ref {
-  const { targetEntity, containerType, containerPredicate } = node;
-
-  const containerEntity: EntityType =
-    containerType === 'tag'     ? 'tags'     :
-    containerType === 'folder'  ? 'folders'  : 'projects';
-
-  // Parse simple name-equality predicate (the common case)
-  const parsed = parseNamePred(containerPredicate);
-  if (!parsed) {
-    throw new Error(
-      `lowerSetIrToEventPlan: ContainerMembers only supports simple eq/contains on ` +
-      `name. Got: ${JSON.stringify(containerPredicate)}`
-    );
+  const sourceRef    = lower(node.source);
+  const lookupRef    = lower(node.lookup);
+  const lookupCol    = node.lookupColumn ?? 'id';
+  let lookupIdsRef   = push({ kind: 'ColumnValues', source: lookupRef, field: lookupCol });
+  if (node.flattenLookup) {
+    lookupIdsRef = push({ kind: 'Flatten', source: lookupIdsRef });
   }
-
-  const nameSpec = propSpec(containerEntity, 'name');
-  if (nameSpec.kind !== 'simple') throw new Error('name is always a simple property');
-
-  // %filtered = Get(Whose(Elements(Document, containerClass), nameCode, match, value))
-  const filteredRef = push({
-    kind: 'Get',
-    specifier: {
-      kind: 'Whose',
-      parent: {
-        kind: 'Elements',
-        parent: { kind: 'Document' },
-        classCode: classCode(containerEntity),
-      },
-      prop: nameSpec.code,
-      match: parsed.match,
-      value: parsed.value,
-    },
-    effect: 'nonMutating',
+  return push({
+    kind:       'SemiJoin',
+    source:     sourceRef,
+    ids:        lookupIdsRef,
+    field:      node.fkColumn,
+    arrayField: node.arrayFk,
   });
-
-  // ForEach: for each matching container, collect target-entity IDs
-  const forEachIdx = nodes.length;
-  const bodyNodes: EventNode[] = [];
-
-  // body[0] = Get(Elements(forEachIdx, classCode(targetEntity)))
-  bodyNodes.push({
-    kind: 'Get',
-    specifier: {
-      kind: 'Elements',
-      parent: forEachIdx as Ref,
-      classCode: classCode(targetEntity),
-    },
-    effect: 'nonMutating',
-  });
-
-  // body[1] = Get(Property(body[0], 'ID  '))
-  bodyNodes.push({
-    kind: 'Get',
-    specifier: { kind: 'Property', parent: 0 as Ref, propCode: 'ID  ' },
-    effect: 'nonMutating',
-  });
-
-  const forEachRef = push({
-    kind: 'ForEach',
-    source: filteredRef,
-    body: bodyNodes,
-    collect: 1, // collect body[1]: the ID arrays
-    effect: 'nonMutating',
-  });
-
-  // Flatten [[id1,id2],[id3]] → [id1,id2,id3]
-  const flatRef = push({ kind: 'Flatten', source: forEachRef });
-
-  // Zip into {id: ...} rows so Intersect can extract via ColumnValues(R, 'id')
-  return push({ kind: 'Zip', columns: [{ name: 'id', ref: flatRef }] });
-}
-
-/**
- * Parse a simple name predicate: eq(name, 'value') or contains(name, 'value').
- * Returns null for anything else.
- */
-function parseNamePred(
-  pred: import('./fold.js').LoweredExpr,
-): { match: 'eq' | 'contains'; value: string } | null {
-  if (typeof pred !== 'object' || pred === null || Array.isArray(pred)) return null;
-  const node = pred as { op?: string; args?: unknown[] };
-  if ((node.op !== 'eq' && node.op !== 'contains') || !Array.isArray(node.args)) return null;
-  const [lhs, rhs] = node.args as [unknown, unknown];
-  // Accept either (var:name, literal) or (literal, var:name)
-  const isNameVar = (x: unknown) =>
-    typeof x === 'object' && x !== null && 'var' in (x as object) && (x as { var: string }).var === 'name';
-  if (isNameVar(lhs) && typeof rhs === 'string') return { match: node.op, value: rhs };
-  if (isNameVar(rhs) && typeof lhs === 'string') return { match: node.op, value: lhs };
-  return null;
 }
 
 // ── Main lowering ─────────────────────────────────────────────────────────
@@ -424,8 +346,8 @@ export function lowerSetIrToEventPlan(root: SetIrNode, outputColumns?: string[])
         return enrichRef;
       }
 
-      case 'ContainerMembers':
-        return lowerContainerMembers(node, push, nodes);
+      case 'Restriction':
+        return lowerRestriction(node, lower, push);
 
       case 'Count':
         return push({ kind: 'RowCount', source: lower(node.source) });
