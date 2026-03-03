@@ -2,18 +2,25 @@
 
 ## Near term
 
-### 1. Fix double-lower bug
-`container` with complex sub-expressions routes to FallbackScan, which
-stores an already-lowered AST. The legacy pipeline's `compileWhere` calls
-`lowerExpr` again → "Old-style syntax" error. Straightforward fix, but
-superseded if we eliminate the legacy pipeline (#3).
+### 5. MembershipEnrich (container/containing ops inside or/not)
+`container('tag', {pred})` and `containing('tasks', {pred})` inside
+`or`/`not` fall back to FallbackScan because we can't extract a
+SemiJoin from a non-top-level position. MembershipEnrich would enumerate
+membership inline (as a per-row boolean) rather than hoisting to a
+SemiJoin. **Blocks #3** — without this, FallbackScan cannot be removed.
 
 ### 3. Eliminate legacy pipeline
 FallbackScan still routes through `compileQuery` + `JxaEmitter` (the
 pre-EventPlan path). Move FallbackScan into the EventPlan pipeline by
 emitting OmniJS evaluation nodes. This kills the double-lower bug (#1),
 removes the entire legacy codepath, and simplifies the codebase to a
-single execution pipeline.
+single execution pipeline. **Blocked by #5.**
+
+### 1. Fix double-lower bug (interim)
+`container` with complex sub-expressions routes to FallbackScan, which
+stores an already-lowered AST. The legacy pipeline's `compileWhere`
+calls `lowerExpr` again → "Old-style syntax" error. Straightforward
+interim fix (`compileWhereLowered`), but dies permanently with #3.
 
 ### 6. First-class aggregate operators (count, exists)
 `count` and `exists` should be proper AE operators on a par with `Get`,
@@ -34,11 +41,6 @@ significant dead code. Audit for other orphaned modules, unused exports,
 stale test helpers.
 
 ## Medium term
-
-### 5. MembershipEnrich (container ops inside or/not)
-`container('tag', {complex pred})` inside `or`/`not` falls back to
-OmniJS because we can't extract a SemiJoin. Low priority — the common
-case (`{contains: [{var:"tags"}, "name"]}`) already works via chain vars.
 
 ### 12. Audit for Swift rewrite friction
 Identify patterns that will be difficult to port: Node-specific APIs,
@@ -66,8 +68,3 @@ The fold/lower/backend pattern is reusable. DEVONthink MCP could compile
 to DT search strings; Mail MCP could compile to SQL WHERE clauses. Wait
 for a second consumer before abstracting. Config surface: entities,
 variables (with types/costs), container topology.
-
-### 9. Pre-compiled AppleScript wrapper
-A standing `.scpt` for `evaluate javascript` would save ~1.7s
-compilation per OmniJS invocation. Worth doing if OmniJS fallback
-remains a supported path after #3.
