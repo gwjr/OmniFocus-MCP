@@ -1,11 +1,10 @@
 /**
- * Tool handler smoke tests — pure structural and validation tests.
+ * Tool handler smoke tests.
  *
- * These tests NEVER call OmniFocus. They verify:
+ * Verifies:
  *   - Every tool exports a schema and handler function
  *   - Validation-only code paths that return before any primitive call
- *
- * OmniFocus-calling tests live in tools.integration.ts.
+ *   - Basic happy-path calls return success (requires OmniFocus running)
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,6 +40,11 @@ function assertMcpResponse(result: unknown, label: string): McpResponse {
     assert.ok(item.text.length > 0, `${label}: content item text is empty`);
   }
   return r;
+}
+
+function assertSuccess(r: McpResponse, label: string): string {
+  assert.ok(!r.isError, `${label}: unexpected error — ${r.content[0]?.text}`);
+  return r.content[0].text;
 }
 
 function assertError(result: McpResponse, label: string, pattern?: RegExp): void {
@@ -204,5 +208,52 @@ describe('tool validation: remove', () => {
     } as any, {});
     const r = assertMcpResponse(result, 'remove no id');
     assertError(r, 'remove no id', /id or name/i);
+  });
+});
+
+// ── Happy-path smoke tests (require OmniFocus running) ───────────────────
+
+describe('smoke: query tool', () => {
+  it('query folders', async () => {
+    const result = await queryTool.handler({ entity: 'folders' } as any, {});
+    const r = assertMcpResponse(result, 'query folders');
+    assertSuccess(r, 'query folders');
+  });
+
+  it('tasks with tag filter', async () => {
+    const result = await queryTool.handler({
+      entity: 'tasks',
+      where: { contains: [{ var: 'tags' }, 'Work'] },
+    } as any, {});
+    const r = assertMcpResponse(result, 'tasks with tag filter');
+    assertSuccess(r, 'tasks with tag filter');
+  });
+});
+
+describe('smoke: view tool', () => {
+  it('project view — returns results', async () => {
+    const result = await viewTool.handler({ project: 'a' } as any, {});
+    const r = assertMcpResponse(result, 'project view');
+    assertSuccess(r, 'project view');
+  });
+
+  it('inbox view — returns results', async () => {
+    const result = await viewTool.handler({ inbox: true } as any, {});
+    const r = assertMcpResponse(result, 'inbox view');
+    assertSuccess(r, 'inbox view');
+  });
+
+  it('flagged perspective — returns results', async () => {
+    const result = await viewTool.handler({ perspective: 'Flagged' } as any, {});
+    const r = assertMcpResponse(result, 'flagged perspective');
+    assertSuccess(r, 'flagged perspective');
+  });
+});
+
+describe('smoke: list_perspectives', () => {
+  it('default args — returns perspectives', async () => {
+    const result = await listPerspectivesTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'list_perspectives');
+    assertSuccess(r, 'list_perspectives');
   });
 });

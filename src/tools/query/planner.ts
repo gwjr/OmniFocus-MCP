@@ -94,12 +94,8 @@ export function buildPlanTree(
   const registry = getVarRegistry(entity);
   const costMap = classifyVars(neededVars, registry);
 
-  // Rule 1: expensive vars (e.g. note) in WHERE → OmniJS fallback.
-  // These have bulk AE accessors but are deliberately excluded from bulk
-  // reads — note can be many KB per task and should never be read en masse.
-  if (costMap.expensive.size > 0) {
-    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
-  }
+  // Note: expensive vars (e.g. note) go through PerItemEnrich — never bulk-read,
+  // but accessed per-item via byIdentifier after BulkScan pre-filters.
 
   // Try to extract a container (project, tag, or folder)
   const extraction = extractContainer(ast);
@@ -115,7 +111,7 @@ export function buildPlanTree(
 
   // Compute bulk columns (nodeKeys)
   const bulkVarNames = new Set([...costMap.easy, ...costMap.chain]);
-  const perItemVars = new Set(costMap.perItem);
+  const perItemVars = new Set([...costMap.perItem, ...costMap.expensive]);
   const allComputed = new Set(costMap.computed);
 
   // Track which vars are needed for output (select)
@@ -208,20 +204,27 @@ export function buildPlanTree(
   }
 
   // Two-phase path
-  const stubVars = new Set(costMap.perItem); // only where-clause per-item vars get stubbed
+  // Stub per-item AND expensive vars in WHERE so PreFilter passes them through
+  const stubVars = new Set([...costMap.perItem, ...costMap.expensive]);
 
   // Build: Filter → PerItemEnrich → PreFilter → scan/scoped
   const preFilter: StrategyNode = stubVars.size > 0
     ? { kind: 'PreFilter', source: scoped, predicate: filterAst, entity, assumeTrue: stubVars }
     : scoped;
 
+  // When expensive vars are in WHERE, disable the threshold — the user
+  // explicitly asked to filter on note/etc, so we must hydrate every row.
+  // The fallback (re-running from scoped scan) would silently drop the filter.
+  const hasExpensiveInWhere = costMap.expensive.size > 0;
+  const threshold = hasExpensiveInWhere ? Infinity : PER_ITEM_THRESHOLD;
+
   const enrich: StrategyNode = {
     kind: 'PerItemEnrich',
     source: preFilter,
     perItemVars,
     entity,
-    threshold: PER_ITEM_THRESHOLD,
-    fallback: scoped, // if too many items, re-run from the scoped scan
+    threshold,
+    fallback: scoped, // if threshold exceeded (per-item only), re-run from scoped scan
   };
 
   // Exact re-filter after enrichment (no stubs)

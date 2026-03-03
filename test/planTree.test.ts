@@ -123,9 +123,14 @@ describe('buildPlanTree — tree shapes', () => {
     assert.equal(tree.kind, 'FallbackScan');
   });
 
-  it('OmniJS fallback: expensive var (note) in where → FallbackScan', () => {
+  it('expensive var (note) in where → two-phase (PerItemEnrich)', () => {
     const tree = plan({ contains: [{ var: 'note' }, 'important'] });
-    assert.equal(tree.kind, 'FallbackScan');
+    // note is expensive → PerItemEnrich, not FallbackScan
+    const enrich = findNode(tree, 'PerItemEnrich');
+    assert.ok(enrich && enrich.kind === 'PerItemEnrich');
+    assert.ok(enrich.perItemVars.has('note'));
+    // Threshold should be Infinity for expensive vars (no fallback)
+    assert.equal(enrich.threshold, Infinity);
   });
 
   it('folder container with compilable scope → SemiJoin + MembershipScan', () => {
@@ -203,11 +208,13 @@ describe('buildPlanTree — includeCompleted propagation', () => {
     assert.equal(tree.includeCompleted, true);
   });
 
-  it('propagates includeCompleted to FallbackScan fallback', () => {
+  it('propagates includeCompleted through PerItemEnrich (note in where)', () => {
     const ast = lower({ contains: [{ var: 'note' }, 'test'] });
     const tree = buildPlanTree(ast, 'tasks', undefined, true);
-    assert.ok(tree.kind === 'FallbackScan');
-    assert.equal(tree.includeCompleted, true);
+    // note goes through PerItemEnrich, not FallbackScan
+    const scan = findNode(tree, 'BulkScan');
+    assert.ok(scan && scan.kind === 'BulkScan');
+    assert.equal(scan.includeCompleted, true);
   });
 });
 
