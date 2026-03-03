@@ -94,6 +94,16 @@ function normalizeOp(op: string, args: LoweredExpr[]): LoweredExpr {
       return { op: 'not', args: [inner] };
     }
 
+    // Single-element in → eq: {in: [var, ['x']]} → {eq: [var, 'x']}
+    // Enables the tag-name semi-join shortcut for single-value in predicates.
+    case 'in': {
+      const [subject, collection] = args;
+      if (Array.isArray(collection) && collection.length === 1) {
+        return normalizeOp('eq', [subject, collection[0]]);
+      }
+      return { op, args };
+    }
+
     // Symmetric comparisons: ensure field ref (var) on LHS
     case 'eq':
     case 'neq':

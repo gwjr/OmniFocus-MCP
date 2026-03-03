@@ -399,9 +399,62 @@ describe('normalizeAst — leaf passthrough', () => {
   });
 });
 
-// ── 8. Combined transforms ────────────────────────────────────────────────
+// ── 8. Single-element in → eq rewrite ────────────────────────────────────
 
-describe('normalizeAst — combined', () => {
+describe('normalizeAst — single-element in rewrite', () => {
+  it('rewrites in with single-element array to eq', () => {
+    const input = op('in', v('name'), ['Work']);
+    const result = normalizeAst(input);
+    assert.deepEqual(result, op('eq', v('name'), 'Work'));
+  });
+
+  it('applies LHS canonicalization after rewrite (constant subject swapped to RHS)', () => {
+    // in(['Work'], v('name')) → eq('Work', v('name')) → eq(v('name'), 'Work')
+    const input = op('in', 'Work', [v('name')]);
+    // collection is [{var:'name'}] (not an array of constants) — no rewrite triggers
+    // but: in(['Work'], v('tags')) where subject is constant and collection has 1 element
+    // Let's test the canonical case: constant on LHS, collection element is a var — passthrough
+    const result = normalizeAst(input);
+    // collection is a var reference wrapped in array — length 1, rewrites to eq
+    // then LHS canonicalization: constant 'Work' on LHS, var on RHS → swap
+    assert.deepEqual(result, op('eq', v('name'), 'Work'));
+  });
+
+  it('does not rewrite in with zero elements', () => {
+    const input = op('in', v('name'), []);
+    const result = normalizeAst(input);
+    assert.deepEqual(result, op('in', v('name'), []));
+  });
+
+  it('does not rewrite in with two or more elements', () => {
+    const input = op('in', v('name'), ['Work', 'Personal']);
+    const result = normalizeAst(input);
+    assert.deepEqual(result, op('in', v('name'), ['Work', 'Personal']));
+  });
+
+  it('is idempotent: normalizing the eq result again is a no-op', () => {
+    const input = op('in', v('flagged'), [true]);
+    const once = normalizeAst(input);
+    const twice = normalizeAst(once);
+    assert.deepEqual(once, twice);
+  });
+
+  it('rewrites in nested inside and', () => {
+    const input = op('and',
+      op('in', v('name'), ['Work']),
+      op('eq', v('flagged'), true)
+    );
+    const result = normalizeAst(input) as any;
+    assert.equal(result.op, 'and');
+    // Both children should be eq nodes after rewrite
+    const ops = result.args.map((a: any) => a.op);
+    assert.ok(ops.every((o: string) => o === 'eq'), `expected all eq, got ${ops}`);
+  });
+});
+
+// ── 9. Combined transforms ────────────────────────────────────────────────
+
+describe('normalizeAst — combined transforms', () => {
   it('applies all transforms in one pass', () => {
     // Input: and(
     //   not(not(eq(true, {var:"flagged"}))),    ← double-not + LHS swap

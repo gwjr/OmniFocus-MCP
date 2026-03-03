@@ -20,9 +20,9 @@
  * Runs after CSE, before runtime targeting.
  */
 
-import type { EventPlan, EventNode, Ref } from './eventPlan.js';
+import type { EventPlan, EventNode, Ref, Specifier } from './eventPlan.js';
 import type { LoweredExpr } from './fold.js';
-import { collectRefs, rewriteNode } from './eventPlanUtils.js';
+import { collectRefs, rewriteNode, compactPlan } from './eventPlanUtils.js';
 import { computedVarDeps } from './variables.js';
 
 // ── Predicate variable extraction ───────────────────────────────────────
@@ -154,7 +154,7 @@ function computeNeededColumns(
           for (const spec of node.derivations) {
             // If the derived var is needed, add its dependencies
             if (combined.has(spec.var)) {
-              const deps = computedVarDeps[spec.entity]?.[spec.var];
+              const deps = computedVarDeps(spec.entity, spec.var);
               if (deps) {
                 for (const d of deps) combined.add(d);
               }
@@ -195,12 +195,53 @@ function computeNeededColumns(
         break;
       }
 
+      case 'Union': {
+        // Union deduplicates rows by row.id (see execUnion in nodeUnit.ts).
+        // Always preserve 'id' on both sides so deduplication is correct.
+        const unionNeeded = myNeeded ? union(myNeeded, new Set(['id'])) : null;
+        propagate(needed, node.left, unionNeeded);
+        propagate(needed, node.right, unionNeeded);
+        break;
+      }
+
+      case 'RowCount': {
+        // RowCount only needs the row count — no column values are required.
+        // Propagate an empty set so intermediate Filter/SemiJoin nodes can
+        // add only the columns they actually need (predicate vars, join key).
+        // This avoids the spurious 'id' bulk read that new Set(['id']) forced.
+        //
+        // Note: if there is no Filter/SemiJoin between RowCount and Zip (which
+        // can't happen in practice because predicate===true uses the native
+        // fast-path), the Zip would receive an empty needed set and produce [].
+        // That edge case is already short-circuited before reaching this path.
+        propagate(needed, node.source, new Set());
+        break;
+      }
+
+      case 'SetOp': {
+        // SetOp operates on id arrays, not row columns — propagate null (all)
+        propagate(needed, node.left, null);
+        propagate(needed, node.right, null);
+        break;
+      }
+
+      case 'ForEach': {
+        // ForEach iterates source (a flat array, e.g. from ColumnValues).
+        // The source doesn't carry row columns — propagate null.
+        propagate(needed, node.source, null);
+        // Propagate needed columns into the body Zip (at body[collect]).
+        // myNeeded tells us what columns the outer plan needs from this
+        // ForEach's collected output. The body Zip produces those columns.
+        // We don't recurse further into body Get nodes here — that's
+        // handled by the body-pruning step in pruneColumns().
+        break;
+      }
+
       case 'Zip':
       case 'Get':
       case 'Count':
       case 'Set':
       case 'Command':
-      case 'ForEach':
         // These are terminals or don't propagate column needs
         break;
     }
@@ -234,6 +275,28 @@ function union(a: Set<string>, b: Set<string>): Set<string> {
   return result;
 }
 
+// ── ForEach body helpers ─────────────────────────────────────────────────
+
+/**
+ * Collect body-local Ref indices from a specifier.
+ * Body Get nodes reference other body nodes (e.g. ByID parent = body[0])
+ * via numeric Ref values that are body-local indices.
+ *
+ * We walk the specifier tree and mark any numeric parent/id as reachable,
+ * then recurse so that transitive body refs are also captured.
+ */
+function collectBodySpecRefs(spec: Specifier, reachable: Set<number>): void {
+  if (spec.kind === 'Document') return;
+  if (typeof spec.parent === 'number') {
+    reachable.add(spec.parent);
+  } else {
+    collectBodySpecRefs(spec.parent, reachable);
+  }
+  if (spec.kind === 'ByID' && typeof spec.id === 'number') {
+    reachable.add(spec.id);
+  }
+}
+
 // ── Main pass ───────────────────────────────────────────────────────────
 
 export function pruneColumns(plan: EventPlan): EventPlan {
@@ -243,42 +306,103 @@ export function pruneColumns(plan: EventPlan): EventPlan {
   // Step 1: compute needed columns at each node
   const neededAt = computeNeededColumns(nodes, result);
 
-  // Step 2: prune Zip columns
+  // Step 2: prune Zip columns (outer plan + ForEach bodies)
   let changed = false;
   const pruned = nodes.map((node, i) => {
-    if (node.kind !== 'Zip') return node;
+    if (node.kind === 'Zip') {
+      const needed = neededAt.get(i);
+      if (needed === null || needed === undefined) return node;
 
-    const needed = neededAt.get(i);
-    if (needed === null || needed === undefined) return node; // need all or not referenced
+      const keptColumns = node.columns.filter(c => needed.has(c.name));
+      if (keptColumns.length === node.columns.length) return node;
 
-    const keptColumns = node.columns.filter(c => needed.has(c.name));
-    if (keptColumns.length === node.columns.length) return node; // nothing to prune
+      changed = true;
+      return { ...node, columns: keptColumns } as EventNode;
+    }
 
-    changed = true;
-    return { ...node, columns: keptColumns } as EventNode;
+    if (node.kind === 'ForEach') {
+      const forEachNeeded = neededAt.get(i);
+      // forEachNeeded = column set the outer plan needs from this ForEach
+      if (forEachNeeded === null || forEachNeeded === undefined) return node;
+
+      const bodyZip = node.body[node.collect];
+      if (!bodyZip || bodyZip.kind !== 'Zip') return node;
+
+      const keptColumns = bodyZip.columns.filter(c => forEachNeeded.has(c.name));
+      if (keptColumns.length === bodyZip.columns.length) return node;
+
+      changed = true;
+
+      // Build body-local reachability from the pruned Zip
+      const keptRefs = new Set<Ref>(keptColumns.map(c => c.ref));
+      // body[0] (ByID Get) is always needed if any column survives
+      const bodyReachable = new Set<number>();
+      bodyReachable.add(node.collect); // the Zip itself
+      for (const ref of keptRefs) {
+        bodyReachable.add(ref as number);
+        // PropertyGets reference body[0] (ByID) via specifier parent
+        // Walk specifier refs for the kept Get nodes
+        const bodyNode = node.body[ref as number];
+        if (bodyNode && bodyNode.kind === 'Get') {
+          collectBodySpecRefs(bodyNode.specifier, bodyReachable);
+        }
+      }
+
+      // Compact the body: keep only reachable nodes, reindex
+      const bodySurvivors: number[] = [];
+      for (let j = 0; j < node.body.length; j++) {
+        if (bodyReachable.has(j)) bodySurvivors.push(j);
+      }
+
+      if (bodySurvivors.length === node.body.length) {
+        // Nothing removed from body, just prune the Zip columns
+        const newBody = [...node.body];
+        newBody[node.collect] = { ...bodyZip, columns: keptColumns };
+        return { ...node, body: newBody, collect: node.collect } as EventNode;
+      }
+
+      // Build body compaction map
+      const bodyCompact = new Map<number, number>();
+      for (let j = 0; j < bodySurvivors.length; j++) {
+        bodyCompact.set(bodySurvivors[j], j);
+      }
+      const remapBody = (r: Ref): Ref => {
+        // Body refs that point to the ForEach index itself (the loop var)
+        // are NOT body-local — they reference the outer ForEach node.
+        // These must be preserved as-is (remapped separately by the outer
+        // ForEach's index in the plan if outer compaction occurs).
+        // In the body, the ForEach's own index is used as "current item".
+        // We only remap body-local indices here.
+        const mapped = bodyCompact.get(r as number);
+        if (mapped !== undefined) return mapped as Ref;
+        return r; // non-body ref (e.g. forEachIdx for loop var)
+      };
+      const newBody = bodySurvivors.map(oldIdx =>
+        rewriteNode(node.body[oldIdx], remapBody)
+      );
+      const newCollect = bodyCompact.get(node.collect);
+      // Update the pruned Zip columns with remapped refs
+      const prunedZipIdx = newCollect!;
+      newBody[prunedZipIdx] = {
+        ...bodyZip,
+        columns: keptColumns.map(c => ({ ...c, ref: remapBody(c.ref) })),
+      };
+
+      return { ...node, body: newBody, collect: newCollect as Ref } as EventNode;
+    }
+
+    return node;
   });
 
   if (!changed) return plan;
 
-  // Step 3: find dead refs (refs no longer referenced by any node or result)
-  const alive = new Set<Ref>();
-  alive.add(result);
-  for (let i = 0; i < pruned.length; i++) {
-    if (!alive.has(i) && i !== result) {
-      // Check if any other node references this one
-    }
-  }
-
-  // Rebuild the alive set by walking from the result
+  // Step 3: walk from result to find reachable nodes
   const reachable = new Set<Ref>();
   function markReachable(ref: Ref): void {
     if (reachable.has(ref)) return;
     if (ref < 0 || ref >= pruned.length) return;
     reachable.add(ref);
-    const node = pruned[ref];
-    for (const r of collectRefs(node)) {
-      markReachable(r);
-    }
+    for (const r of collectRefs(pruned[ref])) markReachable(r);
   }
   markReachable(result);
 
@@ -293,26 +417,5 @@ export function pruneColumns(plan: EventPlan): EventPlan {
     return { nodes: pruned, result };
   }
 
-  // Build compaction map
-  const compact = new Map<Ref, Ref>();
-  for (let newIdx = 0; newIdx < survivors.length; newIdx++) {
-    compact.set(survivors[newIdx], newIdx);
-  }
-
-  function compactRef(r: Ref): Ref {
-    const mapped = compact.get(r);
-    if (mapped === undefined) {
-      throw new Error(`pruneColumns: dangling ref ${r}`);
-    }
-    return mapped;
-  }
-
-  const compactedNodes = survivors.map(oldIdx =>
-    rewriteNode(pruned[oldIdx], compactRef)
-  );
-
-  return {
-    nodes: compactedNodes,
-    result: compactRef(result),
-  };
+  return compactPlan(pruned, result, survivors, 'pruneColumns');
 }

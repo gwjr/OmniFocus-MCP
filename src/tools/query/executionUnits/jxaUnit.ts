@@ -61,11 +61,22 @@ function buildPropMap(): Record<FourCC, string> {
  * For example, `tags` on a task collection is `.tags.name()` which returns
  * nested string arrays [["tag1"], [], ["tag2","tag3"], ...].
  *
- * Each entry maps propCode → the chained suffix to append to the parent
- * expression (WITHOUT the leading dot — that's added by the caller).
+ * Each entry maps propCode → { accessor, suppressTransform }:
+ *   accessor:          the chained suffix to append (WITHOUT leading dot)
+ *   suppressTransform: when true, terminal properties read through this
+ *                      chain skip PROP_VALUE_TRANSFORMS. This is needed for
+ *                      tags.id() which returns nested arrays ([[id1],[id2,...]])
+ *                      incompatible with .map(). New chain entries should only
+ *                      set this to true when the chain produces nested arrays
+ *                      or other structures that transforms can't handle.
  */
-const CHAIN_ACCESSORS: Record<FourCC, string> = {
-  [OFTaskProp.tags]:  'tags.name',   // tasks.tags → .tags.name()
+interface ChainAccessorEntry {
+  accessor: string;
+  suppressTransform: boolean;
+}
+
+const CHAIN_ACCESSORS: Record<FourCC, ChainAccessorEntry> = {
+  [OFTaskProp.tags]:  { accessor: 'tags.name', suppressTransform: true },
 };
 
 /**
@@ -137,7 +148,7 @@ function refVar(ctx: EmitCtx, ref: Ref): string {
     // Lazily emit the specifier reconstruction and cache the variable
     const varName = freshVar(ctx, 'spec');
     const specExpr = emitSpecifier(ctx, specInput);
-    ctx.lines.push(`var ${varName} = ${specExpr};`);
+    ctx.lines.push(`const ${varName} = ${specExpr};`);
     ctx.vars.set(ref, varName);
     return varName;
   }
@@ -163,7 +174,7 @@ function emitSpecifier(ctx: EmitCtx, spec: Specifier): string {
       // Check for chain accessors (e.g., tags → .tags.name)
       const chain = CHAIN_ACCESSORS[spec.propCode];
       if (chain) {
-        return `${parent}.${chain}`;
+        return `${parent}.${chain.accessor}`;
       }
       const prop = PROP_TO_ACCESSOR[spec.propCode];
       if (!prop) {
@@ -214,7 +225,7 @@ function emitParent(ctx: EmitCtx, parent: Specifier | Ref): string {
     const grandparent = emitParent(ctx, parent.parent);
     const chain = CHAIN_ACCESSORS[parent.propCode];
     if (chain) {
-      return `${grandparent}.${chain.split('.')[0]}`;
+      return `${grandparent}.${chain.accessor.split('.')[0]}`;
     }
     const prop = PROP_TO_ACCESSOR[parent.propCode];
     if (!prop) throw new Error(`jxaUnit: unknown property code '${parent.propCode}'`);
@@ -239,22 +250,25 @@ function emitNode(ctx: EmitCtx, ref: Ref): void {
       // JS array, breaking subsequent bulk reads like .name().
       if (node.specifier.kind === 'Property') {
         // Skip scalar transforms when the parent is a chain-accessor Property
-        // (e.g. tags.id() returns nested string arrays — no .map() needed).
-        const parentIsChain =
+        // that explicitly opts in to transform suppression (e.g. tags.id()
+        // returns nested arrays where .map() is incompatible).
+        const parentChain =
           typeof node.specifier.parent !== 'number' &&
-          node.specifier.parent.kind === 'Property' &&
-          !!CHAIN_ACCESSORS[(node.specifier.parent as { propCode: string }).propCode];
-        const transform = parentIsChain ? '' : (PROP_VALUE_TRANSFORMS[node.specifier.propCode] ?? '');
-        ctx.lines.push(`var ${varName} = ${specExpr}()${transform};`);
+          node.specifier.parent.kind === 'Property'
+            ? CHAIN_ACCESSORS[(node.specifier.parent as { propCode: string }).propCode]
+            : undefined;
+        const suppress = parentChain?.suppressTransform ?? false;
+        const transform = suppress ? '' : (PROP_VALUE_TRANSFORMS[node.specifier.propCode] ?? '');
+        ctx.lines.push(`const ${varName} = ${specExpr}()${transform};`);
       } else {
-        ctx.lines.push(`var ${varName} = ${specExpr};`);
+        ctx.lines.push(`const ${varName} = ${specExpr};`);
       }
       break;
     }
 
     case 'Count': {
       const specExpr = emitSpecifier(ctx, node.specifier);
-      ctx.lines.push(`var ${varName} = ${specExpr}.length;`);
+      ctx.lines.push(`const ${varName} = ${specExpr}.count();`);
       break;
     }
 
@@ -262,7 +276,7 @@ function emitNode(ctx: EmitCtx, ref: Ref): void {
       const specExpr = emitSpecifier(ctx, node.specifier);
       const valueExpr = refVar(ctx, node.value);
       ctx.lines.push(`${specExpr}.set(${valueExpr});`);
-      ctx.lines.push(`var ${varName} = ${valueExpr};`);
+      ctx.lines.push(`const ${varName} = ${valueExpr};`);
       break;
     }
 
@@ -272,7 +286,7 @@ function emitNode(ctx: EmitCtx, ref: Ref): void {
         const val = typeof v === 'number' ? refVar(ctx, v) : JSON.stringify(v);
         return `${k}: ${val}`;
       }).join(', ');
-      ctx.lines.push(`var ${varName} = ${targetExpr}['${node.fourCC}']({${args}});`);
+      ctx.lines.push(`const ${varName} = ${targetExpr}['${node.fourCC}']({${args}});`);
       break;
     }
 
@@ -298,9 +312,9 @@ function emitForEach(
   const idxVar = freshVar(ctx, 'i');
   const itemVar = freshVar(ctx, 'item');
 
-  ctx.lines.push(`var ${accVar} = [];`);
-  ctx.lines.push(`for (var ${idxVar} = 0; ${idxVar} < ${sourceVar}.length; ${idxVar}++) {`);
-  ctx.lines.push(`  var ${itemVar} = ${sourceVar}[${idxVar}];`);
+  ctx.lines.push(`const ${accVar} = [];`);
+  ctx.lines.push(`for (let ${idxVar} = 0; ${idxVar} < ${sourceVar}.length; ${idxVar}++) {`);
+  ctx.lines.push(`  const ${itemVar} = ${sourceVar}[${idxVar}];`);
 
   // Push scoped ForEach ref → item var binding
   ctx.forEachStack.push({ ref: feRef, itemVar });
@@ -329,7 +343,7 @@ function emitForEach(
   ctx.lines.push(`}`);
 
   // Flatten the accumulated results (ForEach collects produce arrays of arrays)
-  ctx.lines.push(`var ${resultVar} = [].concat.apply([], ${accVar});`);
+  ctx.lines.push(`const ${resultVar} = [].concat.apply([], ${accVar});`);
 
   // Pop ForEach scope and restore vars
   ctx.forEachStack.pop();
@@ -345,20 +359,20 @@ function emitBodyNode(ctx: EmitCtx, node: EventNode, varName: string): void {
       const specExpr = emitSpecifier(ctx, node.specifier);
       if (node.specifier.kind === 'Property') {
         const transform = PROP_VALUE_TRANSFORMS[node.specifier.propCode] ?? '';
-        ctx.lines.push(`  var ${varName} = ${specExpr}()${transform};`);
+        ctx.lines.push(`  const ${varName} = ${specExpr}()${transform};`);
       } else {
-        ctx.lines.push(`  var ${varName} = ${specExpr};`);
+        ctx.lines.push(`  const ${varName} = ${specExpr};`);
       }
       break;
     }
     case 'Count': {
       const specExpr = emitSpecifier(ctx, node.specifier);
-      ctx.lines.push(`  var ${varName} = ${specExpr}.length;`);
+      ctx.lines.push(`  const ${varName} = ${specExpr}.count();`);
       break;
     }
     case 'Zip': {
       const cols = node.columns.map(c => `${JSON.stringify(c.name)}: ${refVar(ctx, c.ref)}`).join(', ');
-      ctx.lines.push(`  var ${varName} = {${cols}};`);
+      ctx.lines.push(`  const ${varName} = {${cols}};`);
       break;
     }
     default:
@@ -383,12 +397,16 @@ function emitBodyNode(ctx: EmitCtx, node: EventNode, varName: string): void {
  *                orchestrator. When omitted or single-element, the script
  *                returns the single result value. When multiple, the script
  *                returns an object keyed by ref number string.
+ * @param opts.raw When true, the IIFE returns the raw JS value without
+ *                 wrapping in JSON.stringify. Used by the fusion path to
+ *                 avoid a redundant stringify→parse cycle.
  */
 export function emitJxaUnit(
   unit: ExecutionUnit,
   plan: TargetedEventPlan,
   inputs: Map<number, string>,
   exports?: number[],
+  opts?: { raw?: boolean },
 ): string {
   if (unit.runtime !== 'jxa') {
     throw new Error(`emitJxaUnit: expected runtime 'jxa', got '${unit.runtime}'`);
@@ -440,12 +458,13 @@ export function emitJxaUnit(
   }
 
   const body = ctx.lines.map(l => `  ${l}`).join('\n');
+  const ret = opts?.raw ? returnExpr : `JSON.stringify(${returnExpr})`;
 
   return `(function() {
-  var app = Application('OmniFocus');
+  const app = Application('OmniFocus');
   app.includeStandardAdditions = true;
-  var doc = app.defaultDocument;
+  const doc = app.defaultDocument;
 ${body}
-  return JSON.stringify(${returnExpr});
+  return ${ret};
 })()`;
 }

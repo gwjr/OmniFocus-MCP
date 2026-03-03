@@ -11,6 +11,11 @@ import type { EventPlan, EventNode, Ref, RuntimeAllocation } from '../dist/tools
 import type { TargetedEventPlan, TargetedNode, ExecutionUnit } from '../dist/tools/query/targetedEventPlan.js';
 import { targetEventPlan } from '../dist/tools/query/targetedEventPlanLowering.js';
 import { emitJxaUnit } from '../dist/tools/query/executionUnits/jxaUnit.js';
+import { buildSetIrPlan, inspectEventPlan } from '../dist/tools/query/executionUnits/orchestrator.js';
+import { optimizeSetIr } from '../dist/tools/query/lowerToSetIr.js';
+import { lowerSetIrToEventPlan } from '../dist/tools/query/lowerSetIrToEventPlan.js';
+import { cseEventPlan } from '../dist/tools/query/eventPlanCSE.js';
+import { pruneColumns } from '../dist/tools/query/eventPlanColumnPrune.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -96,7 +101,7 @@ describe('emitJxaUnit', () => {
     assert.ok(script.includes('.name'), 'should use .name accessor for pnam');
   });
 
-  it('emits Count as .length', () => {
+  it('emits Count as .count()', () => {
     const plan = makePlan([
       { kind: 'Count', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
     ]);
@@ -104,7 +109,8 @@ describe('emitJxaUnit', () => {
     const jxaUnit = units.find(u => u.runtime === 'jxa')!;
 
     const script = emitJxaUnit(jxaUnit, targeted, new Map());
-    assert.ok(script.includes('.length'), 'Count should use .length');
+    assert.ok(script.includes('.count()'), 'Count should use .count() (native AE count command)');
+    assert.ok(!script.includes('.length'), 'Count must not use .length (incorrect for AE specifiers)');
   });
 
   it('emits ByName specifier', () => {
@@ -352,10 +358,10 @@ describe('emitJxaUnit', () => {
     assert.equal(jxaUnit.nodes.length, 3, 'all 3 nodes should be in the jxa unit');
 
     const script = emitJxaUnit(jxaUnit, targeted, new Map());
-    // Should have 3 var declarations (one per node)
-    const varMatches = script.match(/var _r\d+/g);
-    assert.ok(varMatches, 'should have var declarations');
-    assert.equal(varMatches.length, 3, 'should have exactly 3 var declarations');
+    // Should have 3 const declarations (one per node)
+    const varMatches = script.match(/const _r\d+/g);
+    assert.ok(varMatches, 'should have const declarations');
+    assert.equal(varMatches.length, 3, 'should have exactly 3 const declarations');
   });
 
   it('multi-export returns object keyed by ref string', () => {
@@ -383,6 +389,85 @@ describe('emitJxaUnit', () => {
     // Single export should return the variable directly, not wrapped in an object
     assert.ok(script.includes('return JSON.stringify(_r0)'), 'single export should return plain result');
     assert.ok(!script.includes('"0":'), 'single export should NOT wrap in object');
+  });
+
+  // ── Regression: RowCount with predicate should not force `id` bulk read ──────
+  //
+  // Before the fix, the column pruner's RowCount handler propagated
+  // new Set(['id']) to its upstream, forcing a ~140ms id bulk read even though
+  // RowCount only needs to count rows. The fix propagates new Set() (empty),
+  // letting Filter/SemiJoin add only the columns they actually need.
+  //
+  // For a task-only predicate (e.g. inInbox=true), project exclusion is also
+  // skipped, so no SemiJoin needs 'id' either — the JXA script reads only
+  // the predicate column.
+  //
+  // For a non-task-only predicate (e.g. flagged=true), project exclusion
+  // cannot be skipped and the SemiJoin legitimately needs 'id' — the id
+  // bulk read is NOT spurious in that case.
+  //
+  // This test uses the full pipeline: buildSetIrPlan → optimizeSetIr →
+  // lowerSetIrToEventPlan → cseEventPlan → pruneColumns → inspectEventPlan.
+
+  it('op:count with task-only predicate emits only that column (no id) in JXA', () => {
+    // inInbox is task-only: project exclusion is skipped (projects can't be inInbox)
+    // so neither RowCount nor any SemiJoin needs 'id'
+    const predicate = { op: 'eq' as const, args: [{ var: 'inInbox' }, true] };
+    const setIr = buildSetIrPlan({ entity: 'tasks', op: 'count', predicate });
+    const optimized = optimizeSetIr(setIr);
+    const ep = lowerSetIrToEventPlan(optimized, undefined);
+    const csed = cseEventPlan(ep);
+    const pruned = pruneColumns(csed);
+
+    const { emittedScripts } = inspectEventPlan(pruned);
+
+    const jxaScript = emittedScripts
+      .filter(s => s.runtime === 'jxa')
+      .map(s => s.script)
+      .join('\n');
+
+    assert.ok(jxaScript.length > 0, 'should have at least one JXA unit');
+    assert.ok(
+      jxaScript.includes('.inInbox()'),
+      'JXA script must call .inInbox() — the filter predicate column',
+    );
+    assert.ok(
+      !jxaScript.includes('.id()'),
+      'JXA script must NOT call .id() — task-only predicate + RowCount pruner fix eliminates id read',
+    );
+  });
+
+  it('op:count with non-task-only predicate keeps id for project exclusion SemiJoin', () => {
+    // flagged is NOT task-only: project exclusion cannot be skipped,
+    // so the SemiJoin legitimately needs 'id' — not a spurious read
+    const predicate = { op: 'eq' as const, args: [{ var: 'flagged' }, true] };
+    const setIr = buildSetIrPlan({ entity: 'tasks', op: 'count', predicate });
+    const optimized = optimizeSetIr(setIr);
+    const ep = lowerSetIrToEventPlan(optimized, undefined);
+    const csed = cseEventPlan(ep);
+    const pruned = pruneColumns(csed);
+
+    const { emittedScripts } = inspectEventPlan(pruned);
+
+    const jxaScript = emittedScripts
+      .filter(s => s.runtime === 'jxa')
+      .map(s => s.script)
+      .join('\n');
+
+    assert.ok(jxaScript.length > 0, 'should have at least one JXA unit');
+    assert.ok(
+      jxaScript.includes('.flagged()'),
+      'JXA script must call .flagged() — the filter predicate column',
+    );
+    assert.ok(
+      jxaScript.includes('.id()'),
+      'JXA script must call .id() — project exclusion SemiJoin legitimately needs id',
+    );
+    // The key assertion: 'name' and other non-predicate columns are pruned
+    assert.ok(
+      !jxaScript.includes('.name()'),
+      'JXA script must NOT call .name() — dead column, not needed by count or filter',
+    );
   });
 });
 

@@ -327,13 +327,28 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
     }
 
     if (type === 'project') {
-      // For project containers, construct a virtual row from the task's project fields
+      // For project containers, construct a virtual project row from the task's
+      // project-prefixed fields.  The task row carries chain properties like
+      // `projectName`, `projectId`, and may carry additional enriched fields
+      // such as `projectStatus`, `projectFlagged`, etc.  We iterate the project
+      // variable registry and map each nodeKey to the corresponding
+      // `project`-prefixed key on the task row.
       const predicate = fold(subExpr, toEntity);
+      const projRegistry = getVarRegistry('projects');
+      const fieldMap: { projKey: string; nodeKey: string }[] = [];
+      for (const [, varDef] of Object.entries(projRegistry)) {
+        const nodeKey = varDef.nodeKey;
+        const projKey = 'project' + nodeKey.charAt(0).toUpperCase() + nodeKey.slice(1);
+        fieldMap.push({ projKey, nodeKey });
+      }
       return (row) => {
         const projName = row.projectName;
         if (projName == null) return false;
-        // Create a minimal project row for the sub-expression
-        const projRow: Row = { name: projName, id: row.projectId };
+        const projRow: Row = {};
+        for (const { projKey, nodeKey } of fieldMap) {
+          const val = row[projKey];
+          if (val !== undefined) projRow[nodeKey] = val;
+        }
         return !!predicate(projRow);
       };
     }

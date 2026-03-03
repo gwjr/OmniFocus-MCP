@@ -356,6 +356,51 @@ describe('nodeEval — container (project)', () => {
       false
     );
   });
+
+  it('matches project by status (non-name field)', () => {
+    // Bug: the stub row only had {name, id}, so status was undefined → false
+    assert.equal(
+      evalRow(
+        { container: ['project', { eq: [{ var: 'status' }, 'Active'] }] },
+        { projectName: 'My Project', projectId: 'p1', projectStatus: 'Active' },
+        'tasks'
+      ),
+      true
+    );
+  });
+
+  it('rejects project by status when status does not match', () => {
+    assert.equal(
+      evalRow(
+        { container: ['project', { eq: [{ var: 'status' }, 'Active'] }] },
+        { projectName: 'My Project', projectId: 'p1', projectStatus: 'OnHold' },
+        'tasks'
+      ),
+      false
+    );
+  });
+
+  it('matches project by flagged (boolean field)', () => {
+    assert.equal(
+      evalRow(
+        { container: ['project', { eq: [{ var: 'flagged' }, true] }] },
+        { projectName: 'My Project', projectId: 'p1', projectFlagged: true },
+        'tasks'
+      ),
+      true
+    );
+  });
+
+  it('rejects project by flagged when not flagged', () => {
+    assert.equal(
+      evalRow(
+        { container: ['project', { eq: [{ var: 'flagged' }, true] }] },
+        { projectName: 'My Project', projectId: 'p1', projectFlagged: false },
+        'tasks'
+      ),
+      false
+    );
+  });
 });
 
 describe('nodeEval — container (folder) throws', () => {

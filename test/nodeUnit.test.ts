@@ -82,7 +82,7 @@ describe('executeNodeUnit — Filter', () => {
   it('filters rows by equality predicate', () => {
     const nodes: TargetedNode[] = [
       jxaPlaceholder,
-      makeTargetedNode({ kind: 'Filter', source: 0, predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),
+      makeTargetedNode({ kind: 'Filter', source: 0, entity: 'tasks', predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
     const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
@@ -138,7 +138,7 @@ describe('executeNodeUnit — Filter', () => {
   it('filters rows by string contains predicate', () => {
     const nodes: TargetedNode[] = [
       jxaPlaceholder,
-      makeTargetedNode({ kind: 'Filter', source: 0, predicate: { op: 'contains', args: [{ var: 'name' }, 'review'] } }, 'node'),
+      makeTargetedNode({ kind: 'Filter', source: 0, entity: 'tasks', predicate: { op: 'contains', args: [{ var: 'name' }, 'review'] } }, 'node'),
     ];
     const plan = makeTargetedPlan(nodes, 1);
     const unit: ExecutionUnit = { runtime: 'node', nodes: [1], inputs: vi(0), outputs: [], result: 1, dependsOn: [] };
@@ -608,7 +608,7 @@ describe('executeNodeUnit — multi-op pipeline', () => {
       // 2: Zip
       makeTargetedNode({ kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] }, 'node'),
       // 3: Filter
-      makeTargetedNode({ kind: 'Filter', source: 2, predicate: { op: 'startsWith', args: [{ var: 'name' }, 'T'] } }, 'node'),
+      makeTargetedNode({ kind: 'Filter', source: 2, entity: 'tasks', predicate: { op: 'startsWith', args: [{ var: 'name' }, 'T'] } }, 'node'),
       // 4: Sort
       makeTargetedNode({ kind: 'Sort', source: 3, by: 'name', dir: 'asc' }, 'node'),
       // 5: Limit
@@ -1055,5 +1055,149 @@ describe('cross-unit multi-ref regression — end-to-end handoff', () => {
     unpackResult(unitA, exports, ['id1', 'id2', 'id3'], results);
 
     assert.deepEqual(results.get(0), ['id1', 'id2', 'id3'], 'single export stores raw array');
+  });
+});
+
+// ── Filter+Limit fusion ─────────────────────────────────────────────────
+
+describe('executeNodeUnit — Filter+Limit fusion', () => {
+
+  it('produces correct results for Filter→Limit(1) (exists pattern)', () => {
+    // Simulate the op:exists pattern: Filter → Limit(1)
+    // The Filter should short-circuit after the first matching row.
+    const nodes: TargetedNode[] = [
+      jxaPlaceholder,                                                                 // 0: upstream rows
+      makeTargetedNode({ kind: 'Filter', source: 0, entity: 'tasks', predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),  // 1: Filter
+      makeTargetedNode({ kind: 'Limit', source: 1, n: 1 }, 'node'),                  // 2: Limit(1)
+    ];
+    const plan = makeTargetedPlan(nodes, 2);
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1, 2], inputs: vi(0), outputs: [], result: 2, dependsOn: [] };
+    const results = new Map<number, unknown>();
+    results.set(0, [
+      { id: 'id1', name: 'A', flagged: false },
+      { id: 'id2', name: 'B', flagged: true },
+      { id: 'id3', name: 'C', flagged: true },
+      { id: 'id4', name: 'D', flagged: true },
+    ]);
+
+    const value = executeNodeUnit(unit, plan, results) as any[];
+    assert.equal(value.length, 1, 'should return exactly 1 row');
+    assert.equal(value[0].id, 'id2', 'should return the first matching row');
+  });
+
+  it('produces correct results for Filter→Limit(2)', () => {
+    const nodes: TargetedNode[] = [
+      jxaPlaceholder,
+      makeTargetedNode({ kind: 'Filter', source: 0, entity: 'tasks', predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),
+      makeTargetedNode({ kind: 'Limit', source: 1, n: 2 }, 'node'),
+    ];
+    const plan = makeTargetedPlan(nodes, 2);
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1, 2], inputs: vi(0), outputs: [], result: 2, dependsOn: [] };
+    const results = new Map<number, unknown>();
+    results.set(0, [
+      { id: 'id1', flagged: false },
+      { id: 'id2', flagged: true },
+      { id: 'id3', flagged: false },
+      { id: 'id4', flagged: true },
+      { id: 'id5', flagged: true },
+    ]);
+
+    const value = executeNodeUnit(unit, plan, results) as any[];
+    assert.equal(value.length, 2, 'should return exactly 2 rows');
+    assert.equal(value[0].id, 'id2');
+    assert.equal(value[1].id, 'id4');
+  });
+
+  it('returns fewer rows when not enough matches exist', () => {
+    const nodes: TargetedNode[] = [
+      jxaPlaceholder,
+      makeTargetedNode({ kind: 'Filter', source: 0, entity: 'tasks', predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),
+      makeTargetedNode({ kind: 'Limit', source: 1, n: 5 }, 'node'),
+    ];
+    const plan = makeTargetedPlan(nodes, 2);
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1, 2], inputs: vi(0), outputs: [], result: 2, dependsOn: [] };
+    const results = new Map<number, unknown>();
+    results.set(0, [
+      { id: 'id1', flagged: false },
+      { id: 'id2', flagged: true },
+    ]);
+
+    const value = executeNodeUnit(unit, plan, results) as any[];
+    assert.equal(value.length, 1, 'should return all matching rows when fewer than limit');
+    assert.equal(value[0].id, 'id2');
+  });
+
+  it('does NOT fuse when Filter has multiple consumers', () => {
+    // Filter at ref 1 consumed by both Limit(ref 2) and Pick(ref 3)
+    // The fusion should not occur because the Filter is consumed by two nodes.
+    const nodes: TargetedNode[] = [
+      jxaPlaceholder,
+      makeTargetedNode({ kind: 'Filter', source: 0, entity: 'tasks', predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),  // 1
+      makeTargetedNode({ kind: 'Limit', source: 1, n: 1 }, 'node'),                  // 2
+      makeTargetedNode({ kind: 'Pick', source: 1, fields: ['id'] }, 'node'),          // 3
+    ];
+    const plan = makeTargetedPlan(nodes, 2);
+    // Unit includes all three node-side ops; Filter consumed by both Limit and Pick
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1, 2, 3], inputs: vi(0), outputs: [], result: 2, dependsOn: [] };
+    const results = new Map<number, unknown>();
+    results.set(0, [
+      { id: 'id1', name: 'A', flagged: false },
+      { id: 'id2', name: 'B', flagged: true },
+      { id: 'id3', name: 'C', flagged: true },
+    ]);
+
+    const value = executeNodeUnit(unit, plan, results) as any[];
+    // Even without fusion, Limit should produce 1 row
+    assert.equal(value.length, 1);
+    assert.equal(value[0].id, 'id2');
+
+    // The Pick at ref 3 should see ALL filtered rows (not short-circuited)
+    const pickResult = results.get(3) as any[];
+    assert.equal(pickResult.length, 2, 'Pick should see all filtered rows (no short-circuit)');
+  });
+
+  it('fuses null-predicate Filter with Limit (identity filter)', () => {
+    const nodes: TargetedNode[] = [
+      jxaPlaceholder,
+      makeTargetedNode({ kind: 'Filter', source: 0, predicate: null as any }, 'node'),
+      makeTargetedNode({ kind: 'Limit', source: 1, n: 2 }, 'node'),
+    ];
+    const plan = makeTargetedPlan(nodes, 2);
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1, 2], inputs: vi(0), outputs: [], result: 2, dependsOn: [] };
+    const results = new Map<number, unknown>();
+    results.set(0, [
+      { id: 'id1' },
+      { id: 'id2' },
+      { id: 'id3' },
+    ]);
+
+    const value = executeNodeUnit(unit, plan, results) as any[];
+    assert.equal(value.length, 2, 'fused null-predicate Filter+Limit should return 2 rows');
+    assert.equal(value[0].id, 'id1');
+    assert.equal(value[1].id, 'id2');
+  });
+
+  it('does NOT fuse when Sort is between Filter and Limit', () => {
+    // Filter → Sort → Limit: Limit's source is Sort, not Filter.
+    // Fusion must NOT fire because Sort needs all filtered rows to sort correctly.
+    const nodes: TargetedNode[] = [
+      jxaPlaceholder,                                                                         // 0
+      makeTargetedNode({ kind: 'Filter', source: 0, entity: 'tasks', predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } }, 'node'),  // 1
+      makeTargetedNode({ kind: 'Sort', source: 1, by: 'name', dir: 'asc' }, 'node'),         // 2
+      makeTargetedNode({ kind: 'Limit', source: 2, n: 1 }, 'node'),                          // 3
+    ];
+    const plan = makeTargetedPlan(nodes, 3);
+    const unit: ExecutionUnit = { runtime: 'node', nodes: [1, 2, 3], inputs: vi(0), outputs: [], result: 3, dependsOn: [] };
+    const results = new Map<number, unknown>();
+    results.set(0, [
+      { id: 'id1', name: 'Zebra', flagged: true },
+      { id: 'id2', name: 'Apple', flagged: true },
+      { id: 'id3', name: 'Mango', flagged: false },
+    ]);
+
+    const value = executeNodeUnit(unit, plan, results) as any[];
+    // Sort should see both flagged rows, sort them, then Limit takes the first
+    assert.equal(value.length, 1);
+    assert.equal(value[0].name, 'Apple', 'Sort must see all filtered rows before Limit — Apple comes first alphabetically');
   });
 });

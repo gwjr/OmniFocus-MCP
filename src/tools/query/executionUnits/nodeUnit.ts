@@ -12,7 +12,7 @@ import type { EventNode, Ref } from '../eventPlan.js';
 import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import { compileNodePredicate, type Row } from '../backends/nodeEval.js';
-import { computedVarDeps, getVarRegistry, type EntityType } from '../variables.js';
+import { getVarRegistry, type EntityType } from '../variables.js';
 
 // ── Computed var derivers (mirrored from executor.ts) ───────────────────
 
@@ -86,6 +86,7 @@ function execNode(ctx: ExecCtx, ref: Ref): unknown {
     case 'Union':        return execUnion(ctx, node);
     case 'RowCount':     return execRowCount(ctx, node);
     case 'AddSwitch':    return execAddSwitch(ctx, ref, node);
+    case 'SetOp':        return execSetOp(ctx, node);
     default:
       throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
   }
@@ -130,16 +131,32 @@ function execFilter(
   ctx: ExecCtx,
   ref: Ref,
   node: Extract<EventNode, { kind: 'Filter' }>,
+  limit?: number,
 ): Row[] {
   const source = resolve(ctx, node.source) as Row[];
 
   // Defensive: identity filter (null/true predicate) passes through unchanged.
   // Should be eliminated earlier by normalize or lowering, but guard here too.
-  if (node.predicate === null || node.predicate === true) return source;
+  if (node.predicate === null || node.predicate === true) {
+    return limit !== undefined ? source.slice(0, limit) : source;
+  }
 
   // Use entity annotation if present; fall back to inference
   const entity = node.entity ?? inferEntity(ctx, node.source);
   const predicate = compileNodePredicate(node.predicate, entity);
+
+  // Short-circuit: stop after `limit` matches when fused with a downstream Limit
+  if (limit !== undefined) {
+    const result: Row[] = [];
+    for (const row of source) {
+      if (predicate(row)) {
+        result.push(row);
+        if (result.length >= limit) break;
+      }
+    }
+    return result;
+  }
+
   return source.filter(row => !!predicate(row));
 }
 
@@ -183,6 +200,11 @@ function execHashJoin(
 ): Row[] {
   const source = resolve(ctx, node.source) as Row[];
   const lookup = resolve(ctx, node.lookup) as Row[];
+
+  // Mutates source rows in place (row[outputField] = value). Safe because the
+  // EventPlan SSA invariant guarantees each Ref has exactly one consumer —
+  // CSE eliminates structural duplicates before targeting, so no two HashJoin
+  // nodes can share the same source Ref and observe each other's mutations.
 
   // Check for count-aggregation mode: fieldMap = {'*': outputVarName}
   if ('*' in node.fieldMap) {
@@ -399,16 +421,46 @@ function execRowCount(
   return (resolve(ctx, node.source) as Row[]).length;
 }
 
+function execSetOp(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'SetOp' }>,
+): Set<string> {
+  const leftRaw  = resolve(ctx, node.left);
+  const rightRaw = resolve(ctx, node.right);
+
+  const leftSet  = leftRaw  instanceof Set ? leftRaw  as Set<string> : new Set(leftRaw  as string[]);
+  const rightSet = rightRaw instanceof Set ? rightRaw as Set<string> : new Set(rightRaw as string[]);
+
+  if (node.op === 'intersect') {
+    // Return elements in both sets
+    const result = new Set<string>();
+    for (const v of leftSet) {
+      if (rightSet.has(v)) result.add(v);
+    }
+    return result;
+  }
+
+  // subtract: left \ right
+  const result = new Set<string>();
+  for (const v of leftSet) {
+    if (!rightSet.has(v)) result.add(v);
+  }
+  return result;
+}
+
 // ── Entity inference ────────────────────────────────────────────────────
 
 /**
- * Walk the source chain backwards to find a Filter/Derive node that
- * might carry entity info, or fall back to 'tasks'.
+ * Walk the source chain backwards to find a Derive node that carries entity
+ * info, and return its entity type.
  *
- * For Filter nodes, we need to know the entity to compile the predicate.
- * Since the EventPlan IR doesn't carry entity on every node, we infer
- * it from Derive nodes (which have entity in their DeriveSpec) or
- * from the plan structure.
+ * For Filter and AddSwitch nodes, we need to know the entity to compile the
+ * predicate. The lowering pass injects `entity` directly on all Filter and
+ * AddSwitch nodes it emits, so in practice this function is never called on
+ * a node that actually needs inference. If it ever is — because a future
+ * caller omits the entity annotation — it throws rather than silently
+ * returning 'tasks' (which would produce wrong predicate behaviour for
+ * non-task entities).
  */
 function inferEntity(ctx: ExecCtx, ref: Ref): EntityType {
   const visited = new Set<Ref>();
@@ -431,8 +483,14 @@ function inferEntity(ctx: ExecCtx, ref: Ref): EntityType {
     }
   }
 
-  // Default fallback
-  return 'tasks';
+  // The lowering pass injects `entity` on all Filter/AddSwitch nodes it
+  // emits, so this should never be reached. If it is, the caller omitted
+  // an entity annotation — throw rather than silently returning the wrong entity.
+  throw new Error(
+    `nodeUnit: cannot infer entity for ref %${ref} — ` +
+    `Filter and AddSwitch nodes must carry an explicit 'entity' annotation. ` +
+    `This is a lowering bug.`
+  );
 }
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -456,11 +514,108 @@ export function executeNodeUnit(
 
   const ctx: ExecCtx = { plan, results };
 
+  // Pre-compute Filter+Limit fusion opportunities.
+  // A Filter can be fused with a downstream Limit if:
+  //   (1) the Limit's source is the Filter's ref
+  //   (2) no other node in the unit consumes the Filter's ref
+  const fusedFilters = detectFilterLimitFusion(unit, plan);
+
   // Execute nodes in SSA order
   for (const ref of unit.nodes) {
+    // Skip Filter nodes that will be fused into their downstream Limit
+    if (fusedFilters.has(ref)) continue;
+
+    const node = plan.nodes[ref];
+
+    // Fused Limit: execute the source Filter with a limit hint
+    if (node.kind === 'Limit' && fusedFilters.has(node.source)) {
+      const filterNode = plan.nodes[node.source] as Extract<EventNode, { kind: 'Filter' }>;
+      const filterResult = execFilter(ctx, node.source, filterNode, node.n);
+      results.set(node.source, filterResult);
+      results.set(ref, filterResult);  // Limit result = fused result (already truncated)
+      continue;
+    }
+
     const value = execNode(ctx, ref);
     results.set(ref, value);
   }
 
   return results.get(unit.result);
+}
+
+/**
+ * Detect Filter refs that can be fused with a downstream Limit.
+ *
+ * A Filter at ref F is fusable if:
+ *   - There exists a Limit node L in the same unit with L.source === F
+ *   - No other node in the unit references F (the Filter result is only
+ *     consumed by the Limit, so short-circuiting doesn't drop rows that
+ *     another node needs)
+ *
+ * Returns a Set of Filter refs that should be fused (skipped during
+ * standalone execution and handled by their Limit instead).
+ */
+function detectFilterLimitFusion(
+  unit: ExecutionUnit,
+  plan: TargetedEventPlan,
+): Set<Ref> {
+  const unitNodes = new Set(unit.nodes);
+  const fused = new Set<Ref>();
+
+  // Count how many times each ref is consumed within this unit
+  const refConsumers = new Map<Ref, number>();
+  for (const ref of unit.nodes) {
+    const node = plan.nodes[ref];
+    for (const inputRef of collectNodeInputRefs(node)) {
+      if (unitNodes.has(inputRef)) {
+        refConsumers.set(inputRef, (refConsumers.get(inputRef) || 0) + 1);
+      }
+    }
+  }
+
+  // Find Limit nodes whose source is a Filter with exactly 1 consumer (the Limit itself)
+  for (const ref of unit.nodes) {
+    const node = plan.nodes[ref];
+    if (node.kind !== 'Limit') continue;
+    if (!unitNodes.has(node.source)) continue;
+
+    const sourceNode = plan.nodes[node.source];
+    if (sourceNode.kind !== 'Filter') continue;
+
+    const consumers = refConsumers.get(node.source) || 0;
+    if (consumers === 1) {
+      fused.add(node.source);
+    }
+  }
+
+  return fused;
+}
+
+/** Extract input refs from a node (subset of collectRefs from eventPlanUtils). */
+function collectNodeInputRefs(node: EventNode): Ref[] {
+  switch (node.kind) {
+    case 'Filter':
+    case 'Sort':
+    case 'Limit':
+    case 'Pick':
+    case 'Derive':
+    case 'ColumnValues':
+    case 'Flatten':
+    case 'RowCount':
+    case 'AddSwitch':
+      return [(node as { source: Ref }).source];
+    case 'SemiJoin':
+      return [node.source, node.ids];
+    case 'HashJoin':
+      return [node.source, node.lookup];
+    case 'Union':
+    case 'SetOp':
+      return [(node as { left: Ref }).left, (node as { right: Ref }).right];
+    case 'Zip':
+      return node.columns.map(c => c.ref);
+    case 'ForEach':
+      return [node.source];
+    default:
+      return [];
+  }
 }
