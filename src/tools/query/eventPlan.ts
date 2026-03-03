@@ -204,6 +204,31 @@ export type EventNode =
   | { kind: 'Derive';
       source:      Ref;
       derivations: DeriveSpec[];
+    }
+
+  // Set union (OR semantics).
+  // Concatenates rows from left and right, deduped by id.
+  // When both sides have a row for the same id, left wins.
+  | { kind: 'Union';
+      left:  Ref;
+      right: Ref;
+    }
+
+  // Counts rows in a row array. Produces a scalar number.
+  // Terminal — the result ref holds a number, not a Row[].
+  | { kind: 'RowCount';
+      source: Ref;
+    }
+
+  // Adds a computed column to each row in source.
+  // Evaluates cases in priority order; assigns the first matching value.
+  // Falls back to default; if default is 'error', throws when no case matches.
+  | { kind: 'AddSwitch';
+      source:  Ref;
+      entity?: EntityType;   // entity context for predicate compilation (needed by nodeUnit)
+      column:  string;
+      cases:   Array<{ predicate: LoweredExpr; value: LoweredExpr }>;
+      default: LoweredExpr | 'error';
     };
 
 // ── EventPlan ────────────────────────────────────────────────────────────────

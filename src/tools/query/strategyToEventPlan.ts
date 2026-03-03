@@ -23,7 +23,7 @@ const ENTITY_CLASS_CODE: Record<string, FourCC> = {
   tags:     OFClass.flattenedTag,
 };
 
-function classCode(entity: EntityType): FourCC {
+export function classCode(entity: EntityType): FourCC {
   const code = ENTITY_CLASS_CODE[entity];
   if (!code) throw new Error(`No class code for entity: ${entity}`);
   return code;
@@ -37,7 +37,7 @@ function classCode(entity: EntityType): FourCC {
 //   • Chain:   { kind: 'chain', relation: FourCC, terminal: FourCC }
 //     → Get(Property(Property(elements, relation), terminal))  e.g. .containingProject.name()
 
-type PropSpec =
+export type PropSpec =
   | { kind: 'simple'; code: FourCC }
   | { kind: 'chain';  relation: FourCC; terminal: FourCC };
 
@@ -118,7 +118,8 @@ const CHAIN_PROPS: Record<string, Record<string, { relation: FourCC; terminal: F
     parentId:    { relation: OFTaskProp.parentTask,         terminal: OFTaskProp.id },
   },
   projects: {
-    folderId:  { relation: OFProjectProp.container, terminal: OFProjectProp.id },
+    folderId:   { relation: OFProjectProp.container, terminal: OFProjectProp.id },
+    folderName: { relation: OFProjectProp.container, terminal: OFProjectProp.name },
   },
   folders: {
     parentFolderId: { relation: OFFolderProp.container, terminal: OFFolderProp.id },
@@ -130,7 +131,7 @@ const CHAIN_PROPS: Record<string, Record<string, { relation: FourCC; terminal: F
 };
 
 /** Resolve a variable name to a PropSpec (simple or chain). */
-function propSpec(entity: EntityType, varName: string): PropSpec {
+export function propSpec(entity: EntityType, varName: string): PropSpec {
   // Check chain properties first (more specific)
   const chainTable = CHAIN_PROPS[entity];
   if (chainTable && chainTable[varName]) {
@@ -162,7 +163,7 @@ function propCode(entity: EntityType, varName: string): FourCC {
 
 // ── Active filter expressions ───────────────────────────────────────────
 
-function activeFilterExpr(entity: EntityType): LoweredExpr {
+export function activeFilterExpr(entity: EntityType): LoweredExpr {
   switch (entity) {
     case 'tasks':
       return {
@@ -184,7 +185,7 @@ function activeFilterExpr(entity: EntityType): LoweredExpr {
 }
 
 /** Variable names referenced by the active filter for a given entity. */
-function activeFilterVars(entity: EntityType): string[] {
+export function activeFilterVars(entity: EntityType): string[] {
   switch (entity) {
     case 'tasks':    return ['effectivelyCompleted', 'effectivelyDropped'];
     case 'projects': return ['status'];

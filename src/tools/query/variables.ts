@@ -121,7 +121,9 @@ export const projectVars: VarRegistry = {
   // must cross-reference against known folder IDs and treat non-folder containers as null.
   folderId:           str( 'folderId',           'container',             'chain'),
 
-  // per-item: container.name() returns null for folders, so folderName must use per-item
+  // per-item: container.name() — null for root-level projects (container is the document).
+  // The legacy pipeline routes this through PerItemEnrich; the SetIR pipeline routes it
+  // through Enrich, which uses the chain prop spec from strategyToEventPlan.ts.
   folderName:         str( 'folderName',         null,                    'per-item'),
 
   // expensive

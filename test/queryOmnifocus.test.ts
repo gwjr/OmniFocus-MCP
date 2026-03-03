@@ -1,5 +1,6 @@
 /**
- * Unit tests for queryOmnifocus mandatory task fields and formatting.
+ * Unit tests for queryOmnifocus mandatory task fields and formatting,
+ * and the op:'get'|'count'|'exists' parameter.
  */
 
 import { describe, it } from 'node:test';
@@ -9,6 +10,7 @@ import {
   augmentTaskSelect,
   injectMandatoryTaskFields,
 } from '../dist/tools/primitives/queryOmnifocus.js';
+import { schema } from '../dist/tools/definitions/queryOmnifocus.js';
 
 // ── augmentTaskSelect ─────────────────────────────────────────────────────
 
@@ -87,5 +89,39 @@ describe('injectMandatoryTaskFields', () => {
     const rows = [original];
     injectMandatoryTaskFields(rows);
     assert.ok('status' in original, 'original row should still have status');
+  });
+});
+
+// ── op parameter — schema validation ─────────────────────────────────────
+
+describe('query schema — op parameter', () => {
+  it('accepts op:get', () => {
+    assert.doesNotThrow(() => schema.parse({ entity: 'tasks', op: 'get' }));
+  });
+
+  it('accepts op:count', () => {
+    assert.doesNotThrow(() => schema.parse({ entity: 'tasks', op: 'count' }));
+  });
+
+  it('accepts op:exists', () => {
+    assert.doesNotThrow(() => schema.parse({ entity: 'tasks', op: 'exists' }));
+  });
+
+  it('rejects unknown op', () => {
+    assert.throws(() => schema.parse({ entity: 'tasks', op: 'delete' }));
+  });
+
+  it('op is optional (defaults to get implicitly)', () => {
+    const parsed = schema.parse({ entity: 'tasks' });
+    assert.equal(parsed.op, undefined);
+  });
+
+  it('accepts summary:true alongside op (deprecated shim)', () => {
+    assert.doesNotThrow(() => schema.parse({ entity: 'tasks', summary: true }));
+  });
+
+  it('op and summary can coexist (op takes precedence at runtime)', () => {
+    // Schema does not reject this combination — runtime resolves it
+    assert.doesNotThrow(() => schema.parse({ entity: 'tasks', op: 'count', summary: true }));
   });
 });

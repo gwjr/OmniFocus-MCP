@@ -2,10 +2,11 @@
 /**
  * Pipeline Comparison Benchmark
  *
- * Runs 8 representative queries through both the legacy pipeline
- * (compileQuery + executeCompiledQuery) and the new EventPlan pipeline
- * (lowerStrategy + cseEventPlan + executeEventPlanPipeline), measuring
- * wall-clock time for each.
+ * Runs 8 representative queries through both the legacy EventPlan pipeline
+ * (StrategyNode → lowerStrategy → cseEventPlan → executeEventPlanPipeline)
+ * and the new SetIR pipeline (lowerToSetIr → lowerSetIrToEventPlan →
+ * cseEventPlan → pruneColumns → executeEventPlan), measuring wall-clock
+ * time for each.
  *
  * 3 runs per query per pipeline; reports median. Pipelines run
  * sequentially to avoid OmniFocus contention.
@@ -20,15 +21,21 @@
 
 import { lowerExpr } from '../dist/tools/query/lower.js';
 import { buildPlanTree } from '../dist/tools/query/planner.js';
-import { executeCompiledQuery } from '../dist/tools/query/executor.js';
-import { compileQuery } from '../dist/tools/query/compile.js';
-import { JxaEmitter } from '../dist/tools/query/emitters/jxaEmitter.js';
 import { optimize } from '../dist/tools/query/strategy.js';
 import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
 import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
 import { selfJoinEliminationPass } from '../dist/tools/query/optimizations/selfJoinElimination.js';
 import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
 import { executeEventPlanPipeline } from '../dist/tools/query/executionUnits/orchestrator.js';
+
+// SetIR pipeline imports
+import { lowerToSetIr, optimizeSetIr } from '../dist/tools/query/lowerToSetIr.js';
+import { lowerSetIrToEventPlan } from '../dist/tools/query/lowerSetIrToEventPlan.js';
+import { cseEventPlan } from '../dist/tools/query/eventPlanCSE.js';
+import { pruneColumns } from '../dist/tools/query/eventPlanColumnPrune.js';
+import { executeEventPlan } from '../dist/tools/query/executionUnits/orchestrator.js';
+import type { LoweredExpr } from '../dist/tools/query/fold.js';
+import type { EntityType } from '../dist/tools/query/variables.js';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -97,6 +104,28 @@ const queries: QuerySpec[] = [
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+// ── Active filters (match legacy default: includeCompleted=false) ────────
+
+function activeFilterForEntity(entity: EntityType): LoweredExpr | null {
+  switch (entity) {
+    case 'tasks':
+      return {
+        op: 'and', args: [
+          { op: 'not', args: [{ var: 'effectivelyCompleted' }] },
+          { op: 'not', args: [{ var: 'effectivelyDropped'   }] },
+        ],
+      };
+    case 'projects':
+      return { op: 'in', args: [{ var: 'status' }, ['Active', 'OnHold']] };
+    case 'tags':
+      return { op: 'not', args: [{ var: 'effectivelyHidden' }] };
+    case 'folders':
+      return null;
+    default:
+      return null;
+  }
+}
+
 function buildOptimizedTree(q: QuerySpec) {
   const ast = q.where != null ? lowerExpr(q.where) : true;
   let tree = buildPlanTree(ast, q.entity as any, q.select, false);
@@ -118,22 +147,14 @@ function fmtMs(ms: number): string {
     : `${(ms / 1000).toFixed(2)}s`;
 }
 
-function fmtDelta(legacyMs: number, eventPlanMs: number): string {
-  if (legacyMs === 0) return 'N/A';
-  const pct = ((eventPlanMs - legacyMs) / legacyMs) * 100;
+function fmtDelta(baseMs: number, newMs: number): string {
+  if (baseMs === 0) return 'N/A';
+  const pct = ((newMs - baseMs) / baseMs) * 100;
   const sign = pct >= 0 ? '+' : '';
   return `${sign}${pct.toFixed(1)}%`;
 }
 
 // ── Pipeline runners ─────────────────────────────────────────────────────
-
-async function timeLegacy(q: QuerySpec): Promise<number> {
-  const tree = buildOptimizedTree(q);
-  const compiled = compileQuery(tree, new JxaEmitter());
-  const t0 = performance.now();
-  await executeCompiledQuery(compiled);
-  return performance.now() - t0;
-}
 
 async function timeEventPlan(q: QuerySpec): Promise<number> {
   const tree = buildOptimizedTree(q);
@@ -142,24 +163,61 @@ async function timeEventPlan(q: QuerySpec): Promise<number> {
   return performance.now() - t0;
 }
 
+async function timeSetIr(q: QuerySpec): Promise<number> {
+  const entity = q.entity as EntityType;
+  const baseAst: LoweredExpr = q.where != null ? lowerExpr(q.where) : null;
+
+  let predicate: LoweredExpr = baseAst;
+  const activeFilter = activeFilterForEntity(entity);
+  if (activeFilter !== null) {
+    predicate = predicate !== null
+      ? { op: 'and', args: [predicate, activeFilter] }
+      : activeFilter;
+  }
+
+  let plan = lowerToSetIr({
+    predicate: predicate ?? true,
+    entity,
+    op: 'get',
+    select: q.select,
+  });
+
+  if (entity === 'tasks') {
+    plan = {
+      kind: 'Difference',
+      left: plan,
+      right: { kind: 'Scan', entity: 'projects', columns: ['id'] },
+    };
+  }
+
+  plan = optimizeSetIr(plan);
+
+  const t0 = performance.now();
+  const ep = lowerSetIrToEventPlan(plan, q.select);
+  const csed = cseEventPlan(ep);
+  const pruned = pruneColumns(csed);
+  await executeEventPlan(pruned);
+  return performance.now() - t0;
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────
 
 interface Result {
   label: string;
   entity: string;
-  legacyMedian: number;
   eventPlanMedian: number;
+  setIrMedian: number;
 }
 
 async function main() {
-  console.error(`Pipeline Comparison Benchmark`);
+  console.error(`Pipeline Comparison: EventPlan vs SetIR`);
   console.error(`${RUNS} runs per query per pipeline, reporting median\n`);
 
-  // Warm-up: run one trivial query through each pipeline to absorb startup costs
+  // Warm-up
   console.error('Warming up...');
   const warmup = queries[queries.length - 1]; // folders — smallest
-  await timeLegacy(warmup);
   await timeEventPlan(warmup);
+  await timeSetIr(warmup);
   console.error('Warm-up complete.\n');
 
   const results: Result[] = [];
@@ -167,48 +225,48 @@ async function main() {
   for (const q of queries) {
     console.error(`  ${q.label} [${q.entity}]`);
 
-    // Legacy runs
-    const legacyTimes: number[] = [];
-    for (let i = 0; i < RUNS; i++) {
-      const ms = await timeLegacy(q);
-      legacyTimes.push(ms);
-      console.error(`    legacy run ${i + 1}: ${fmtMs(ms)}`);
-    }
-
-    // EventPlan runs
-    const eventPlanTimes: number[] = [];
+    // EventPlan (StrategyNode path) runs
+    const epTimes: number[] = [];
     for (let i = 0; i < RUNS; i++) {
       const ms = await timeEventPlan(q);
-      eventPlanTimes.push(ms);
+      epTimes.push(ms);
       console.error(`    eventPlan run ${i + 1}: ${fmtMs(ms)}`);
+    }
+
+    // SetIR runs
+    const setIrTimes: number[] = [];
+    for (let i = 0; i < RUNS; i++) {
+      const ms = await timeSetIr(q);
+      setIrTimes.push(ms);
+      console.error(`    setIR run ${i + 1}: ${fmtMs(ms)}`);
     }
 
     results.push({
       label: q.label,
       entity: q.entity,
-      legacyMedian: median(legacyTimes),
-      eventPlanMedian: median(eventPlanTimes),
+      eventPlanMedian: median(epTimes),
+      setIrMedian: median(setIrTimes),
     });
   }
 
   // Compute totals
-  const totalLegacy = results.reduce((s, r) => s + r.legacyMedian, 0);
-  const totalEventPlan = results.reduce((s, r) => s + r.eventPlanMedian, 0);
+  const totalEP = results.reduce((s, r) => s + r.eventPlanMedian, 0);
+  const totalSetIr = results.reduce((s, r) => s + r.setIrMedian, 0);
 
   // Output markdown table to stdout
-  console.log('# Pipeline Comparison Benchmark');
+  console.log('# Pipeline Comparison: EventPlan vs SetIR');
   console.log('');
   console.log(`${RUNS} runs per query, median reported.`);
   console.log('');
-  console.log('| Query | Entity | Legacy | EventPlan | Delta |');
-  console.log('|-------|--------|--------|-----------|-------|');
+  console.log('| Query | Entity | EventPlan | SetIR | Delta |');
+  console.log('|-------|--------|-----------|-------|-------|');
   for (const r of results) {
     console.log(
-      `| ${r.label} | ${r.entity} | ${fmtMs(r.legacyMedian)} | ${fmtMs(r.eventPlanMedian)} | ${fmtDelta(r.legacyMedian, r.eventPlanMedian)} |`,
+      `| ${r.label} | ${r.entity} | ${fmtMs(r.eventPlanMedian)} | ${fmtMs(r.setIrMedian)} | ${fmtDelta(r.eventPlanMedian, r.setIrMedian)} |`,
     );
   }
   console.log(
-    `| **Total** | | **${fmtMs(totalLegacy)}** | **${fmtMs(totalEventPlan)}** | **${fmtDelta(totalLegacy, totalEventPlan)}** |`,
+    `| **Total** | | **${fmtMs(totalEP)}** | **${fmtMs(totalSetIr)}** | **${fmtDelta(totalEP, totalSetIr)}** |`,
   );
   console.log('');
   console.log(`_Generated ${new Date().toISOString()}_`);

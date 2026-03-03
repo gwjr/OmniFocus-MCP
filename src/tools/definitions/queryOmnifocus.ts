@@ -36,8 +36,12 @@ export const schema = z.object({
     "Include completed and dropped items. Default: false (active items only)"
   ),
 
+  op: z.enum(['get', 'count', 'exists']).optional().describe(
+    "Query operation. 'get' (default) returns matching items. 'count' returns the number of matches — avoids reading output-only columns, so faster when note/expensive fields are in select. 'exists' returns true/false and stops after the first match (fastest for presence checks)."
+  ),
+
   summary: z.boolean().optional().describe(
-    "Return only count of matches, not full details. Efficient for statistics. Default: false"
+    "Deprecated — use op:'count' instead. Returns only the count of matches."
   )
 });
 
@@ -49,41 +53,59 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     const result = await queryOmnifocus(args as QueryOmnifocusParams);
 
     if (result.success) {
-      if (args.summary) {
-        const noun = result.count === 1 ? singularEntity(args.entity) : args.entity;
+      // Resolve effective op (mirrors the primitive's logic)
+      const effectiveOp = args.op ?? (args.summary ? 'count' : 'get');
+
+      if (effectiveOp === 'count') {
+        const count = result.count ?? 0;
+        const noun = count === 1 ? singularEntity(args.entity) : args.entity;
         return {
           content: [{
             type: "text" as const,
             text: appendCoercionWarnings(
-              result.count === 0
+              count === 0
                 ? `No ${args.entity} found${queryDesc}`
-                : `Found ${result.count} ${noun}${queryDesc}`
+                : `Found ${count} ${noun}${queryDesc}`
             )
           }]
         };
-      } else {
-        const items = result.items || [];
-        let output: string;
+      }
 
-        if (items.length === 0) {
-          output = `No ${args.entity} found${queryDesc}`;
-        } else {
-          const noun = items.length === 1 ? singularEntity(args.entity) : args.entity;
-          output = `## Query Results: ${items.length} ${noun}${queryDesc}\n\n`;
-          output += formatItems(items, args.entity);
-        }
-
-        if (items.length > 0 && items.length === args.limit) {
-          output += `\n\n--- Results limited to ${args.limit} items. More may be available.`;
-        }
-
+      if (effectiveOp === 'exists') {
         return {
           content: [{
             type: "text" as const,
-            text: appendCoercionWarnings(output)
+            text: appendCoercionWarnings(
+              result.exists
+                ? `Yes — at least one ${singularEntity(args.entity)} found${queryDesc}`
+                : `No ${args.entity} found${queryDesc}`
+            )
           }]
         };
       }
+
+      // 'get': return items
+      const items = result.items || [];
+      let output: string;
+
+      if (items.length === 0) {
+        output = `No ${args.entity} found${queryDesc}`;
+      } else {
+        const noun = items.length === 1 ? singularEntity(args.entity) : args.entity;
+        output = `## Query Results: ${items.length} ${noun}${queryDesc}\n\n`;
+        output += formatItems(items, args.entity);
+      }
+
+      if (items.length > 0 && items.length === args.limit) {
+        output += `\n\n--- Results limited to ${args.limit} items. More may be available.`;
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: appendCoercionWarnings(output)
+        }]
+      };
     } else {
       return {
         content: [{

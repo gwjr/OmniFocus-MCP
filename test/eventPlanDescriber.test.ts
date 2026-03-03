@@ -90,8 +90,9 @@ describe('describeTargetedEventPlan', () => {
   it('shows unit headers when units are provided', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
     ]);
     const { targeted, units } = targetEventPlan(plan);
     const output = describeTargetedEventPlan(targeted, units);
@@ -129,14 +130,15 @@ describe('describeExecutionUnit', () => {
   it('renders cross-unit inputs and dependsOn', () => {
     const plan = makePlan([
       { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
+      { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'ID  ' }, effect: 'nonMutating' },
       { kind: 'Get', specifier: { kind: 'Property', parent: 0, propCode: 'pnam' }, effect: 'nonMutating' },
-      { kind: 'Zip', columns: [{ name: 'id', ref: 0 }, { name: 'name', ref: 1 }] },
+      { kind: 'Zip', columns: [{ name: 'id', ref: 1 }, { name: 'name', ref: 2 }] },
     ]);
     const { targeted, units } = targetEventPlan(plan);
     const nodeUnit = units.find(u => u.runtime === 'node')!;
     assert.ok(nodeUnit, 'should have a node unit');
     const output = describeExecutionUnit(nodeUnit, targeted, 1);
-    assert.ok(output.includes('inputs: [%0, %1]'), 'should show cross-unit inputs');
+    assert.ok(output.includes('inputs: [%1, %2]'), 'should show cross-unit inputs');
     assert.ok(output.includes('dependsOn: 1 unit(s)'), 'should show dependency count');
   });
 
