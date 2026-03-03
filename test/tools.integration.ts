@@ -150,7 +150,8 @@ describe('integration: query tool', () => {
         ],
       },
     } as any, {});
-    assertMcpResponse(result, 'due filter');
+    const r = assertMcpResponse(result, 'due filter');
+    assertSuccess(r, 'due filter');
   });
 
   it('projects — returns non-empty results', async () => {
@@ -187,7 +188,8 @@ describe('integration: query tool', () => {
 
   it('folders — returns results', async () => {
     const result = await queryTool.handler({ entity: 'folders' } as any, {});
-    assertMcpResponse(result, 'folders');
+    const r = assertMcpResponse(result, 'folders');
+    assertSuccess(r, 'folders');
   });
 });
 
@@ -364,9 +366,8 @@ describe('integration: no raw JSON output', () => {
   it('query folders — human-readable, not JSON', async () => {
     const result = await queryTool.handler({ entity: 'folders' } as any, {});
     const r = assertMcpResponse(result, 'query folders noJSON');
-    if (!r.isError) {
-      assertNotRawJson(r.content[0].text, 'query folders');
-    }
+    assertSuccess(r, 'query folders noJSON');
+    assertNotRawJson(r.content[0].text, 'query folders');
   });
 
   it('view inbox — human-readable, not JSON', async () => {
