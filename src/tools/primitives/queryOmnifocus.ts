@@ -16,6 +16,7 @@
  */
 
 import { lowerExpr, LowerError } from '../query/lower.js';
+import { normalizeAst } from '../query/normalizeAst.js';
 import { buildPlanTree } from '../query/planner.js';
 import { executeCompiledQuery } from '../query/executor.js';
 import { compileQuery } from '../query/compile.js';
@@ -81,10 +82,14 @@ const PASSES = [tagSemiJoinPass, crossEntityJoinPass, selfJoinEliminationPass, n
 export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<QueryResult> {
   const t0 = Date.now();
   try {
-    // Step 1: Lower the where clause
+    // Step 1: Lower and normalise the where clause.
+    // normalizeAst applies here only (WHERE predicate). When op:'count'/'exists'
+    // is added as a top-level param, this block will restructure but the
+    // normalizeAst call stays glued to the WHERE expression.
     let ast: LoweredExpr;
     try {
-      ast = (params.where != null ? lowerExpr(params.where) : true) as LoweredExpr;
+      const lowered = params.where != null ? lowerExpr(params.where) : true;
+      ast = normalizeAst(lowered as LoweredExpr) as LoweredExpr;
     } catch (e) {
       if (e instanceof LowerError) {
         logQuery({ where: params.where, entity: params.entity, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: e.message });
