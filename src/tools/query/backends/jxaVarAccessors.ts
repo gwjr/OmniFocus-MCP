@@ -37,6 +37,7 @@ export const taskJxaAccessors: JxaAccessorRegistry = {
   parentId:             v => `(${v}.parent ? ${v}.parent.id.primaryKey : null)`,
   tags:                 v => `${v}.tags.map(function(t){return t.name.toLowerCase();})`,
   status:               v => `taskStatusMap[${v}.taskStatus]`,
+  taskStatus:           v => `taskStatusMap[${v}.taskStatus]`,  // user-facing alias for status
   hasChildren:          v => `(${v}.children ? ${v}.children.length > 0 : false)`,
   note:                 v => `(${v}.note || "")`,
   now:                  _  => '_now',

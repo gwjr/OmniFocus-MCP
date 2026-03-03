@@ -29,6 +29,7 @@ export type VarRegistry = Record<string, VarDef>;
 export const computedVarDeps: Record<string, Record<string, string[]>> = {
   tasks: {
     status: ['completed', 'dropped', 'blocked', 'dueDate'],
+    taskStatus: ['completed', 'dropped', 'blocked', 'dueDate'],  // alias for status
     hasChildren: ['childCount'],
   },
   folders: {
@@ -86,6 +87,7 @@ export const taskVars: VarRegistry = {
 
   // computed: derived in Node from other bulk-readable properties
   status:               enm( 'status',               null,                    'computed'),
+  taskStatus:           enm( 'status',               null,                    'computed'),  // user-facing alias for status
   hasChildren:          bool('hasChildren',          null,                    'computed'),
 
   // expensive

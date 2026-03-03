@@ -111,11 +111,13 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     const strategy = planPathLabel(tree);
 
     // Step 5: Compile and execute (legacy or EventPlan pipeline)
-    // Perspectives have no Apple Events class code, so always use the
-    // legacy executor which has a dedicated OmniJS handler for them.
+    // Perspectives have no Apple Events class code; FallbackScan queries
+    // use OmniJS-compiled predicates (container filters, expensive vars)
+    // that the EventPlan Filter node can't evaluate. Both use the legacy
+    // executor.
     let rows: Row[];
 
-    if (USE_EVENT_PLAN && params.entity !== 'perspectives') {
+    if (USE_EVENT_PLAN && params.entity !== 'perspectives' && strategy !== 'fallback') {
       // New EventPlan IR pipeline:
       // StrategyNode → EventPlan → CSE → assignRuntimes → split → execute
       const orchResult = await executeEventPlanPipeline(tree);
