@@ -50,12 +50,12 @@ describe('planner — path selection', () => {
     assert.ok(enrich.perItemVars.has('folderName'));
   });
 
-  it('projects entity with folder container → omnijs-fallback', () => {
+  it('projects entity with folder container → semijoin', () => {
     const tree = plan(
       { container: ['folder', { contains: [{ var: 'name' }, 'Legal'] }] },
       'projects'
     );
-    assert.equal(planPathLabel(tree), 'fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
   });
 
   it('folders entity with easy vars → broad', () => {
@@ -79,7 +79,7 @@ describe('planner — path selection', () => {
     assert.equal(planPathLabel(tree), 'broad');
   });
 
-  it('folder container at any depth → omnijs-fallback', () => {
+  it('folder container in top-level and → semijoin with Filter remainder', () => {
     const tree = plan(
       { and: [
         { container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] },
@@ -87,7 +87,11 @@ describe('planner — path selection', () => {
       ]},
       'tasks'
     );
-    assert.equal(planPathLabel(tree), 'fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
+    // The container is extracted; the remainder is a Filter
+    assert.equal(tree.kind, 'Filter');
+    const filter = tree as Extract<StrategyNode, { kind: 'Filter' }>;
+    assert.equal(filter.source.kind, 'SemiJoin');
   });
 
   it('folder container under or → omnijs-fallback', () => {
@@ -244,15 +248,15 @@ describe('planner — tags entity', () => {
     assert.equal(planPathLabel(tree), 'fallback');
   });
 
-  it('tags with tag container → omnijs-fallback', () => {
+  it('tags with tag container → semijoin', () => {
     const tree = plan(
       { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
       'tags'
     );
-    assert.equal(planPathLabel(tree), 'fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
   });
 
-  it('tags with tag container nested in and → omnijs-fallback', () => {
+  it('tags with tag container nested in and → semijoin with Filter', () => {
     const tree = plan(
       { and: [
         { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
@@ -260,7 +264,10 @@ describe('planner — tags entity', () => {
       ]},
       'tags'
     );
-    assert.equal(planPathLabel(tree), 'fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
+    assert.equal(tree.kind, 'Filter');
+    const filter = tree as Extract<StrategyNode, { kind: 'Filter' }>;
+    assert.equal(filter.source.kind, 'SemiJoin');
   });
 
   it('tags with per-item var in select only → two-phase', () => {
@@ -378,10 +385,12 @@ describe('extractContainerScope', () => {
     assert.equal(remainder.op, 'eq');
   });
 
-  it('returns null for folder container', () => {
+  it('extracts folder container with compilable scope', () => {
     const ast = lowerExpr({ container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] }) as LoweredExpr;
     const result = extractContainerScope(ast);
-    assert.equal(result, null);
+    assert.ok(result);
+    assert.equal(result.type, 'folder');
+    assert.equal(result.remainder, true);
   });
 
   it('returns null for non-container top-level', () => {
