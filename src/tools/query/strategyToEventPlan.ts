@@ -193,6 +193,82 @@ function activeFilterVars(entity: EntityType): string[] {
   }
 }
 
+// ── Project scope helper ─────────────────────────────────────────────────
+
+/**
+ * Parse a project scope predicate (from the planner's extractContainerScope)
+ * into a match type and value string.
+ *
+ * Valid shapes (the only ones canCompileScope allows):
+ *   { op: 'eq',       args: [{ op: 'var', args: ['name'] }, 'exact name'] }
+ *   { op: 'contains', args: [{ op: 'var', args: ['name'] }, 'partial'] }
+ */
+function parseScopeExpr(scope: LoweredExpr): { match: 'eq' | 'contains'; value: string } {
+  if (typeof scope !== 'object' || scope === null || Array.isArray(scope)) {
+    throw new Error('strategyToEventPlan: invalid projectScope — expected AST node');
+  }
+  const node = scope as { op: string; args: LoweredExpr[] };
+  if (node.op === 'eq' || node.op === 'contains') {
+    const value = node.args[1];
+    if (typeof value === 'string') {
+      return { match: node.op as 'eq' | 'contains', value };
+    }
+  }
+  throw new Error(`strategyToEventPlan: unsupported projectScope op '${node.op}'`);
+}
+
+/**
+ * Emit a single EventPlan Get node for a project-scoped task collection:
+ *   flattenedProjects.whose({name: ...})[0].flattenedTasks
+ *
+ * The entire chain is encoded as a nested specifier so the JXA emitter
+ * produces a single expression — no intermediate Get() materializations
+ * that would break the AE reference chain.
+ *
+ * Returns the Ref for the task elements collection.
+ */
+function emitProjectScopedElements(
+  push: (n: EventNode) => Ref,
+  scope: LoweredExpr,
+): Ref {
+  const { match, value } = parseScopeExpr(scope);
+
+  // Nested specifier:
+  //   Elements(
+  //     ByIndex(
+  //       Whose(
+  //         Elements(Document, flattenedProject),
+  //         pnam, eq|contains, "value"
+  //       ),
+  //       0
+  //     ),
+  //     flattenedTask
+  //   )
+  return push({
+    kind: 'Get',
+    specifier: {
+      kind: 'Elements',
+      parent: {
+        kind: 'ByIndex',
+        parent: {
+          kind: 'Whose',
+          parent: {
+            kind: 'Elements',
+            parent: { kind: 'Document' },
+            classCode: classCode('projects'),
+          },
+          prop: OFProjectProp.name,
+          match,
+          value,
+        },
+        index: 0,
+      },
+      classCode: classCode('tasks'),
+    },
+    effect: 'nonMutating',
+  });
+}
+
 // ── Builder ─────────────────────────────────────────────────────────────
 
 function builder() {
@@ -214,16 +290,23 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
 
       // ── Leaf: BulkScan ────────────────────────────────────────────
       case 'BulkScan': {
-        // %0 = Get(Elements(Document, classCode))
-        const elemRef = push({
-          kind: 'Get',
-          specifier: {
-            kind: 'Elements',
-            parent: { kind: 'Document' },
-            classCode: classCode(node.entity),
-          },
-          effect: 'nonMutating',
-        });
+        // Build the elements specifier — either broad or project-scoped
+        let elemRef: Ref;
+        if (node.projectScope && node.entity === 'tasks') {
+          // Project-scoped: flattenedProjects.whose({name:...})[0].flattenedTasks
+          elemRef = emitProjectScopedElements(push, node.projectScope);
+        } else {
+          // Broad: Elements(Document, classCode)
+          elemRef = push({
+            kind: 'Get',
+            specifier: {
+              kind: 'Elements',
+              parent: { kind: 'Document' },
+              classCode: classCode(node.entity),
+            },
+            effect: 'nonMutating',
+          });
+        }
 
         // Inject active-filter variables into columns if not already present
         const colSet = new Set(node.columns);
@@ -440,14 +523,25 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
       }
 
       // ── Transform: PreFilter → Filter (dissolves) ─────────────────
+      //
+      // PreFilter stubs variables in `assumeTrue` as true during evaluation
+      // so they pass all rows. The exact filter downstream re-checks them
+      // after enrichment.
+      //
+      // In the EventPlan IR there is no stub concept, so we strip conjuncts
+      // whose variables are entirely in the assumeTrue set. If nothing
+      // remains, the PreFilter becomes a no-op.
       case 'PreFilter': {
         const sourceRef = lower(node.source);
-        // Identity filter (predicate === true or null) is a no-op — pass through
         if (node.predicate === true || node.predicate === null) return sourceRef;
+
+        const stripped = stripStubbedConjuncts(node.predicate, node.assumeTrue);
+        if (stripped === true) return sourceRef;
+
         return push({
           kind: 'Filter',
           source: sourceRef,
-          predicate: node.predicate,
+          predicate: stripped,
           entity: node.entity,
         });
       }
@@ -618,4 +712,59 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
 
   const result = lower(root);
   return { nodes, result };
+}
+
+// ── PreFilter predicate stripping ──────────────────────────────────────
+
+/**
+ * Collect all variable names referenced in a LoweredExpr.
+ */
+function collectExprVars(expr: LoweredExpr): Set<string> {
+  const vars = new Set<string>();
+  function walk(e: LoweredExpr): void {
+    if (e === null || e === undefined) return;
+    if (typeof e === 'boolean' || typeof e === 'number' || typeof e === 'string') return;
+    if (Array.isArray(e)) { for (const item of e) walk(item); return; }
+    if (typeof e === 'object') {
+      if ('var' in e) { vars.add((e as { var: string }).var); return; }
+      if ('op' in e && 'args' in e) {
+        for (const arg of (e as { op: string; args: LoweredExpr[] }).args) walk(arg);
+      }
+    }
+  }
+  walk(expr);
+  return vars;
+}
+
+/**
+ * Strip conjuncts from a predicate whose variables are all in the stubbed set.
+ *
+ * - If ALL variables are stubbed, returns `true` (the PreFilter is a no-op).
+ * - For top-level `and`, removes conjuncts that only reference stubbed vars
+ *   and returns the remaining conjunction (or `true` if nothing remains).
+ * - For non-`and` predicates, returns `true` if all vars are stubbed,
+ *   otherwise returns the predicate unchanged.
+ */
+function stripStubbedConjuncts(pred: LoweredExpr, stubbed: Set<string>): LoweredExpr {
+  // Quick check: if all vars are stubbed, the whole predicate is a no-op
+  const allVars = collectExprVars(pred);
+  if (allVars.size === 0) return pred; // no vars → evaluate as-is
+  const allStubbed = [...allVars].every(v => stubbed.has(v));
+  if (allStubbed) return true;
+
+  // For top-level `and`, strip stubbed conjuncts
+  if (typeof pred === 'object' && pred !== null && !Array.isArray(pred) &&
+      'op' in pred && (pred as { op: string }).op === 'and') {
+    const args = (pred as { op: string; args: LoweredExpr[] }).args;
+    const kept = args.filter(arg => {
+      const vars = collectExprVars(arg);
+      return vars.size === 0 || ![...vars].every(v => stubbed.has(v));
+    });
+    if (kept.length === 0) return true;
+    if (kept.length === 1) return kept[0];
+    return { op: 'and', args: kept };
+  }
+
+  // Non-`and` with mixed vars — keep as-is (can't partially strip)
+  return pred;
 }

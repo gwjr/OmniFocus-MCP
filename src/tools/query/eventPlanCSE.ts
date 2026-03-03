@@ -17,6 +17,7 @@ function specKey(spec: Specifier, canonical: (r: Ref) => Ref): string {
     case 'ByID':     return `I(${parentKey(spec.parent, canonical)},${idKey(spec.id, canonical)})`;
     case 'ByName':   return `N(${parentKey(spec.parent, canonical)},${nameKey(spec.name, canonical)})`;
     case 'ByIndex':  return `X(${parentKey(spec.parent, canonical)},${spec.index})`;
+    case 'Whose':    return `W(${parentKey(spec.parent, canonical)},${spec.prop},${spec.match},${JSON.stringify(spec.value)})`;
   }
 }
 
@@ -50,6 +51,7 @@ function rewriteSpec(spec: Specifier, remap: (r: Ref) => Ref): Specifier {
       name: typeof spec.name === 'number' ? remap(spec.name) : spec.name,
     };
     case 'ByIndex':  return { ...spec, parent: rewriteParent(spec.parent, remap) };
+    case 'Whose':    return { ...spec, parent: rewriteParent(spec.parent, remap) };
   }
 }
 

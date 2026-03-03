@@ -75,7 +75,8 @@ export type Specifier =
   | { kind: 'Property';  parent: Specifier | Ref; propCode:  FourCC }
   | { kind: 'ByID';      parent: Specifier | Ref; id:   string | Ref }
   | { kind: 'ByName';    parent: Specifier | Ref; name: string | Ref }
-  | { kind: 'ByIndex';   parent: Specifier | Ref; index: number };
+  | { kind: 'ByIndex';   parent: Specifier | Ref; index: number }
+  | { kind: 'Whose';     parent: Specifier | Ref; prop: FourCC; match: 'eq' | 'contains'; value: string };
 
 // ── DeriveSpec ───────────────────────────────────────────────────────────────
 

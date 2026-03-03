@@ -173,6 +173,19 @@ function emitSpecifier(ctx: EmitCtx, spec: Specifier): string {
       const parent = emitParent(ctx, spec.parent);
       return `${parent}[${spec.index}]`;
     }
+    case 'Whose': {
+      const parent = emitParent(ctx, spec.parent);
+      const prop = PROP_TO_ACCESSOR[spec.prop];
+      if (!prop) {
+        throw new Error(`jxaUnit: unknown property code '${spec.prop}' in Whose`);
+      }
+      const escaped = spec.value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      if (spec.match === 'eq') {
+        return `${parent}.whose({${prop}: '${escaped}'})`;
+      } else {
+        return `${parent}.whose({${prop}: {_contains: '${escaped}'}})`;
+      }
+    }
   }
 }
 

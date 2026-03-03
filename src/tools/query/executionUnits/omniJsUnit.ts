@@ -147,6 +147,19 @@ function emitSpecifier(ctx: EmitCtx, spec: Specifier): string {
       const parent = emitParent(ctx, spec.parent);
       return `${parent}[${spec.index}]`;
     }
+    case 'Whose': {
+      const parent = emitParent(ctx, spec.parent);
+      const prop = PROP_TO_ACCESSOR[spec.prop];
+      if (!prop) {
+        throw new Error(`omniJsUnit: unknown property code '${spec.prop}' in Whose`);
+      }
+      const escaped = JSON.stringify(spec.value);
+      if (spec.match === 'eq') {
+        return `${parent}.filter(function(x) { return x.${prop} === ${escaped}; })`;
+      } else {
+        return `${parent}.filter(function(x) { return x.${prop}.toLowerCase().indexOf(${escaped}.toLowerCase()) !== -1; })`;
+      }
+    }
   }
 }
 

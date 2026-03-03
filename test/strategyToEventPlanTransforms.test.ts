@@ -28,10 +28,10 @@ function findOne(plan: EventPlan, kind: EventNode['kind']): EventNode {
 }
 
 /** Trivial BulkScan leaf used as a source in most tests. */
-function trivialBulkScan(): StrategyNode {
+function trivialBulkScan(entity: string = 'tasks'): StrategyNode {
   return {
     kind: 'BulkScan',
-    entity: 'tasks',
+    entity: entity as any,
     columns: ['name'],
     includeCompleted: true,
   };
@@ -99,7 +99,7 @@ describe('lowerStrategy — Filter', () => {
 // ── PreFilter ────────────────────────────────────────────────────────────
 
 describe('lowerStrategy — PreFilter', () => {
-  it('lowers identically to Filter (PreFilter dissolves)', () => {
+  it('elides when all predicate vars are stubbed', () => {
     const predicate = { var: 'flagged' } as any;
     const strategy: StrategyNode = {
       kind: 'PreFilter',
@@ -111,9 +111,9 @@ describe('lowerStrategy — PreFilter', () => {
 
     const plan = lowerStrategy(strategy);
 
-    // Should produce a Filter node (NOT a PreFilter node)
+    // All vars are stubbed → PreFilter is a no-op, no Filter emitted
     const filters = findNodes(plan, 'Filter');
-    assert.equal(filters.length, 1, 'PreFilter should lower to a Filter node');
+    assert.equal(filters.length, 0, 'all-stubbed PreFilter should be elided (no Filter)');
 
     // assumeTrue must NOT appear anywhere in the event plan
     for (const node of plan.nodes) {
@@ -122,11 +122,34 @@ describe('lowerStrategy — PreFilter', () => {
         'assumeTrue should not appear in EventPlan nodes'
       );
     }
+  });
 
-    // Result is the Filter ref
+  it('keeps non-stubbed conjuncts as Filter', () => {
+    // and(gt(projectCount, 0), eq(name, 'Foo'))
+    // projectCount is stubbed, name is not → keeps eq(name, 'Foo') as Filter
+    const predicate = {
+      op: 'and',
+      args: [
+        { op: 'gt', args: [{ var: 'projectCount' }, 0] },
+        { op: 'eq', args: [{ var: 'name' }, 'Foo'] },
+      ],
+    } as any;
+    const strategy: StrategyNode = {
+      kind: 'PreFilter',
+      source: trivialBulkScan('folders'),
+      predicate,
+      entity: 'folders',
+      assumeTrue: new Set(['projectCount']),
+    };
+
+    const plan = lowerStrategy(strategy);
+
+    // Should produce a Filter with only the non-stubbed conjunct
+    const filters = findNodes(plan, 'Filter');
+    assert.equal(filters.length, 1, 'mixed PreFilter should produce a Filter');
     const filter = filters[0] as Extract<EventNode, { kind: 'Filter' }>;
-    const filterRef = plan.nodes.indexOf(filter);
-    assert.equal(plan.result, filterRef);
+    // The remaining predicate should be eq(name, 'Foo'), not the full and()
+    assert.deepEqual(filter.predicate, { op: 'eq', args: [{ var: 'name' }, 'Foo'] });
   });
 });
 

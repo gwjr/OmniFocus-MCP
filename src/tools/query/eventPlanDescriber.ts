@@ -80,6 +80,8 @@ export function describeSpecifier(spec: Specifier): string {
     }
     case 'ByIndex':
       return `ByIndex(${fmtParent(spec.parent)}, ${spec.index})`;
+    case 'Whose':
+      return `Whose(${fmtParent(spec.parent)}, '${spec.prop}', ${spec.match}, '${spec.value}')`;
   }
 }
 

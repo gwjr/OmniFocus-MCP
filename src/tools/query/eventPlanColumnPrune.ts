@@ -290,6 +290,7 @@ function rewriteSpec(spec: Specifier, remap: (r: Ref) => Ref): Specifier {
       name: typeof spec.name === 'number' ? remap(spec.name) : spec.name,
     };
     case 'ByIndex':  return { ...spec, parent: rewriteParent(spec.parent, remap) };
+    case 'Whose':    return { ...spec, parent: rewriteParent(spec.parent, remap) };
   }
 }
 

@@ -796,7 +796,7 @@ describe('lowerStrategy — Filter nodes carry entity field', () => {
     assert.equal(filter.entity, 'tasks', 'FallbackScan filter should carry entity: tasks');
   });
 
-  it('PreFilter passes entity through to EventPlan Filter', () => {
+  it('PreFilter elides when all vars are stubbed', () => {
     const strategy: StrategyNode = {
       kind: 'PreFilter',
       source: {
@@ -811,9 +811,42 @@ describe('lowerStrategy — Filter nodes carry entity field', () => {
     };
     const plan = lowerStrategy(strategy);
 
+    // All vars are stubbed → PreFilter is a no-op, no user Filter emitted
+    for (const { node } of findNodes(plan, 'Filter')) {
+      const f = node as Extract<EventNode, { kind: 'Filter' }>;
+      assert.notDeepEqual(f.predicate, { op: 'eq', args: [{ var: 'name' }, 'Work'] },
+        'stubbed PreFilter predicate should not appear as a Filter');
+    }
+  });
+
+  it('PreFilter passes entity through for mixed vars', () => {
+    const strategy: StrategyNode = {
+      kind: 'PreFilter',
+      source: {
+        kind: 'BulkScan',
+        entity: 'tags',
+        columns: ['name'],
+        includeCompleted: true,
+      },
+      predicate: { op: 'and', args: [
+        { op: 'eq', args: [{ var: 'hidden' }, true] },
+        { op: 'eq', args: [{ var: 'name' }, 'Work'] },
+      ] } as any,
+      entity: 'tags',
+      assumeTrue: new Set(['hidden']),
+    };
+    const plan = lowerStrategy(strategy);
+
+    // Should have a Filter for the non-stubbed conjunct with correct entity
     const filters = findNodes(plan, 'Filter');
-    assert.ok(filters.length >= 1, 'should have at least one Filter');
-    const filter = filters[filters.length - 1].node as Extract<EventNode, { kind: 'Filter' }>;
+    const userFilter = filters.find(({ node }) => {
+      const f = node as Extract<EventNode, { kind: 'Filter' }>;
+      return f.predicate && typeof f.predicate === 'object' &&
+        'op' in (f.predicate as any) && (f.predicate as any).op === 'eq' &&
+        (f.predicate as any).args?.[0]?.var === 'name';
+    });
+    assert.ok(userFilter, 'should have a Filter for the non-stubbed conjunct');
+    const filter = userFilter!.node as Extract<EventNode, { kind: 'Filter' }>;
     assert.equal(filter.entity, 'tags', 'PreFilter should carry entity: tags');
   });
 });
