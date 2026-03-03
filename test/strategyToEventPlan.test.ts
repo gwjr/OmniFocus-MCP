@@ -363,27 +363,25 @@ describe('lowerStrategy — FallbackScan', () => {
 
 describe('lowerStrategy — MembershipScan', () => {
 
-  it('tags→tasks emits source lookup, ForEach with element + id reads', () => {
+  it('tags→tasks emits Whose specifier, ForEach with element + id reads', () => {
     const strategy: StrategyNode = {
       kind: 'MembershipScan',
       sourceEntity: 'tags',
       targetEntity: 'tasks',
-      predicate: { op: 'eq', args: [{ op: 'var', args: ['name'] }, 'Work'] } as any,
+      predicate: { op: 'eq', args: [{ var: 'name' }, 'Work'] } as any,
       includeCompleted: true,
     };
     const plan = lowerStrategy(strategy);
 
-    // First: Get(Elements(Document, 'FCfc')) — flattened tags
-    assertDocElements(getSpecifier(plan, 0), 'FCfc');
-
-    // Second: Filter to find the matching tag(s)
-    const filterNodes = findNodes(plan, 'Filter');
-    assert.ok(filterNodes.length >= 1, 'Should have at least one Filter node');
-    const sourceFilter = filterNodes[0];
-    assert.equal(
-      (sourceFilter.node as Extract<EventNode, { kind: 'Filter' }>).source,
-      0
-    );
+    // First: Get(Whose(Elements(Document, 'FCfc'), pnam, eq, 'Work'))
+    const spec0 = getSpecifier(plan, 0);
+    assert.equal(spec0.kind, 'Whose', 'First node should use Whose specifier');
+    const whose = spec0 as Extract<Specifier, { kind: 'Whose' }>;
+    assert.equal(whose.match, 'eq');
+    assert.equal(whose.value, 'Work');
+    // Parent should be Elements(Document, FCfc)
+    const elemParent = whose.parent as Specifier;
+    assertDocElements(elemParent, 'FCfc');
 
     // Should have a ForEach that iterates over matched tags
     const forEachNodes = findNodes(plan, 'ForEach');
@@ -413,18 +411,22 @@ describe('lowerStrategy — MembershipScan', () => {
     assert.equal(plan.result, forEachNodes[0].ref);
   });
 
-  it('projects→tasks uses FCfx for source and FCft for target', () => {
+  it('projects→tasks uses Whose on FCfx and FCft for target', () => {
     const strategy: StrategyNode = {
       kind: 'MembershipScan',
       sourceEntity: 'projects',
       targetEntity: 'tasks',
-      predicate: { op: 'eq', args: [{ op: 'var', args: ['name'] }, 'MyProject'] } as any,
+      predicate: { op: 'eq', args: [{ var: 'name' }, 'MyProject'] } as any,
       includeCompleted: true,
     };
     const plan = lowerStrategy(strategy);
 
-    // Source elements should use FCfx (flattenedProject)
-    assertDocElements(getSpecifier(plan, 0), 'FCfx');
+    // Source: Whose(Elements(Document, FCfx), pnam, eq, 'MyProject')
+    const spec0 = getSpecifier(plan, 0);
+    assert.equal(spec0.kind, 'Whose');
+    const whose = spec0 as Extract<Specifier, { kind: 'Whose' }>;
+    const elemParent = whose.parent as Specifier;
+    assertDocElements(elemParent, 'FCfx');
 
     // ForEach body should reference FCft for target tasks
     const forEachNodes = findNodes(plan, 'ForEach');
@@ -441,18 +443,22 @@ describe('lowerStrategy — MembershipScan', () => {
     assert.equal((targetSpec as Extract<Specifier, { kind: 'Elements' }>).classCode, 'FCft');
   });
 
-  it('folders→projects uses FCff for source and FCfx for target', () => {
+  it('folders→projects uses Whose on FCff and FCfx for target', () => {
     const strategy: StrategyNode = {
       kind: 'MembershipScan',
       sourceEntity: 'folders',
       targetEntity: 'projects',
-      predicate: { op: 'eq', args: [{ op: 'var', args: ['name'] }, 'Legal'] } as any,
+      predicate: { op: 'eq', args: [{ var: 'name' }, 'Legal'] } as any,
       includeCompleted: true,
     };
     const plan = lowerStrategy(strategy);
 
-    // Source: flattenedFolder = FCff
-    assertDocElements(getSpecifier(plan, 0), 'FCff');
+    // Source: Whose(Elements(Document, FCff), pnam, eq, 'Legal')
+    const spec0 = getSpecifier(plan, 0);
+    assert.equal(spec0.kind, 'Whose');
+    const whose = spec0 as Extract<Specifier, { kind: 'Whose' }>;
+    const elemParent = whose.parent as Specifier;
+    assertDocElements(elemParent, 'FCff');
 
     // Target in ForEach body: flattenedProject = FCfx
     const forEachNodes = findNodes(plan, 'ForEach');
@@ -469,22 +475,22 @@ describe('lowerStrategy — MembershipScan', () => {
     assert.equal((targetSpec as Extract<Specifier, { kind: 'Elements' }>).classCode, 'FCfx');
   });
 
-  it('MembershipScan with includeCompleted:false filters target items', () => {
+  it('MembershipScan with includeCompleted:false does not add Filter (targets filtered downstream)', () => {
     const strategy: StrategyNode = {
       kind: 'MembershipScan',
       sourceEntity: 'tags',
       targetEntity: 'tasks',
-      predicate: { op: 'eq', args: [{ op: 'var', args: ['name'] }, 'Work'] } as any,
+      predicate: { op: 'eq', args: [{ var: 'name' }, 'Work'] } as any,
       includeCompleted: false,
     };
     const plan = lowerStrategy(strategy);
 
-    // With includeCompleted:false, the plan should filter out completed/dropped
-    // target items. This could be inside the ForEach body or after the ForEach,
-    // but there must be some active-item filtering.
-    // We just verify a Filter exists somewhere in the plan.
-    const filterNodes = findNodes(plan, 'Filter');
-    assert.ok(filterNodes.length >= 1, 'Should have a Filter for active items');
+    // MembershipScan only produces IDs for SemiJoin — active filtering
+    // happens on the BulkScan side, not in the MembershipScan path.
+    // The lowering uses Whose(Elements, ...) + ForEach — no Filter node.
+    const forEachNodes = findNodes(plan, 'ForEach');
+    assert.ok(forEachNodes.length >= 1, 'Should have a ForEach node');
+    assert.equal(plan.result, forEachNodes[0].ref);
   });
 });
 

@@ -451,22 +451,31 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
 
       // ── Leaf: MembershipScan ──────────────────────────────────────
       case 'MembershipScan': {
-        // %0 = Get(Elements(Document, classCode(sourceEntity)))
-        const sourceElemRef = push({
+        // Use a Whose specifier to keep the predicate in JXA — AE specifier
+        // references can't be serialised across unit boundaries, so a separate
+        // Filter node (which defaults to Node runtime) would break.
+        //
+        // %0 = Get(Whose(Elements(Document, classCode(sourceEntity)), pnam, match, value))
+        const { match, value } = parseScopeExpr(node.predicate);
+        const sourceNameCode = SIMPLE_PROPS[node.sourceEntity]?.['name'];
+        if (!sourceNameCode) {
+          throw new Error(`strategyToEventPlan: no name property for entity '${node.sourceEntity}'`);
+        }
+
+        const filteredRef = push({
           kind: 'Get',
           specifier: {
-            kind: 'Elements',
-            parent: { kind: 'Document' },
-            classCode: classCode(node.sourceEntity),
+            kind: 'Whose',
+            parent: {
+              kind: 'Elements',
+              parent: { kind: 'Document' },
+              classCode: classCode(node.sourceEntity),
+            },
+            prop: sourceNameCode,
+            match,
+            value,
           },
           effect: 'nonMutating',
-        });
-
-        // %1 = Filter(%0, predicate)
-        const filterRef = push({
-          kind: 'Filter',
-          source: sourceElemRef,
-          predicate: node.predicate,
         });
 
         // ForEach body (body-local indices)
@@ -500,7 +509,7 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
 
         const forEachRef = push({
           kind: 'ForEach',
-          source: filterRef,
+          source: filteredRef,
           body: bodyNodes,
           collect: collectRef,
           effect: 'nonMutating',

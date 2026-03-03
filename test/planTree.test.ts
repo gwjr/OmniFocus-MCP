@@ -111,11 +111,11 @@ describe('buildPlanTree — tree shapes', () => {
     assert.ok(scan.columns.includes('id'), 'columns should include id');
   });
 
-  it('two-phase: PerItemEnrich has fallback to FallbackScan', () => {
+  it('two-phase: PerItemEnrich has fallback to BulkScan (not FallbackScan)', () => {
     const tree = plan({ contains: [{ var: 'folderName' }, 'Legal'] }, 'projects');
     const enrich = findNode(tree, 'PerItemEnrich');
     assert.ok(enrich && enrich.kind === 'PerItemEnrich');
-    assert.equal(enrich.fallback.kind, 'FallbackScan');
+    assert.equal(enrich.fallback.kind, 'BulkScan');
   });
 
   it('OmniJS fallback: perspectives → FallbackScan', () => {
@@ -128,17 +128,25 @@ describe('buildPlanTree — tree shapes', () => {
     assert.equal(tree.kind, 'FallbackScan');
   });
 
-  it('OmniJS fallback: folder container → FallbackScan', () => {
+  it('folder container with compilable scope → SemiJoin + MembershipScan', () => {
     const tree = plan({ container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] });
-    assert.equal(tree.kind, 'FallbackScan');
+    // Should be a SemiJoin(BulkScan, MembershipScan)
+    assert.equal(tree.kind, 'SemiJoin');
+    const sj = tree as Extract<StrategyNode, { kind: 'SemiJoin' }>;
+    assert.equal(sj.source.kind, 'BulkScan');
+    assert.equal(sj.lookup.kind, 'MembershipScan');
   });
 
-  it('OmniJS fallback: tags entity with container → FallbackScan', () => {
+  it('tag container with compilable scope → SemiJoin + MembershipScan', () => {
     const tree = plan(
       { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
-      'tags'
+      'tasks'
     );
-    assert.equal(tree.kind, 'FallbackScan');
+    // Should be a SemiJoin(BulkScan, MembershipScan)
+    assert.equal(tree.kind, 'SemiJoin');
+    const sj = tree as Extract<StrategyNode, { kind: 'SemiJoin' }>;
+    assert.equal(sj.source.kind, 'BulkScan');
+    assert.equal(sj.lookup.kind, 'MembershipScan');
   });
 });
 
