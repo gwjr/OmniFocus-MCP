@@ -1,5 +1,5 @@
 /**
- * Tool handler integration tests (tier 2).
+ * Tool handler integration tests.
  *
  * Exercises every non-mutating tool handler against a live OmniFocus
  * instance with realistic arguments. Asserts:
@@ -7,14 +7,14 @@
  *   - Success responses (isError is not set)
  *   - Non-empty results where expected
  *   - Correct response shape and content
+ *   - Human-readable output (no raw JSON)
  *
  * Requires OmniFocus running. Run with:
  *   node --test --test-timeout=60000 test/tools.integration.ts
  *
- * NOT included in the default `npm test` suite (no .test.ts in the
- * normal glob). Run explicitly or via a dedicated npm script.
+ * NOT included in the default `node --test test/*.test.ts` glob.
  */
-import { describe, it, before } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 // ── Import tool handlers ─────────────────────────────────────────────────
@@ -49,6 +49,14 @@ function assertSuccess(r: McpResponse, label: string): string {
   return r.content[0].text;
 }
 
+function assertNotRawJson(text: string, label: string): void {
+  const trimmed = text.trimStart();
+  assert.ok(
+    !trimmed.startsWith('{') && !trimmed.startsWith('['),
+    `${label}: response starts with raw JSON — expected human-readable text.\nFirst 200 chars: ${trimmed.slice(0, 200)}`
+  );
+}
+
 // ── query tool ───────────────────────────────────────────────────────────
 
 describe('integration: query tool', () => {
@@ -76,7 +84,6 @@ describe('integration: query tool', () => {
     } as any, {});
     const r = assertMcpResponse(result, 'select');
     const text = assertSuccess(r, 'select');
-    // Limited to 3 items
     assert.match(text, /Results limited to 3/, 'mentions limit');
   });
 
@@ -108,7 +115,6 @@ describe('integration: query tool', () => {
     const allR = assertMcpResponse(all, 'all');
     assertSuccess(activeR, 'active');
     assertSuccess(allR, 'all');
-    // Extract counts
     const activeCount = parseInt(activeR.content[0].text.match(/Found (\d+)/)?.[1] ?? '0');
     const allCount = parseInt(allR.content[0].text.match(/Found (\d+)/)?.[1] ?? '0');
     assert.ok(allCount >= activeCount, `includeCompleted should return >= active (${allCount} >= ${activeCount})`);
@@ -120,7 +126,6 @@ describe('integration: query tool', () => {
       where: { contains: [{ var: 'tags' }, 'Work'] },
     } as any, {});
     const r = assertMcpResponse(result, 'tag filter');
-    // May return 0 results if no "Work" tag exists, but should not error
     assertSuccess(r, 'tag filter');
   });
 
@@ -190,10 +195,8 @@ describe('integration: query tool', () => {
 
 describe('integration: view tool', () => {
   it('project view — returns tasks or empty message', async () => {
-    // Use a project name that likely exists — but accept empty result too
     const result = await viewTool.handler({ project: 'a' } as any, {});
     const r = assertMcpResponse(result, 'project view');
-    // Should succeed even if project doesn't exist (returns "No items")
     assertSuccess(r, 'project view');
   });
 
@@ -228,7 +231,6 @@ describe('integration: list_projects', () => {
     const r = assertMcpResponse(result, 'list_projects');
     const text = assertSuccess(r, 'list_projects');
     assert.match(text, /Projects/, 'mentions Projects');
-    // Should have both projects and folders in the output
     assert.match(text, /\d+ projects/, 'has project count');
     assert.match(text, /\d+ folders/, 'has folder count');
   });
@@ -265,29 +267,27 @@ describe('integration: list_tags', () => {
 // ── list_perspectives ────────────────────────────────────────────────────
 
 describe('integration: list_perspectives', () => {
-  // Note: perspectives entity is not supported in the EventPlan pipeline
-  // (no Apple Events class code). The handler returns an error result.
-  // When perspectives support is added, update these to assert success.
-
-  it('returns response without throwing', async () => {
+  it('returns perspectives without crashing', async () => {
     const result = await listPerspectivesTool.handler({} as any, {});
-    assertMcpResponse(result, 'list_perspectives');
-    // Currently errors with "No class code for entity: perspectives"
-    // Accept either success or graceful error
+    const r = assertMcpResponse(result, 'list_perspectives');
+    assertSuccess(r, 'list_perspectives');
+    assert.match(r.content[0].text, /Perspectives/, 'output mentions Perspectives');
   });
 
   it('custom-only filter', async () => {
     const result = await listPerspectivesTool.handler({
       includeBuiltIn: false, includeCustom: true,
     } as any, {});
-    assertMcpResponse(result, 'custom only');
+    const r = assertMcpResponse(result, 'custom only');
+    assertSuccess(r, 'custom only');
   });
 
   it('built-in-only filter', async () => {
     const result = await listPerspectivesTool.handler({
       includeBuiltIn: true, includeCustom: false,
     } as any, {});
-    assertMcpResponse(result, 'builtin only');
+    const r = assertMcpResponse(result, 'builtin only');
+    assertSuccess(r, 'builtin only');
   });
 });
 
@@ -302,7 +302,6 @@ describe('integration: show_forecast', () => {
     assert.match(text, /Today/, 'has Today row');
     assert.match(text, /Past/, 'has Past row');
     assert.match(text, /Future/, 'has Future row');
-    // Should have Due/Plan/Defer columns
     assert.match(text, /Due/, 'has Due column');
     assert.match(text, /Plan/, 'has Plan column');
     assert.match(text, /Defer/, 'has Defer column');
@@ -319,5 +318,103 @@ describe('integration: show_forecast', () => {
     const result = await showForecastTool.handler({ days: 1 } as any, {});
     const r = assertMcpResponse(result, 'forecast 1d');
     assertSuccess(r, 'forecast 1d');
+  });
+});
+
+// ── edit with query targeting (calls OmniFocus for dry run) ──────────────
+
+describe('integration: edit dry run', () => {
+  it('query targeting defaults to dry run — returns preview', async () => {
+    const { handler } = await import('../dist/tools/definitions/edit.js');
+    const result = await handler({
+      query: { entity: 'tasks', where: { eq: [{ var: 'flagged' }, true] } },
+      mark: 'completed',
+    } as any, {});
+    const r = assertMcpResponse(result, 'edit query dryRun');
+    assert.ok(!r.isError || r.content[0].text.includes('No items'), 'dry run returns preview or empty');
+  });
+});
+
+// ── No-JSON-output regression tests ──────────────────────────────────────
+//
+// Every non-mutating tool should return human-readable text, not raw JSON.
+
+describe('integration: no raw JSON output', () => {
+  it('query tasks — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'tasks', limit: 3 } as any, {});
+    const r = assertMcpResponse(result, 'query noJSON');
+    assertSuccess(r, 'query noJSON');
+    assertNotRawJson(r.content[0].text, 'query tasks');
+  });
+
+  it('query projects — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'projects', limit: 3 } as any, {});
+    const r = assertMcpResponse(result, 'query projects noJSON');
+    assertSuccess(r, 'query projects noJSON');
+    assertNotRawJson(r.content[0].text, 'query projects');
+  });
+
+  it('query tags — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'tags', limit: 3 } as any, {});
+    const r = assertMcpResponse(result, 'query tags noJSON');
+    assertSuccess(r, 'query tags noJSON');
+    assertNotRawJson(r.content[0].text, 'query tags');
+  });
+
+  it('query folders — human-readable, not JSON', async () => {
+    const result = await queryTool.handler({ entity: 'folders' } as any, {});
+    const r = assertMcpResponse(result, 'query folders noJSON');
+    if (!r.isError) {
+      assertNotRawJson(r.content[0].text, 'query folders');
+    }
+  });
+
+  it('view inbox — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ inbox: true } as any, {});
+    const r = assertMcpResponse(result, 'view inbox noJSON');
+    assertSuccess(r, 'view inbox noJSON');
+    assertNotRawJson(r.content[0].text, 'view inbox');
+  });
+
+  it('view flagged — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ perspective: 'Flagged' } as any, {});
+    const r = assertMcpResponse(result, 'view flagged noJSON');
+    assertSuccess(r, 'view flagged noJSON');
+    assertNotRawJson(r.content[0].text, 'view flagged');
+  });
+
+  it('view project — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ project: 'a' } as any, {});
+    const r = assertMcpResponse(result, 'view project noJSON');
+    assertSuccess(r, 'view project noJSON');
+    assertNotRawJson(r.content[0].text, 'view project');
+  });
+
+  it('list_projects — human-readable, not JSON', async () => {
+    const result = await listProjectsTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'list_projects noJSON');
+    assertSuccess(r, 'list_projects noJSON');
+    assertNotRawJson(r.content[0].text, 'list_projects');
+  });
+
+  it('list_tags — human-readable, not JSON', async () => {
+    const result = await listTagsTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'list_tags noJSON');
+    assertSuccess(r, 'list_tags noJSON');
+    assertNotRawJson(r.content[0].text, 'list_tags');
+  });
+
+  it('list_perspectives — human-readable, not JSON', async () => {
+    const result = await listPerspectivesTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'list_perspectives noJSON');
+    assertSuccess(r, 'list_perspectives noJSON');
+    assertNotRawJson(r.content[0].text, 'list_perspectives');
+  });
+
+  it('show_forecast — human-readable, not JSON', async () => {
+    const result = await showForecastTool.handler({} as any, {});
+    const r = assertMcpResponse(result, 'show_forecast noJSON');
+    assertSuccess(r, 'show_forecast noJSON');
+    assertNotRawJson(r.content[0].text, 'show_forecast');
   });
 });

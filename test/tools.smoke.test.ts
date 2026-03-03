@@ -1,19 +1,11 @@
 /**
- * Tool handler smoke tests.
+ * Tool handler smoke tests — pure structural and validation tests.
  *
- * Two categories:
+ * These tests NEVER call OmniFocus. They verify:
+ *   - Every tool exports a schema and handler function
+ *   - Validation-only code paths that return before any primitive call
  *
- * 1. **Read-only tools** (query, view, list_projects, list_tags,
- *    list_perspectives, show_forecast): call with real arguments against
- *    the running EventPlan pipeline. Asserts every handler returns a
- *    well-formed MCP response and does not throw. Catches missing property
- *    specs (tags.hidden, effectivePlannedDate) and broken codegen.
- *
- * 2. **Mutation tools** (add_task, add_project, edit, move, remove):
- *    test ONLY validation paths that return before hitting any primitive.
- *    Never calls OmniFocus — safe to run in any environment.
- *
- * All tests assert the MCP response shape: { content: [{ type: "text", text }] }.
+ * OmniFocus-calling tests live in tools.integration.ts.
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -51,10 +43,6 @@ function assertMcpResponse(result: unknown, label: string): McpResponse {
   return r;
 }
 
-function assertSuccess(result: McpResponse, label: string): void {
-  assert.ok(!result.isError, `${label}: unexpected error — ${result.content[0]?.text}`);
-}
-
 function assertError(result: McpResponse, label: string, pattern?: RegExp): void {
   assert.ok(result.isError, `${label}: expected isError=true`);
   if (pattern) {
@@ -62,118 +50,43 @@ function assertError(result: McpResponse, label: string, pattern?: RegExp): void
   }
 }
 
-// ── Read-only tool smoke tests (hit EventPlan pipeline, read OmniFocus) ──
+// ── Schema export tests ─────────────────────────────────────────────────
 
-describe('tool handler smoke: query', () => {
-  it('schema exports', () => {
+describe('tool schema exports: read-only tools', () => {
+  it('query — exports schema and handler', () => {
     assert.ok(queryTool.schema, 'schema exists');
     assert.ok(typeof queryTool.handler === 'function', 'handler is a function');
   });
 
-  it('minimal tasks query — returns results', async () => {
-    const result = await queryTool.handler({ entity: 'tasks' } as any, {});
-    const r = assertMcpResponse(result, 'query tasks');
-    assertSuccess(r, 'query tasks');
-  });
-
-  it('tasks with where clause — returns results', async () => {
-    const result = await queryTool.handler({
-      entity: 'tasks',
-      where: { eq: [{ var: 'flagged' }, true] },
-    } as any, {});
-    const r = assertMcpResponse(result, 'query flagged');
-    assertSuccess(r, 'query flagged');
-  });
-
-  it('projects query — returns results', async () => {
-    const result = await queryTool.handler({ entity: 'projects' } as any, {});
-    const r = assertMcpResponse(result, 'query projects');
-    assertSuccess(r, 'query projects');
-  });
-
-  it('tags query — returns results', async () => {
-    const result = await queryTool.handler({ entity: 'tags' } as any, {});
-    const r = assertMcpResponse(result, 'query tags');
-    assertSuccess(r, 'query tags');
-  });
-
-  it('folders query — returns results', async () => {
-    const result = await queryTool.handler({ entity: 'folders' } as any, {});
-    assertMcpResponse(result, 'query folders');
-    // folders may return 0 results in some environments, so don't assert success
-  });
-
-  it('summary mode — returns count', async () => {
-    const result = await queryTool.handler({
-      entity: 'tasks', summary: true,
-    } as any, {});
-    const r = assertMcpResponse(result, 'query summary');
-    assertSuccess(r, 'query summary');
-    assert.match(r.content[0].text, /Found \d+|No tasks found/, 'summary has count');
-  });
-
-  it('select + sort + limit — returns results', async () => {
-    const result = await queryTool.handler({
-      entity: 'tasks',
-      select: ['id', 'name'],
-      sort: { by: 'name', direction: 'asc' },
-      limit: 5,
-    } as any, {});
-    const r = assertMcpResponse(result, 'query select+sort+limit');
-    assertSuccess(r, 'query select+sort+limit');
-  });
-
-  it('includeCompleted — returns results', async () => {
-    const result = await queryTool.handler({
-      entity: 'tasks', includeCompleted: true,
-    } as any, {});
-    const r = assertMcpResponse(result, 'query includeCompleted');
-    assertSuccess(r, 'query includeCompleted');
-  });
-
-  it('tasks with tag filter — returns results', async () => {
-    const result = await queryTool.handler({
-      entity: 'tasks',
-      where: { contains: [{ var: 'tags' }, 'Work'] },
-    } as any, {});
-    assertMcpResponse(result, 'query tag filter');
-  });
-
-  it('tasks select tags field — returns results', async () => {
-    const result = await queryTool.handler({
-      entity: 'tasks',
-      select: ['name', 'tags'],
-      limit: 3,
-    } as any, {});
-    const r = assertMcpResponse(result, 'query select tags');
-    assertSuccess(r, 'query select tags');
-  });
-
-  it('projects with folderName — returns results', async () => {
-    const result = await queryTool.handler({
-      entity: 'projects',
-      select: ['name', 'folderName'],
-    } as any, {});
-    const r = assertMcpResponse(result, 'query projects+folderName');
-    assertSuccess(r, 'query projects+folderName');
-  });
-
-  it('tags with parentName — returns results', async () => {
-    const result = await queryTool.handler({
-      entity: 'tags',
-      select: ['name', 'parentName'],
-    } as any, {});
-    const r = assertMcpResponse(result, 'query tags+parentName');
-    assertSuccess(r, 'query tags+parentName');
-  });
-});
-
-describe('tool handler smoke: view', () => {
-  it('schema exports', () => {
+  it('view — exports schema and handler', () => {
     assert.ok(viewTool.schema, 'schema exists');
     assert.ok(typeof viewTool.handler === 'function', 'handler is a function');
   });
 
+  it('list_projects — exports schema and handler', () => {
+    assert.ok(listProjectsTool.schema, 'schema exists');
+    assert.ok(typeof listProjectsTool.handler === 'function', 'handler is a function');
+  });
+
+  it('list_tags — exports schema and handler', () => {
+    assert.ok(listTagsTool.schema, 'schema exists');
+    assert.ok(typeof listTagsTool.handler === 'function', 'handler is a function');
+  });
+
+  it('list_perspectives — exports schema and handler', () => {
+    assert.ok(listPerspectivesTool.schema, 'schema exists');
+    assert.ok(typeof listPerspectivesTool.handler === 'function', 'handler is a function');
+  });
+
+  it('show_forecast — exports schema and handler', () => {
+    assert.ok(showForecastTool.schema, 'schema exists');
+    assert.ok(typeof showForecastTool.handler === 'function', 'handler is a function');
+  });
+});
+
+// ── View validation tests (no OmniFocus calls) ──────────────────────────
+
+describe('tool validation: view', () => {
   it('no target — returns validation error', async () => {
     const result = await viewTool.handler({} as any, {});
     const r = assertMcpResponse(result, 'view empty');
@@ -185,186 +98,11 @@ describe('tool handler smoke: view', () => {
     const r = assertMcpResponse(result, 'view multi');
     assertError(r, 'view multi', /only one/);
   });
-
-  it('project view — does not throw', async () => {
-    const result = await viewTool.handler({ project: 'Test' } as any, {});
-    assertMcpResponse(result, 'view project');
-  });
-
-  it('inbox view — returns results', async () => {
-    const result = await viewTool.handler({ inbox: true } as any, {});
-    assertMcpResponse(result, 'view inbox');
-  });
-
-  it('flagged perspective — returns results', async () => {
-    const result = await viewTool.handler({ perspective: 'Flagged' } as any, {});
-    assertMcpResponse(result, 'view flagged');
-  });
 });
 
-describe('tool handler smoke: list_projects', () => {
-  it('schema exports', () => {
-    assert.ok(listProjectsTool.schema, 'schema exists');
-    assert.ok(typeof listProjectsTool.handler === 'function', 'handler is a function');
-  });
+// ── Mutation tool validation tests (no OmniFocus calls) ─────────────────
 
-  it('default args — returns project tree', async () => {
-    const result = await listProjectsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_projects');
-    assertSuccess(r, 'list_projects');
-    assert.match(r.content[0].text, /Projects/, 'output mentions Projects');
-  });
-});
-
-describe('tool handler smoke: list_tags', () => {
-  it('schema exports', () => {
-    assert.ok(listTagsTool.schema, 'schema exists');
-    assert.ok(typeof listTagsTool.handler === 'function', 'handler is a function');
-  });
-
-  it('default args — returns tag list', async () => {
-    const result = await listTagsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_tags');
-    assertSuccess(r, 'list_tags');
-    assert.match(r.content[0].text, /Tags/, 'output mentions Tags');
-  });
-});
-
-describe('tool handler smoke: list_perspectives', () => {
-  it('schema exports', () => {
-    assert.ok(listPerspectivesTool.schema, 'schema exists');
-    assert.ok(typeof listPerspectivesTool.handler === 'function', 'handler is a function');
-  });
-
-  it('default args — returns perspectives', async () => {
-    const result = await listPerspectivesTool.handler({} as any, {});
-    assertMcpResponse(result, 'list_perspectives');
-  });
-});
-
-describe('tool handler smoke: show_forecast', () => {
-  it('schema exports', () => {
-    assert.ok(showForecastTool.schema, 'schema exists');
-    assert.ok(typeof showForecastTool.handler === 'function', 'handler is a function');
-  });
-
-  it('default args — returns forecast', async () => {
-    const result = await showForecastTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'show_forecast');
-    assertSuccess(r, 'show_forecast');
-    assert.match(r.content[0].text, /Forecast/, 'output mentions Forecast');
-  });
-
-  it('custom days — returns forecast', async () => {
-    const result = await showForecastTool.handler({ days: 7 } as any, {});
-    const r = assertMcpResponse(result, 'show_forecast 7d');
-    assertSuccess(r, 'show_forecast 7d');
-  });
-});
-
-// ── No-JSON-output regression tests ──────────────────────────────────────
-//
-// Every non-mutating tool should return human-readable text, not raw JSON.
-// If a handler emits JSON.stringify output without a header/label prefix,
-// the LLM gets noisy structured data instead of a formatted summary.
-
-function assertNotRawJson(text: string, label: string): void {
-  const trimmed = text.trimStart();
-  assert.ok(
-    !trimmed.startsWith('{') && !trimmed.startsWith('['),
-    `${label}: response starts with raw JSON — expected human-readable text.\nFirst 200 chars: ${trimmed.slice(0, 200)}`
-  );
-}
-
-describe('no raw JSON output', () => {
-  it('query tasks — human-readable, not JSON', async () => {
-    const result = await queryTool.handler({ entity: 'tasks', limit: 3 } as any, {});
-    const r = assertMcpResponse(result, 'query noJSON');
-    assertSuccess(r, 'query noJSON');
-    assertNotRawJson(r.content[0].text, 'query tasks');
-  });
-
-  it('query projects — human-readable, not JSON', async () => {
-    const result = await queryTool.handler({ entity: 'projects', limit: 3 } as any, {});
-    const r = assertMcpResponse(result, 'query projects noJSON');
-    assertSuccess(r, 'query projects noJSON');
-    assertNotRawJson(r.content[0].text, 'query projects');
-  });
-
-  it('query tags — human-readable, not JSON', async () => {
-    const result = await queryTool.handler({ entity: 'tags', limit: 3 } as any, {});
-    const r = assertMcpResponse(result, 'query tags noJSON');
-    assertSuccess(r, 'query tags noJSON');
-    assertNotRawJson(r.content[0].text, 'query tags');
-  });
-
-  it('query folders — human-readable, not JSON', async () => {
-    const result = await queryTool.handler({ entity: 'folders' } as any, {});
-    const r = assertMcpResponse(result, 'query folders noJSON');
-    // May error on folders — only check if successful
-    if (!r.isError) {
-      assertNotRawJson(r.content[0].text, 'query folders');
-    }
-  });
-
-  it('view inbox — human-readable, not JSON', async () => {
-    const result = await viewTool.handler({ inbox: true } as any, {});
-    const r = assertMcpResponse(result, 'view inbox noJSON');
-    assertSuccess(r, 'view inbox noJSON');
-    assertNotRawJson(r.content[0].text, 'view inbox');
-  });
-
-  it('view flagged — human-readable, not JSON', async () => {
-    const result = await viewTool.handler({ perspective: 'Flagged' } as any, {});
-    const r = assertMcpResponse(result, 'view flagged noJSON');
-    assertSuccess(r, 'view flagged noJSON');
-    assertNotRawJson(r.content[0].text, 'view flagged');
-  });
-
-  it('view project — human-readable, not JSON', async () => {
-    const result = await viewTool.handler({ project: 'a' } as any, {});
-    const r = assertMcpResponse(result, 'view project noJSON');
-    assertSuccess(r, 'view project noJSON');
-    assertNotRawJson(r.content[0].text, 'view project');
-  });
-
-  it('list_projects — human-readable, not JSON', async () => {
-    const result = await listProjectsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_projects noJSON');
-    assertSuccess(r, 'list_projects noJSON');
-    assertNotRawJson(r.content[0].text, 'list_projects');
-  });
-
-  it('list_tags — human-readable, not JSON', async () => {
-    const result = await listTagsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_tags noJSON');
-    assertSuccess(r, 'list_tags noJSON');
-    assertNotRawJson(r.content[0].text, 'list_tags');
-  });
-
-  it('list_perspectives — human-readable, not JSON', async () => {
-    const result = await listPerspectivesTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_perspectives noJSON');
-    // Perspectives may error (no class code) — only check if successful
-    if (!r.isError) {
-      assertNotRawJson(r.content[0].text, 'list_perspectives');
-    }
-  });
-
-  it('show_forecast — human-readable, not JSON', async () => {
-    const result = await showForecastTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'show_forecast noJSON');
-    assertSuccess(r, 'show_forecast noJSON');
-    assertNotRawJson(r.content[0].text, 'show_forecast');
-  });
-});
-
-// ── Mutation tool smoke tests ────────────────────────────────────────────
-//
-// VALIDATION ONLY — never calls a primitive that touches OmniFocus.
-// Tests only exercise code paths that return before any osascript call.
-
-describe('tool handler smoke: add_task (validation)', () => {
+describe('tool validation: add_task', () => {
   it('schema exports', () => {
     assert.ok(addTaskTool.schema, 'schema exists');
     assert.ok(typeof addTaskTool.handler === 'function', 'handler is a function');
@@ -377,7 +115,7 @@ describe('tool handler smoke: add_task (validation)', () => {
   });
 });
 
-describe('tool handler smoke: add_project (validation)', () => {
+describe('tool validation: add_project', () => {
   it('schema exports', () => {
     assert.ok(addProjectTool.schema, 'schema exists');
     assert.ok(typeof addProjectTool.handler === 'function', 'handler is a function');
@@ -390,7 +128,7 @@ describe('tool handler smoke: add_project (validation)', () => {
   });
 });
 
-describe('tool handler smoke: edit (validation)', () => {
+describe('tool validation: edit', () => {
   it('schema exports', () => {
     assert.ok(editTool.schema, 'schema exists');
     assert.ok(typeof editTool.handler === 'function', 'handler is a function');
@@ -419,20 +157,9 @@ describe('tool handler smoke: edit (validation)', () => {
     const r = assertMcpResponse(result, 'edit no target');
     assertError(r, 'edit no target');
   });
-
-  it('query targeting defaults to dry run — returns preview', async () => {
-    const result = await editTool.handler({
-      query: { entity: 'tasks', where: { eq: [{ var: 'flagged' }, true] } },
-      mark: 'completed',
-    } as any, {});
-    const r = assertMcpResponse(result, 'edit query dryRun');
-    // dryRun=true by default for query targeting, so this should return
-    // either "Would edit" preview or "No items matched" — both are success
-    assert.ok(!r.isError || r.content[0].text.includes('No items'), 'dry run returns preview or empty');
-  });
 });
 
-describe('tool handler smoke: move (validation)', () => {
+describe('tool validation: move', () => {
   it('schema exports', () => {
     assert.ok(moveTool.schema, 'schema exists');
     assert.ok(typeof moveTool.handler === 'function', 'handler is a function');
@@ -451,8 +178,8 @@ describe('tool handler smoke: move (validation)', () => {
       id: 'abc', entity: 'tasks', toFolderName: 'Work',
       dryRun: false,
     } as any, {});
-    const r = assertMcpResponse(result, 'move tasks→folder');
-    assertError(r, 'move tasks→folder');
+    const r = assertMcpResponse(result, 'move tasks->folder');
+    assertError(r, 'move tasks->folder');
   });
 
   it('no destination — returns error', async () => {
@@ -465,7 +192,7 @@ describe('tool handler smoke: move (validation)', () => {
   });
 });
 
-describe('tool handler smoke: remove (validation)', () => {
+describe('tool validation: remove', () => {
   it('schema exports', () => {
     assert.ok(removeTool.schema, 'schema exists');
     assert.ok(typeof removeTool.handler === 'function', 'handler is a function');
