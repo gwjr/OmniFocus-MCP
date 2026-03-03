@@ -216,6 +216,22 @@ class JxaCompilerBackend implements ExprBackend<string> {
     return `(${rVar}.test(${str}))`;
   }
 
+  // ── Null Checks ──────────────────────────────────────────────────────
+
+  isNull(arg: string): string {
+    return `(${arg}==null)`;
+  }
+
+  isNotNull(arg: string): string {
+    return `(${arg}!=null)`;
+  }
+
+  // ── Array Functions ──────────────────────────────────────────────────
+
+  count(arg: string): string {
+    return `(function(){var _c=${arg};return _c!=null&&Array.isArray(_c)?_c.length:0;}())`;
+  }
+
   // ── Date Arithmetic ─────────────────────────────────────────────────
 
   offset(date: string, days: number): string {

@@ -256,29 +256,22 @@ describe('nodeEval — count in comparisons', () => {
 });
 
 describe('nodeEval — count type validation', () => {
-  it('count on non-array var (name) should error or return 0', () => {
+  it('count on non-array var (name) throws at runtime', () => {
     // count({var:"name"}) where name is a string, not an array.
-    // Two valid behaviors:
-    //   a) Throw at compile time (lower or fold rejects non-array arg)
-    //   b) Return 0 at runtime (string.length is not meaningful for count semantics)
-    // We test for either behavior.
-    try {
-      const result = evalValue({ count: [{ var: 'name' }] }, { name: 'hello' });
-      // If it doesn't throw, it should return 0 (not string length)
-      assert.equal(result, 0, 'count on a string should return 0, not string length');
-    } catch (err) {
-      // Acceptable: throws during lowering, folding, or compilation
-      assert.ok(err instanceof Error);
-    }
+    // Non-null non-array values are a type error — 0 would be misleading
+    // (it would imply the item has an empty collection, not that the field
+    // is the wrong type). Throw to surface the programming error.
+    assert.throws(
+      () => evalValue({ count: [{ var: 'name' }] }, { name: 'hello' }),
+      (err: Error) => err instanceof Error
+    );
   });
 
-  it('count on boolean var should error or return 0', () => {
-    try {
-      const result = evalValue({ count: [{ var: 'flagged' }] }, { flagged: true });
-      assert.equal(result, 0, 'count on a boolean should return 0');
-    } catch (err) {
-      assert.ok(err instanceof Error);
-    }
+  it('count on boolean var throws at runtime', () => {
+    assert.throws(
+      () => evalValue({ count: [{ var: 'flagged' }] }, { flagged: true }),
+      (err: Error) => err instanceof Error
+    );
   });
 });
 

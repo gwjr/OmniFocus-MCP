@@ -92,6 +92,18 @@ class VarCollectorBackend implements ExprBackend<Set<string>> {
     return date;
   }
 
+  count(arg: Set<string>): Set<string> {
+    return arg;
+  }
+
+  isNull(arg: Set<string>): Set<string> {
+    return arg;
+  }
+
+  isNotNull(arg: Set<string>): Set<string> {
+    return arg;
+  }
+
   container(
     _type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,

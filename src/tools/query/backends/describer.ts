@@ -120,6 +120,14 @@ function describeCompactOp(op: string, args: unknown[]): string | null {
       return `${d(args[0])} ends with ${d(args[1])}`;
     case 'matches':
       return `${d(args[0])} matches ${d(args[1])}`;
+    case 'isNull':
+      return `${d(args[0])} is null`;
+    case 'isNotNull':
+      return `${d(args[0])} is not null`;
+    case 'notIn':
+      return `${d(args[0])} not in ${d(args[1])}`;
+    case 'count':
+      return `count(${d(args[0])})`;
     default:
       return `${op}(${args.map(a => d(a)).join(', ')})`;
   }
@@ -219,6 +227,18 @@ class DescriberBackend implements ExprBackend<string> {
 
   matches(str: string, pattern: string): string {
     return `${str} matches "${pattern}"`;
+  }
+
+  count(arg: string): string {
+    return `count(${arg})`;
+  }
+
+  isNull(arg: string): string {
+    return `${arg} is null`;
+  }
+
+  isNotNull(arg: string): string {
+    return `${arg} is not null`;
   }
 
   offset(date: string, days: number): string {

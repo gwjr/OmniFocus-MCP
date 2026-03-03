@@ -371,9 +371,9 @@ describe('planner — isNull / isNotNull', () => {
     assert.ok(scan.columns.includes('dueDate'));
   });
 
-  it('isNull on expensive var (note) → fallback', () => {
+  it('isNull on note → two-phase (PerItemEnrich)', () => {
     const tree = plan({ isNull: [{ var: 'note' }] }, 'tasks');
-    assert.equal(planPathLabel(tree), 'fallback');
+    assert.equal(planPathLabel(tree), 'two-phase');
   });
 
   it('isNull on per-item var → two-phase', () => {

@@ -51,6 +51,13 @@ export interface ExprBackend<T> {
   // Date arithmetic
   offset(date: T, days: number): T;
 
+  // Array functions
+  count(arg: T): T;
+
+  // Null checks
+  isNull(arg: T): T;
+  isNotNull(arg: T): T;
+
   // Structural scoping
   container(
     type: 'project' | 'folder' | 'tag',
@@ -144,6 +151,15 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
       case 'offset': {
         return backend.offset(f(args[0]), args[1] as number);
       }
+
+      case 'count':
+        return backend.count(f(args[0]));
+
+      case 'isNull':
+        return backend.isNull(f(args[0]));
+
+      case 'isNotNull':
+        return backend.isNotNull(f(args[0]));
 
       case 'container': {
         // args[0] is "project", "folder", or "tag"; args[1] is the sub-expression

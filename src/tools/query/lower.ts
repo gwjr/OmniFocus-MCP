@@ -119,6 +119,16 @@ export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
             );
           }
         }
+        if (opName === 'notIn') {
+          if (!Array.isArray(loweredArgs[1])) {
+            throw new LowerError(
+              'Second argument to "notIn" must be an array literal (e.g. ["Active","OnHold"]).',
+              `${path}.notIn[1]`, node
+            );
+          }
+          // Desugar notIn to not(in(...)) at lower time
+          return { op: 'not', args: [{ op: 'in', args: loweredArgs }] };
+        }
         if (opName === 'matches') {
           if (typeof loweredArgs[1] !== 'string') {
             throw new LowerError(

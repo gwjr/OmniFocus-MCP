@@ -274,6 +274,27 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
     };
   }
 
+  // ── Null Checks ─────────────────────────────────────────────────────
+
+  isNull(arg: RowFn): RowFn {
+    return (row) => arg(row) == null;
+  }
+
+  isNotNull(arg: RowFn): RowFn {
+    return (row) => arg(row) != null;
+  }
+
+  // ── Array Functions ──────────────────────────────────────────────────
+
+  count(arg: RowFn): RowFn {
+    return (row) => {
+      const v = arg(row);
+      if (v == null) return 0;
+      if (!Array.isArray(v)) throw new Error(`count() requires an array, got ${typeof v}`);
+      return v.length;
+    };
+  }
+
   // ── Date Arithmetic ─────────────────────────────────────────────────
 
   offset(date: RowFn, days: number): RowFn {

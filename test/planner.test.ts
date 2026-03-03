@@ -113,9 +113,9 @@ describe('planner — path selection', () => {
     assert.equal(planPathLabel(tree), 'fallback');
   });
 
-  it('expensive var (note) in where → omnijs-fallback', () => {
+  it('note in where → two-phase (PerItemEnrich)', () => {
     const tree = plan({ contains: [{ var: 'note' }, 'important'] }, 'tasks');
-    assert.equal(planPathLabel(tree), 'fallback');
+    assert.equal(planPathLabel(tree), 'two-phase');
   });
 
   it('easy vars only → broad', () => {
@@ -243,9 +243,9 @@ describe('planner — tags entity', () => {
     assert.ok(enrich.perItemVars.has('parentName'));
   });
 
-  it('tags with expensive var (note) in where → omnijs-fallback', () => {
+  it('tags with note in where → two-phase (PerItemEnrich)', () => {
     const tree = plan({ contains: [{ var: 'note' }, 'important'] }, 'tags');
-    assert.equal(planPathLabel(tree), 'fallback');
+    assert.equal(planPathLabel(tree), 'two-phase');
   });
 
   it('tags with tag container → semijoin', () => {
