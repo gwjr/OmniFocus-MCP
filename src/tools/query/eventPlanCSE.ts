@@ -6,7 +6,7 @@
  */
 
 import type { EventPlan, EventNode, Specifier, Ref } from './eventPlan.js';
-import { rewriteNode, rewriteSpec } from './eventPlanUtils.js';
+import { rewriteNode, compactPlan } from './eventPlanUtils.js';
 
 // ── Specifier keying ────────────────────────────────────────────────────────
 
@@ -34,6 +34,31 @@ function nameKey(name: string | Ref, canonical: (r: Ref) => Ref): string {
   return typeof name === 'number' ? `@${canonical(name)}` : JSON.stringify(name);
 }
 
+// ── Node keying ──────────────────────────────────────────────────────────────
+
+/**
+ * Produce a structural key for a node eligible for CSE, or null if the node
+ * kind is not eligible. Only pure, deterministic nodes qualify.
+ */
+function nodeKey(node: import('./eventPlan.js').EventNode, canonical: (r: Ref) => Ref): string | null {
+  switch (node.kind) {
+    case 'Get':
+      return `Get:${specKey(node.specifier, canonical)}`;
+    case 'Zip': {
+      // Zip columns keyed by sorted (name, canonical ref) pairs
+      const cols = node.columns
+        .map(c => `${c.name}:@${canonical(c.ref)}`)
+        .sort()
+        .join(',');
+      return `Zip:[${cols}]`;
+    }
+    case 'ColumnValues':
+      return `CV(@${canonical(node.source)},${node.field})`;
+    default:
+      return null;
+  }
+}
+
 // ── CSE pass ────────────────────────────────────────────────────────────────
 
 export function cseEventPlan(plan: EventPlan): EventPlan {
@@ -53,8 +78,8 @@ export function cseEventPlan(plan: EventPlan): EventPlan {
 
   for (let i = 0; i < n; i++) {
     const node = plan.nodes[i];
-    if (node.kind === 'Get') {
-      const key = specKey(node.specifier, canonical);
+    const key = nodeKey(node, canonical);
+    if (key !== null) {
       const existing = seen.get(key);
       if (existing !== undefined) {
         rename[i] = existing;
@@ -84,33 +109,5 @@ export function cseEventPlan(plan: EventPlan): EventPlan {
     return { nodes: rewritten, result: newResult };
   }
 
-  // Build compaction map: old index → new index
-  const compact = new Map<Ref, Ref>();
-  for (let newIdx = 0; newIdx < survivors.length; newIdx++) {
-    compact.set(survivors[newIdx], newIdx);
-  }
-
-  function compactRef(r: Ref): Ref {
-    const mapped = compact.get(r);
-    if (mapped === undefined) {
-      // This ref was eliminated — it should have been canonicalized already
-      // by pass 2, so look up its canonical form
-      const c = canonical(r);
-      const m = compact.get(c);
-      if (m === undefined) {
-        throw new Error(`CSE compact: dangling ref ${r} (canonical ${c})`);
-      }
-      return m;
-    }
-    return mapped;
-  }
-
-  const compactedNodes = survivors.map(oldIdx =>
-    rewriteNode(rewritten[oldIdx], compactRef)
-  );
-
-  return {
-    nodes: compactedNodes,
-    result: compactRef(newResult),
-  };
+  return compactPlan(rewritten, newResult, survivors, 'cseEventPlan');
 }

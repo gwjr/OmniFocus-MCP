@@ -10,7 +10,7 @@
  *   - rewriteNode/Spec:    apply a Ref remapping to a node/specifier
  */
 
-import type { EventNode, Ref, Runtime, Specifier } from './eventPlan.js';
+import type { EventNode, EventPlan, Ref, Runtime, Specifier } from './eventPlan.js';
 
 // ── Default runtime per node kind ────────────────────────────────────────────
 
@@ -35,6 +35,7 @@ export function defaultRuntime(node: EventNode): Runtime {
     case 'Union':
     case 'RowCount':
     case 'AddSwitch':
+    case 'SetOp':
       return 'node';
   }
 }
@@ -87,6 +88,9 @@ export function collectRefs(node: EventNode): Ref[] {
     case 'Union':
       refs.push(node.left, node.right);
       break;
+    case 'SetOp':
+      refs.push(node.left, node.right);
+      break;
   }
 
   return refs;
@@ -133,6 +137,44 @@ export function rewriteSpec(spec: Specifier, remap: (r: Ref) => Ref): Specifier 
 
 function rewriteParent(p: Specifier | Ref, remap: (r: Ref) => Ref): Specifier | Ref {
   return typeof p === 'number' ? remap(p) : rewriteSpec(p, remap);
+}
+
+// ── Plan compaction ───────────────────────────────────────────────────────────
+
+/**
+ * Compact an EventPlan by keeping only `survivors` (an ordered list of old
+ * node indices to retain, in ascending order). Builds the old→new remap,
+ * rewrites all Refs in surviving nodes, and returns the new plan.
+ *
+ * The optional `errorTag` is included in the "dangling ref" error message to
+ * identify which pass is calling this utility.
+ *
+ * If `survivors.length === nodes.length`, no nodes are removed and no
+ * rewriting is needed — the caller should short-circuit before calling this.
+ */
+export function compactPlan(
+  nodes: EventNode[],
+  result: Ref,
+  survivors: number[],
+  errorTag = 'compactPlan',
+): EventPlan {
+  const oldToNew = new Map<Ref, Ref>();
+  for (let newIdx = 0; newIdx < survivors.length; newIdx++) {
+    oldToNew.set(survivors[newIdx], newIdx);
+  }
+
+  function remap(r: Ref): Ref {
+    const mapped = oldToNew.get(r);
+    if (mapped === undefined) {
+      throw new Error(`${errorTag}: dangling ref ${r}`);
+    }
+    return mapped;
+  }
+
+  return {
+    nodes: survivors.map(oldIdx => rewriteNode(nodes[oldIdx], remap)),
+    result: remap(result),
+  };
 }
 
 export function rewriteNode(node: EventNode, remap: (r: Ref) => Ref): EventNode {
@@ -189,5 +231,7 @@ export function rewriteNode(node: EventNode, remap: (r: Ref) => Ref): EventNode 
       return { ...node, source: remap(node.source) };
     case 'AddSwitch':
       return { ...node, source: remap(node.source) };
+    case 'SetOp':
+      return { ...node, left: remap(node.left), right: remap(node.right) };
   }
 }
