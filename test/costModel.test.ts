@@ -18,16 +18,11 @@ describe('runtimeCost', () => {
     assert.equal(runtimeCost('jxa'), 50);
   });
 
-  it('omniJS has compilation overhead (~1700ms)', () => {
-    assert.equal(runtimeCost('omniJS'), 1700);
-  });
-
   it('node is free (0ms)', () => {
     assert.equal(runtimeCost('node'), 0);
   });
 
-  it('omniJS > jxa > node', () => {
-    assert.ok(runtimeCost('omniJS') > runtimeCost('jxa'));
+  it('jxa > node', () => {
     assert.ok(runtimeCost('jxa') > runtimeCost('node'));
   });
 });
@@ -141,17 +136,3 @@ describe('opCost — node-side ops in JXA context (fallthrough)', () => {
   });
 });
 
-// ── opCost: omniJS uses same costs as JXA ───────────────────────────────
-
-describe('opCost — omniJS', () => {
-
-  it('AE ops in omniJS match JXA costs', () => {
-    assert.equal(opCost('omniJS', 'Get', 100), opCost('jxa', 'Get', 100));
-    assert.equal(opCost('omniJS', 'Set', 1), opCost('jxa', 'Set', 1));
-  });
-
-  it('node-side ops in omniJS match node costs', () => {
-    assert.equal(opCost('omniJS', 'Filter', 500), opCost('node', 'Filter', 500));
-    assert.equal(opCost('omniJS', 'Sort', 100), opCost('node', 'Sort', 100));
-  });
-});

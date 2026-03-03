@@ -27,13 +27,11 @@ import type { Runtime, EventNode } from './eventPlan.js';
  * Fixed overhead per ExecutionUnit invocation (IPC launch cost etc.).
  *
  * - jxa: ~25ms interpreter startup + ~25ms overhead ≈ 50ms
- * - omniJS: ~1,700ms evaluateJavaScript compilation
  * - node: 0ms (in-process)
  */
 export function runtimeCost(runtime: Runtime): number {
   switch (runtime) {
     case 'jxa':    return 50;
-    case 'omniJS': return 1700;
     case 'node':   return 0;
   }
 }
@@ -53,7 +51,7 @@ export function opCost(runtime: Runtime, kind: EventNode['kind'], cardinality: n
     return nodeOpCost(kind, cardinality);
   }
 
-  // JXA / OmniJS Apple Events ops
+  // JXA Apple Events ops
   switch (kind) {
     // ── AE reads ──────────────────────────────────────────────────────────
 
@@ -85,9 +83,9 @@ export function opCost(runtime: Runtime, kind: EventNode['kind'], cardinality: n
       // Use per-item cost of ~75ms (amortised) for conservative estimate.
       return 100 + cardinality * 75;
 
-    // ── Node-side ops that happen to run in JXA/OmniJS context ────────────
-    // (These shouldn't normally be assigned to jxa/omniJS, but provide
-    //  safe estimates if they are.)
+    // ── Node-side ops that happen to run in JXA context ────────────────────
+    // (These shouldn't normally be assigned to jxa, but provide safe
+    //  estimates if they are.)
 
     case 'Zip':
     case 'ColumnValues':
@@ -102,6 +100,7 @@ export function opCost(runtime: Runtime, kind: EventNode['kind'], cardinality: n
     case 'Union':
     case 'RowCount':
     case 'AddSwitch':
+    case 'SetOp':
       // These are data-manipulation ops. If running in JXA, they operate
       // on in-memory arrays with no AE overhead.
       return nodeOpCost(kind, cardinality);
@@ -165,6 +164,10 @@ function nodeOpCost(kind: EventNode['kind'], cardinality: number): number {
     case 'AddSwitch':
       // Predicate evaluation + column assignment per row: ~0.05ms
       return 0.05 * cardinality;
+
+    case 'SetOp':
+      // Set intersection/subtraction: ~0.01ms per element
+      return 0.01 * cardinality;
 
     // AE ops should not be assigned to node, but return safe high estimates
     case 'Get':

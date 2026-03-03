@@ -125,7 +125,7 @@ function isNonMaterializing(node: EventNode): boolean {
  * For each cross-unit input ref:
  *   - If the producing node is a non-materializing Get:
  *     • Consuming unit is 'node' → compile error (can't deserialize AE specifiers)
- *     • Consuming unit is 'jxa'/'omniJS' → set kind='specifier' with the
+ *     • Consuming unit is 'jxa' → set kind='specifier' with the
  *       specifier from the producing Get, so the emitter can reconstruct it.
  *   - Otherwise: keep kind='value' (JSON-serializable).
  *
@@ -148,7 +148,7 @@ export function computeBindings(
             `cannot cross to node execution unit`,
           );
         }
-        // JXA or omniJS: reconstruct specifier in-place
+        // JXA: reconstruct specifier in-place
         refinedInputs.push({
           ref: input.ref,
           kind: 'specifier',

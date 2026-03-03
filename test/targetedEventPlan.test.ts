@@ -119,7 +119,7 @@ describe('targetEventPlan — runtime assignment', () => {
     // Hints are now inline annotations (Hinted<T>), not separate Hint nodes.
     // The targeted plan should contain no node with kind 'Hint'.
     const plan = makePlan([
-      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'omniJS' } as any,
+      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'jxa' } as any,
     ]);
     const { targeted } = targetEventPlan(plan);
     for (const node of targeted.nodes) {
@@ -130,14 +130,13 @@ describe('targetEventPlan — runtime assignment', () => {
   });
 
   it('Hint overrides default runtime — allocation is fixed', () => {
-    // A Get(Elements) node with hint:'omniJS' should produce a fixed allocation,
-    // not the default proposed:'jxa'.
+    // A Get(Elements) node with hint:'jxa' should produce a fixed allocation.
     const plan = makePlan([
-      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'omniJS' } as any,
+      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'jxa' } as any,
     ]);
     const { targeted } = targetEventPlan(plan);
-    assert.equal(nodeRuntime(targeted, 0), 'omniJS');
-    assert.deepEqual(nodeAllocation(targeted, 0), { kind: 'fixed', runtime: 'omniJS' });
+    assert.equal(nodeRuntime(targeted, 0), 'jxa');
+    assert.deepEqual(nodeAllocation(targeted, 0), { kind: 'fixed', runtime: 'jxa' });
   });
 
   it('Un-hinted node gets proposed allocation', () => {
@@ -152,7 +151,7 @@ describe('targetEventPlan — runtime assignment', () => {
     // After assignRuntimes the hint property must be absent from the output node,
     // consumed into runtimeAllocation.
     const plan = makePlan([
-      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'omniJS' } as any,
+      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'jxa' } as any,
     ]);
     const { targeted } = targetEventPlan(plan);
     assert.ok(!('hint' in targeted.nodes[0]), 'hint field should be stripped from TargetedNode');
@@ -161,7 +160,7 @@ describe('targetEventPlan — runtime assignment', () => {
   it('result Ref is preserved (single hinted node at ref 0)', () => {
     // With inline hints there is no extra Hint node; result stays at ref 0.
     const plan = makePlan([
-      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'omniJS' } as any,
+      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'jxa' } as any,
     ]);
     const { targeted } = targetEventPlan(plan);
     assert.equal(targeted.result, 0);
@@ -278,20 +277,6 @@ describe('targetEventPlan — ExecutionUnit grouping', () => {
     assert.ok(inputRefs.includes(2), 'node unit inputs should include ref 2');
   });
 
-  it('hinted node lands in its own runtime ExecutionUnit', () => {
-    // A Get node hinted to omniJS sits between two jxa Gets.
-    // It should end up in an omniJS ExecutionUnit.
-    const plan = makePlan([
-      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating' },
-      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'omniJS' } as any,
-    ]);
-    const { units } = targetEventPlan(plan);
-    const jxaUnit  = unitOf(units, 0);
-    const omniUnit = unitOf(units, 1);
-    assert.notStrictEqual(jxaUnit, omniUnit);
-    assert.equal(jxaUnit.runtime,  'jxa');
-    assert.equal(omniUnit.runtime, 'omniJS');
-  });
 });
 
 // ── assignRuntimes / splitExecutionUnits individually ───────────────────

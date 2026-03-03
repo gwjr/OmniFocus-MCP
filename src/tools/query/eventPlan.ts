@@ -1,7 +1,7 @@
 /**
  * EventPlan IR
  *
- * Intermediate representation between StrategyNode and emitted code
+ * Intermediate representation between SetIR and emitted code
  * (JXA / AppleScript / OmniJS / Node).
  *
  * Runtime-agnostic: no JXA, AppleScript, or OmniJS syntax embedded.
@@ -27,7 +27,7 @@ export type Ref = number;
 
 // ── Runtime ──────────────────────────────────────────────────────────────────
 
-export type Runtime = 'jxa' | 'omniJS' | 'node';
+export type Runtime = 'jxa' | 'node';
 
 // ── RuntimeAllocation ────────────────────────────────────────────────────────
 
@@ -46,9 +46,8 @@ export type RuntimeAllocation =
 
 /**
  * A Hinted<T> is a T node annotated with a runtime constraint by the
- * Strategy→EventPlan lowering pass. The lowering pass has app-specific
- * knowledge (e.g. FallbackScan must run in omniJS) that the generic
- * targeting pass does not.
+ * lowering pass. The lowering pass has app-specific knowledge that the
+ * generic targeting pass does not.
  *
  * The targeting pass reads hint and converts it to { kind: 'fixed', runtime }.
  */
@@ -220,6 +219,15 @@ export type EventNode =
   // Terminal — the result ref holds a number, not a Row[].
   | { kind: 'RowCount';
       source: Ref;
+    }
+
+  // Set algebra on id arrays (string[] or Set<string>).
+  // Computes left ∩ right (intersect) or left \ right (subtract).
+  // Produced by the mergeSemiJoins optimisation pass.
+  | { kind: 'SetOp';
+      left:  Ref;
+      right: Ref;
+      op:    'intersect' | 'subtract';
     }
 
   // Adds a computed column to each row in source.

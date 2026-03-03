@@ -195,6 +195,9 @@ function describeNode(node: EventNode, idx: string, prefix: string): string[] {
     case 'Union':
       return [`${lhs} = Union(${fmtRef(node.left)}, ${fmtRef(node.right)})`];
 
+    case 'SetOp':
+      return [`${lhs} = SetOp(${fmtRef(node.left)}, ${fmtRef(node.right)}, op:'${node.op}')`];
+
     case 'RowCount':
       return [`${lhs} = RowCount(${fmtRef(node.source)})`];
 
@@ -212,6 +215,11 @@ function describeNode(node: EventNode, idx: string, prefix: string): string[] {
       lines.push(`${prefix}  collect: %${idx}.${node.collect}`);
       lines.push(`${prefix}}`);
       return lines;
+    }
+
+    default: {
+      const _exhaustive: never = node;
+      return [`${lhs} = Unknown(${(_exhaustive as EventNode).kind})`];
     }
   }
 }

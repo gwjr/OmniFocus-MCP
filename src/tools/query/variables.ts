@@ -6,36 +6,106 @@
  * JXA accessor expressions live in backends/jxaVarAccessors.ts.
  */
 
+import type { LoweredExpr } from './fold.js';
+
 export interface VarDef {
   /** Type hint for compile-time checking */
   type: 'string' | 'number' | 'boolean' | 'date' | 'enum' | 'array';
   /** Property name in bulk-read row objects */
   nodeKey: string;
-  /** Apple Events bulk property name, or null if per-item only */
+  /** Apple Events bulk property name, or null if expensive/computed */
   appleEventsProperty: string | null;
   /** Read cost classification */
-  cost: 'easy' | 'chain' | 'per-item' | 'expensive' | 'computed';
+  cost: 'easy' | 'chain' | 'expensive' | 'computed';
 }
 
 export type VarCost = VarDef['cost'];
 
 export type VarRegistry = Record<string, VarDef>;
 
+// ── Computed variable specifications ───────────────────────────────────
+//
+// Single source of truth for computed variables: their dependency lists,
+// case-based derivation logic, and defaults.
+//
+// Previously, dependency lists were duplicated in variables.ts (computedVarDeps)
+// and lowerToSetIr.ts (COMPUTED_VAR_SPECS). Now consolidated here.
+
+/** One case in a computed-variable switch: if predicate is truthy, assign value. */
+export interface ComputedVarCase {
+  predicate: LoweredExpr;
+  value: LoweredExpr;
+}
+
 /**
- * Dependency map for computed variables.
- * Key: entity name. Value: map of computed var name → list of dependency var names.
- * The planner adds dependencies to BulkScan columns so the executor can derive values.
+ * Describes how a computed variable is derived as an AddSwitch node.
+ * deps: the real AE properties that must be scanned before evaluation.
+ * cases: evaluated in order; first match wins.
+ * default: value when no case matches. { kind: 'Error' } = exhaustive (should never miss).
  */
-export const computedVarDeps: Record<string, Record<string, string[]>> = {
+export interface ComputedVarSpec {
+  deps: string[];
+  cases: ComputedVarCase[];
+  default: LoweredExpr | { kind: 'Error'; message?: string };
+}
+
+const TASK_STATUS_SPEC: ComputedVarSpec = {
+  deps: ['completed', 'dropped', 'blocked', 'dueDate'],
+  cases: [
+    { predicate: { var: 'completed' }, value: 'Completed' },
+    { predicate: { var: 'dropped' },   value: 'Dropped'   },
+    { predicate: { var: 'blocked' },   value: 'Blocked'   },
+    {
+      predicate: { op: 'and', args: [
+        { op: 'isNotNull', args: [{ var: 'dueDate' }] },
+        { op: 'lt',        args: [{ var: 'dueDate' }, { var: 'now' }] },
+      ]},
+      value: 'Overdue',
+    },
+    {
+      predicate: { op: 'and', args: [
+        { op: 'isNotNull', args: [{ var: 'dueDate' }] },
+        { op: 'lt', args: [
+          { var: 'dueDate' },
+          { op: 'offset', args: [{ var: 'now' }, 7] },
+        ]},
+      ]},
+      value: 'DueSoon',
+    },
+  ],
+  default: 'Next',
+};
+
+export const COMPUTED_VAR_SPECS: Readonly<Record<string, Readonly<Record<string, ComputedVarSpec>>>> = {
   tasks: {
-    status: ['completed', 'dropped', 'blocked', 'dueDate'],
-    taskStatus: ['completed', 'dropped', 'blocked', 'dueDate'],  // alias for status
-    hasChildren: ['childCount'],
+    status:     TASK_STATUS_SPEC,
+    taskStatus: TASK_STATUS_SPEC,  // alias — same computation
+    hasChildren: {
+      deps: ['childCount'],
+      cases: [
+        { predicate: { op: 'gt', args: [{ var: 'childCount' }, 0] }, value: true },
+      ],
+      default: false,
+    },
   },
   folders: {
-    status: ['hidden'],
+    status: {
+      deps: ['hidden'],
+      cases: [
+        { predicate: { var: 'hidden' }, value: 'Dropped' },
+      ],
+      default: 'Active',
+    },
   },
 };
+
+/**
+ * Look up the dependency list for a computed variable.
+ * Returns undefined if the variable is not computed.
+ */
+export function computedVarDeps(entity: string, varName: string): string[] | undefined {
+  return COMPUTED_VAR_SPECS[entity]?.[varName]?.deps;
+}
 
 // Helpers for concise registry definitions
 const str  = (nodeKey: string, appleEventsProperty: string | null, cost: VarDef['cost']): VarDef =>
@@ -121,10 +191,9 @@ export const projectVars: VarRegistry = {
   // must cross-reference against known folder IDs and treat non-folder containers as null.
   folderId:           str( 'folderId',           'container',             'chain'),
 
-  // per-item: container.name() — null for root-level projects (container is the document).
-  // The legacy pipeline routes this through PerItemEnrich; the SetIR pipeline routes it
-  // through Enrich, which uses the chain prop spec from strategyToEventPlan.ts.
-  folderName:         str( 'folderName',         null,                    'per-item'),
+  // expensive: container.name() — null for root-level projects (container is the document).
+  // Resolved via join-based enrichment in lowerSetIrToEventPlan.
+  folderName:         str( 'folderName',         null,                    'expensive'),
 
   // expensive
   note:               str( 'note',               null,                    'expensive'),
@@ -142,8 +211,8 @@ export const folderVars: VarRegistry = {
   // chain: chained bulk via container
   parentFolderId: str( 'parentFolderId', 'container','chain'),
 
-  // per-item: resolved by crossEntityJoinPass
-  projectCount:   num( 'projectCount',   null,       'per-item'),
+  // expensive: resolved via join-based enrichment
+  projectCount:   num( 'projectCount',   null,       'expensive'),
 
   // computed: derived in Node from bulk-readable hidden property
   status:         enm( 'status',         null,       'computed'),
@@ -170,8 +239,8 @@ export const tagVars: VarRegistry = {
   // chain: chained bulk via container.id() (parent tag ID)
   parentId:           str( 'parentId',           'container',           'chain'),
 
-  // per-item: requires per-item access
-  parentName:         str( 'parentName',         null,                  'per-item'),
+  // expensive: resolved via join-based enrichment
+  parentName:         str( 'parentName',         null,                  'expensive'),
 
   // expensive
   note:               str( 'note',               null,                  'expensive'),
@@ -202,4 +271,15 @@ export function getVarNames(entity: EntityType): string[] {
 export function isArrayVar(varName: string, entity: EntityType): boolean {
   const registry = getVarRegistry(entity);
   return registry[varName]?.type === 'array';
+}
+
+/**
+ * Check whether a variable is task-only: present in the task registry but
+ * absent from the project registry.
+ *
+ * Used to optimise away the project-exclusion Difference node for task queries
+ * whose predicates only reference task-only vars (projects can never match).
+ */
+export function isTaskOnlyVar(varName: string): boolean {
+  return varName in taskVars && !(varName in projectVars);
 }

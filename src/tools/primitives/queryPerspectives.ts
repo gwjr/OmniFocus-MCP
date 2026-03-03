@@ -74,7 +74,10 @@ export async function queryPerspectives(
 
   let items: Row[] = result.items || [];
 
-  // Node-side filtering by predicate if present
+  // Node-side filtering by predicate if present.
+  // On filter compile error, return unfiltered results rather than failing
+  // the query — perspective rows have a minimal schema (id, name, type) so
+  // most predicates won't apply, but we don't want to crash on unsupported ops.
   if (filterAst !== true) {
     try {
       const predicate = compileNodePredicate(filterAst, 'perspectives' as any);

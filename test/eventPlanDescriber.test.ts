@@ -102,11 +102,11 @@ describe('describeTargetedEventPlan', () => {
 
   it('shows fixed allocation for hinted nodes', () => {
     const plan = makePlan([
-      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'omniJS' } as any,
+      { kind: 'Get', specifier: { kind: 'Elements', parent: doc, classCode: 'FCft' }, effect: 'nonMutating', hint: 'jxa' } as any,
     ]);
     const { targeted } = targetEventPlan(plan);
     const output = describeTargetedEventPlan(targeted);
-    assert.ok(output.includes('[omniJS fixed]'), 'hinted node should show fixed allocation');
+    assert.ok(output.includes('[jxa fixed]'), 'hinted node should show fixed allocation');
   });
 });
 
