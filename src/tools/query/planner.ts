@@ -366,7 +366,7 @@ export const extractContainerScope = extractContainer;
 // ── Containing Extraction ────────────────────────────────────────────────
 
 interface ContainingExtraction {
-  /** Child entity type (currently only 'tasks') */
+  /** Child entity type (e.g. 'tasks', 'projects') — validated against REVERSE_MEMBERSHIP */
   childEntity: string;
   /** The child predicate (applied to the child entity) */
   predicate: LoweredExpr;

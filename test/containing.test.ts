@@ -122,16 +122,12 @@ describe('lowerExpr — containing operator', () => {
     );
   });
 
-  it('rejects containing with invalid child entity type', () => {
-    // Only "tasks" should be valid as the child entity for containing
-    assert.throws(
-      () => lowerExpr({ containing: ['folders', { eq: [{ var: 'name' }, 'test'] }] }),
-      (err: Error) => {
-        if (!(err instanceof LowerError)) return false;
-        // Error message should mention "tasks" as the valid child entity
-        return err.message.includes('tasks') || err.message.includes('containing');
-      }
-    );
+  it('accepts any string as child entity (semantic validation is in planner)', () => {
+    // lower.ts only checks syntax (string type), not relationship validity.
+    // The planner validates the (child, parent) pair against the object graph.
+    const result = lowerExpr({ containing: ['folders', { eq: [{ var: 'name' }, 'test'] }] });
+    assert.ok(result);
+    assert.deepStrictEqual((result as any).op, 'containing');
   });
 
   it('rejects containing with non-string child entity', () => {
@@ -319,6 +315,24 @@ describe('planner — containing operator', () => {
     const tree = plan(
       { containing: ['tasks', { contains: [{ var: 'name' }, 'review'] }] },
       'projects'
+    );
+    assert.equal(planPathLabel(tree), 'semijoin');
+  });
+
+  it('planner is generic — any child entity produces a SemiJoin', () => {
+    // The planner doesn't validate relationships; the execution layer does.
+    // Even an invalid pair like tasks→folders produces a SemiJoin plan.
+    const tree = plan(
+      { containing: ['tasks', { eq: [{ var: 'flagged' }, true] }] },
+      'folders'
+    );
+    assert.equal(planPathLabel(tree), 'semijoin');
+  });
+
+  it('containing(projects, ...) on folders → semijoin', () => {
+    const tree = plan(
+      { containing: ['projects', { eq: [{ var: 'status' }, 'Active'] }] },
+      'folders'
     );
     assert.equal(planPathLabel(tree), 'semijoin');
   });
@@ -525,6 +539,31 @@ describe('lowerStrategy — containing operator (SemiJoin with reverse Membershi
 
     // Result should be the status Filter (outermost node)
     assert.equal(plan.result, userFilter!.ref);
+  });
+
+  it('invalid reverse membership throws at EventPlan lowering (not planner)', () => {
+    // The planner is generic — it passes through any (child, parent) pair.
+    // The execution layer (strategyToEventPlan) rejects invalid relationships.
+    const strategy: StrategyNode = {
+      kind: 'SemiJoin',
+      source: {
+        kind: 'BulkScan',
+        entity: 'folders',
+        columns: ['id', 'name'],
+        includeCompleted: false,
+      },
+      lookup: {
+        kind: 'MembershipScan',
+        sourceEntity: 'tasks',
+        targetEntity: 'folders',
+        predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } as any,
+        includeCompleted: false,
+      },
+    };
+
+    // tasks→folders is neither a valid forward nor reverse membership,
+    // so lowering fails (the specific error depends on which path is tried first).
+    assert.throws(() => lowerStrategy(strategy));
   });
 });
 
