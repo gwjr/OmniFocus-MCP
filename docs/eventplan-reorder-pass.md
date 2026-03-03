@@ -2,7 +2,7 @@
 
 ## Status
 
-Design only — not yet implemented.
+Implemented — `src/tools/query/eventPlanReorder.ts`, wired into orchestrator pipeline.
 
 ## Context
 

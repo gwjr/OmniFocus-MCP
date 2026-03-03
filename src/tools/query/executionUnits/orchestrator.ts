@@ -20,6 +20,7 @@ import { assignRuntimes, splitExecutionUnits, computeBindings } from '../targete
 import { lowerStrategy } from '../strategyToEventPlan.js';
 import { cseEventPlan } from '../eventPlanCSE.js';
 import { pruneColumns } from '../eventPlanColumnPrune.js';
+import { reorderEventPlan } from '../eventPlanReorder.js';
 import { emitJxaUnit } from './jxaUnit.js';
 import { emitOmniJsUnit } from './omniJsUnit.js';
 import { executeNodeUnit } from './nodeUnit.js';
@@ -400,7 +401,8 @@ export async function executeTargetedPlan(
 export async function executeEventPlan(
   plan: EventPlan,
 ): Promise<OrchestratorResult> {
-  const targeted = assignRuntimes(plan);
+  const reordered = reorderEventPlan(plan);
+  const targeted = assignRuntimes(reordered);
   return executeTargetedPlan(targeted);
 }
 
@@ -416,8 +418,9 @@ export function compileEventPlan(node: StrategyNode): {
 } {
   const eventPlan = lowerStrategy(node);
   const csed = cseEventPlan(eventPlan);
-  const optimized = pruneColumns(csed);
-  const targeted = assignRuntimes(optimized);
+  const pruned = pruneColumns(csed);
+  const reordered = reorderEventPlan(pruned);
+  const targeted = assignRuntimes(reordered);
   const units = splitExecutionUnits(targeted);
   computeBindings(units, targeted);
   return { targeted, units };

@@ -6,6 +6,7 @@
  */
 
 import type { EventPlan, EventNode, Specifier, Ref } from './eventPlan.js';
+import { rewriteNode, rewriteSpec } from './eventPlanUtils.js';
 
 // ── Specifier keying ────────────────────────────────────────────────────────
 
@@ -31,89 +32,6 @@ function idKey(id: string | Ref, canonical: (r: Ref) => Ref): string {
 
 function nameKey(name: string | Ref, canonical: (r: Ref) => Ref): string {
   return typeof name === 'number' ? `@${canonical(name)}` : JSON.stringify(name);
-}
-
-// ── Ref rewriting ───────────────────────────────────────────────────────────
-
-function rewriteSpec(spec: Specifier, remap: (r: Ref) => Ref): Specifier {
-  switch (spec.kind) {
-    case 'Document': return spec;
-    case 'Elements': return { ...spec, parent: rewriteParent(spec.parent, remap) };
-    case 'Property': return { ...spec, parent: rewriteParent(spec.parent, remap) };
-    case 'ByID':     return {
-      ...spec,
-      parent: rewriteParent(spec.parent, remap),
-      id: typeof spec.id === 'number' ? remap(spec.id) : spec.id,
-    };
-    case 'ByName':   return {
-      ...spec,
-      parent: rewriteParent(spec.parent, remap),
-      name: typeof spec.name === 'number' ? remap(spec.name) : spec.name,
-    };
-    case 'ByIndex':  return { ...spec, parent: rewriteParent(spec.parent, remap) };
-    case 'Whose':    return { ...spec, parent: rewriteParent(spec.parent, remap) };
-  }
-}
-
-function rewriteParent(p: Specifier | Ref, remap: (r: Ref) => Ref): Specifier | Ref {
-  return typeof p === 'number' ? remap(p) : rewriteSpec(p, remap);
-}
-
-function rewriteNode(node: EventNode, remap: (r: Ref) => Ref): EventNode {
-  switch (node.kind) {
-    case 'Get':
-      return { ...node, specifier: rewriteSpec(node.specifier, remap) };
-    case 'Count':
-      return { ...node, specifier: rewriteSpec(node.specifier, remap) };
-    case 'Set':
-      return { ...node, specifier: rewriteSpec(node.specifier, remap), value: remap(node.value) };
-    case 'Command':
-      return {
-        ...node,
-        target: rewriteSpec(node.target, remap),
-        args: Object.fromEntries(
-          Object.entries(node.args).map(([k, v]) =>
-            [k, typeof v === 'number' ? remap(v) : v]
-          )
-        ),
-      };
-    case 'ForEach':
-      return {
-        ...node,
-        source: remap(node.source),
-        body: node.body.map(n => rewriteNode(n, remap)),
-        collect: remap(node.collect),
-      };
-    case 'Zip':
-      return {
-        ...node,
-        columns: node.columns.map(c => ({ ...c, ref: remap(c.ref) })),
-      };
-    case 'ColumnValues':
-      return { ...node, source: remap(node.source) };
-    case 'Flatten':
-      return { ...node, source: remap(node.source) };
-    case 'Filter':
-      return { ...node, source: remap(node.source) };
-    case 'SemiJoin':
-      return { ...node, source: remap(node.source), ids: remap(node.ids) };
-    case 'HashJoin':
-      return { ...node, source: remap(node.source), lookup: remap(node.lookup) };
-    case 'Sort':
-      return { ...node, source: remap(node.source) };
-    case 'Limit':
-      return { ...node, source: remap(node.source) };
-    case 'Pick':
-      return { ...node, source: remap(node.source) };
-    case 'Derive':
-      return { ...node, source: remap(node.source) };
-    case 'Union':
-      return { ...node, left: remap(node.left), right: remap(node.right) };
-    case 'RowCount':
-      return { ...node, source: remap(node.source) };
-    case 'AddSwitch':
-      return { ...node, source: remap(node.source) };
-  }
 }
 
 // ── CSE pass ────────────────────────────────────────────────────────────────
