@@ -17,7 +17,9 @@
     "test:backend": "node --test test/targetedEventPlan.test.ts test/jxaUnit.test.ts test/nodeUnit.test.ts test/nodeEval.test.ts test/eventPlanCSE.test.ts test/omniJsUnit.test.ts",
     "test:shared": "node --test test/coercion.test.ts test/dateHelpers.test.ts test/editScript.test.ts test/moveScript.test.ts test/showForecast.test.ts test/targeting.test.ts test/eventPlanDescriber.test.ts test/strategyDescriber.test.ts",
     "test:legacy": "node --test test/emitter.test.ts test/codegenBaseline.test.ts",
-    "test:integration": "node --test --test-timeout=60000 test/eventPlanPipeline.integration.ts test/tools.integration.ts"
+    "test:integration": "node --test --test-concurrency 1 --test-timeout=60000 test/eventPlanPipeline.integration.ts test/tools.integration.ts",
+    "test:mutations": "node --test --test-concurrency 1 --test-timeout=60000 test/mutations.integration.ts",
+    "test:all": "npm test && npm run test:integration"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

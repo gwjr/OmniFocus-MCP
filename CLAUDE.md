@@ -27,8 +27,10 @@ Before modifying the query engine, planner, or execution pipeline, **read these 
 
 ```bash
 npm run build              # TypeScript compilation
-node --test test/*.ts      # All unit tests (~397)
-node --test test/mutations.integration.ts  # Integration (requires OmniFocus running)
+npm test                   # Unit tests (~931) — parallel, no OmniFocus needed
+npm run test:integration   # Integration tests — serial, requires OmniFocus
+npm run test:mutations     # Mutation tests — serial, requires OmniFocus, creates/deletes items
+npm run test:all           # Unit + integration (no mutations)
 ```
 
 ## Project Layout
