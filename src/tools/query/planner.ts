@@ -95,8 +95,8 @@ export function buildPlanTree(
   const costMap = classifyVars(neededVars, registry);
 
   // Rule 1: expensive vars (e.g. note) in WHERE → OmniJS fallback.
-  // These have no bulk Apple Events accessor (appleEventsProperty: null)
-  // and cannot be bulk-read into BulkScan columns.
+  // These have bulk AE accessors but are deliberately excluded from bulk
+  // reads — note can be many KB per task and should never be read en masse.
   if (costMap.expensive.size > 0) {
     return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
