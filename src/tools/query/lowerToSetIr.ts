@@ -26,30 +26,34 @@
  */
 
 import type { LoweredExpr } from './fold.js';
-import { getVarRegistry, type EntityType } from './variables.js';
+import { getVarRegistry, COMPUTED_VAR_SPECS, type EntityType } from './variables.js';
 import { getChildToParentFk } from './aeProps.js';
-import type {
-  SetIrNode,
-  ScanNode,
-  IntersectNode,
-  UnionNode,
-  SwitchCase,
-  SwitchDefault,
+import {
+  walkSetIr,
+  type SetIrNode,
+  type ScanNode,
 } from './setIr.js';
 
+// Compile-time check: every AE-queryable entity (all EntityType values except
+// 'perspectives', which has no FK relationships) must be listed here.
+// TypeScript will error if EntityType gains a new member without a
+// corresponding entry in this table.
+const _ENTITY_TYPES_EXHAUSTIVE: Record<Exclude<EntityType, 'perspectives'>, true> = {
+  tasks: true, projects: true, folders: true, tags: true,
+};
+
 /** All entity types that participate in FK relationships. */
-const ENTITY_TYPES: EntityType[] = ['tasks', 'projects', 'folders', 'tags'];
+const ENTITY_TYPES = Object.keys(_ENTITY_TYPES_EXHAUSTIVE) as Exclude<EntityType, 'perspectives'>[];
 
 // ── Variable classification ────────────────────────────────────────────────
 
 /**
  * Does this variable require per-row AE fetches rather than a bulk scan?
- * 'expensive' = slow bulk (note); 'per-item' = no bulk accessor at all.
+ * 'expensive' vars have no bulk accessor and are resolved via Enrich (per-item or join).
  */
 function requiresEnrich(varName: string, entity: EntityType): boolean {
   const reg = getVarRegistry(entity);
-  const cost = reg[varName]?.cost;
-  return cost === 'expensive' || cost === 'per-item';
+  return reg[varName]?.cost === 'expensive';
 }
 
 // ── Collect variable references ────────────────────────────────────────────
@@ -57,7 +61,7 @@ function requiresEnrich(varName: string, entity: EntityType): boolean {
 /**
  * Collect all {var: "name"} references in a predicate expression.
  */
-function collectVarNames(pred: LoweredExpr): Set<string> {
+export function collectVarNames(pred: LoweredExpr): Set<string> {
   const result = new Set<string>();
 
   function walk(node: LoweredExpr): void {
@@ -101,7 +105,7 @@ function splitColumns(
   for (const v of varNames) {
     const varDef = reg[v];
     const cost = varDef?.cost;
-    if (cost === 'expensive' || cost === 'per-item') {
+    if (cost === 'expensive') {
       expensive.push(v);
     } else if (cost === 'computed') {
       computed.push(v);
@@ -115,70 +119,6 @@ function splitColumns(
 
   return { cheap, expensive, computed };
 }
-
-// ── Computed var specs ─────────────────────────────────────────────────────
-
-/**
- * Describes how a computed variable is derived as an AddSwitch node.
- * deps: the real AE properties that must be scanned before evaluation.
- * cases: evaluated in order; first match wins.
- * default: value when no case matches. Error = exhaustive (should never miss).
- */
-interface ComputedVarSpec {
-  deps: string[];
-  cases: SwitchCase[];
-  default: SwitchDefault;
-}
-
-const TASK_STATUS_SPEC: ComputedVarSpec = {
-  deps: ['completed', 'dropped', 'blocked', 'dueDate'],
-  cases: [
-    { predicate: { var: 'completed' }, value: 'Completed' },
-    { predicate: { var: 'dropped' },   value: 'Dropped'   },
-    { predicate: { var: 'blocked' },   value: 'Blocked'   },
-    {
-      predicate: { op: 'and', args: [
-        { op: 'isNotNull', args: [{ var: 'dueDate' }] },
-        { op: 'lt',        args: [{ var: 'dueDate' }, { var: 'now' }] },
-      ]},
-      value: 'Overdue',
-    },
-    {
-      predicate: { op: 'and', args: [
-        { op: 'isNotNull', args: [{ var: 'dueDate' }] },
-        { op: 'lt', args: [
-          { var: 'dueDate' },
-          { op: 'offset', args: [{ var: 'now' }, 7] },
-        ]},
-      ]},
-      value: 'DueSoon',
-    },
-  ],
-  default: 'Next',
-};
-
-const COMPUTED_VAR_SPECS: Readonly<Record<string, Readonly<Record<string, ComputedVarSpec>>>> = {
-  tasks: {
-    status:     TASK_STATUS_SPEC,
-    taskStatus: TASK_STATUS_SPEC,  // alias — same computation
-    hasChildren: {
-      deps: ['childCount'],
-      cases: [
-        { predicate: { op: 'gt', args: [{ var: 'childCount' }, 0] }, value: true },
-      ],
-      default: false,
-    },
-  },
-  folders: {
-    status: {
-      deps: ['hidden'],
-      cases: [
-        { predicate: { var: 'hidden' }, value: 'Dropped' },
-      ],
-      default: 'Active',
-    },
-  },
-};
 
 /**
  * Build the source node for a filter: scan the required columns (expanding
@@ -210,6 +150,41 @@ function buildFilterSource(varNames: Set<string>, entity: EntityType): SetIrNode
   }
 
   return source;
+}
+
+// ── Active filters ────────────────────────────────────────────────────
+//
+// Default active filters by entity — mirrors the logic in queryOmnifocus.ts.
+// Used by containing() to ensure child scans only match active items.
+
+function activeFilterForEntity(entity: EntityType): LoweredExpr | null {
+  switch (entity) {
+    case 'tasks':
+      return {
+        op: 'and', args: [
+          { op: 'not', args: [{ var: 'effectivelyCompleted' }] },
+          { op: 'not', args: [{ var: 'effectivelyDropped' }] },
+        ],
+      };
+    case 'projects':
+      return { op: 'in', args: [{ var: 'status' }, ['Active', 'OnHold']] };
+    case 'tags':
+      return { op: 'not', args: [{ var: 'effectivelyHidden' }] };
+    default:
+      return null;
+  }
+}
+
+/**
+ * Merge the active filter for a child entity into a child predicate.
+ * If childPred is null/true (no filter), returns just the active filter.
+ * If there's no active filter for the entity, returns childPred unchanged.
+ */
+function mergeActiveFilter(childPred: LoweredExpr, childEntity: EntityType): LoweredExpr {
+  const activeFilter = activeFilterForEntity(childEntity);
+  if (!activeFilter) return childPred;
+  if (childPred === true || childPred === null) return activeFilter;
+  return { op: 'and', args: [childPred, activeFilter] };
 }
 
 // ── Containing helper ─────────────────────────────────────────────────────
@@ -368,7 +343,7 @@ export function lowerPredicate(pred: LoweredExpr, entity: EntityType): SetIrNode
       // FK graph: look up metadata in aeProps to find the FK column generically.
       // Supports both direct (one FK hop) and indirect (two FK hops) relationships.
       const childEntity = args[0] as EntityType;
-      const childPred   = args[1] as LoweredExpr;
+      const childPred   = mergeActiveFilter(args[1] as LoweredExpr, childEntity);
 
       // Direct FK: childEntity has a column pointing to entity.
       // e.g. tasks.projectId → 'projects', tasks.tagIds → 'tags'
@@ -609,10 +584,19 @@ export function mergeSameEntityScans(node: SetIrNode): SetIrNode {
 }
 
 /**
- * Apply the merge-scan pass over the whole tree.
+ * Apply all optimizer passes over the tree.
+ *
+ * Pass order:
+ *   1. mergeSameEntityScans — collapse Intersect(Scan(A,c1), Scan(A,c2))
+ *   2. widenScansToUnion    — widen all Scans for the same entity to the
+ *      same column set, enabling EventPlan CSE to deduplicate the
+ *      resulting identical Get+Zip chains
  */
 export function optimizeSetIr(plan: SetIrNode): SetIrNode {
-  return applyMergeScanPass(plan);
+  let result = applyMergeScanPass(plan);
+  result = tagNameShortcut(result);
+  result = widenScansToUnion(result);
+  return result;
 }
 
 function applyMergeScanPass(node: SetIrNode): SetIrNode {
@@ -626,6 +610,7 @@ function rebuildChildren(node: SetIrNode): SetIrNode {
   switch (node.kind) {
     case 'Scan':
     case 'Error':
+    case 'TagNameTaskIds':
       return node;
     case 'Restriction':
       return { ...node, source: applyMergeScanPass(node.source), lookup: applyMergeScanPass(node.lookup) };
@@ -650,4 +635,151 @@ function rebuildChildren(node: SetIrNode): SetIrNode {
         right: applyMergeScanPass(node.right),
       };
   }
+}
+
+// ── Scan subsumption ──────────────────────────────────────────────────────
+
+/**
+ * Widen all Scan nodes for the same entity to the union of their column
+ * sets. This makes structurally identical Scans that differ only by having
+ * a subset of columns — e.g. Scan(projects,[id]) vs Scan(projects,[id,name])
+ * — produce the same column set, enabling EventPlan CSE to deduplicate
+ * the downstream Get+Zip chains into a single AE round-trip.
+ *
+ * Safety: Scan is a pure bulk read. Wider columns add data but never change
+ * which rows are returned. The column pruner strips unused columns before
+ * execution, so the only cost is a transient wider intermediate.
+ */
+function widenScansToUnion(plan: SetIrNode): SetIrNode {
+  // Pass 1: collect all column sets per entity
+  const entityColumns = new Map<string, Set<string>>();
+  walkSetIr(plan, (node) => {
+    if (node.kind === 'Scan') {
+      const existing = entityColumns.get(node.entity);
+      if (existing) {
+        for (const col of node.columns) existing.add(col);
+      } else {
+        entityColumns.set(node.entity, new Set(node.columns));
+      }
+    }
+    return node;
+  });
+
+  // Check if any entity has multiple scans that would benefit from widening
+  // (i.e. at least one entity has columns that differ between scan sites).
+  // If not, skip the rewrite pass.
+  let needsRewrite = false;
+  walkSetIr(plan, (node) => {
+    if (node.kind === 'Scan') {
+      const widened = entityColumns.get(node.entity)!;
+      if (widened.size > node.columns.length) needsRewrite = true;
+    }
+    return node;
+  });
+  if (!needsRewrite) return plan;
+
+  // Pass 2: rewrite Scan nodes to use the widened column set
+  return walkSetIr(plan, (node) => {
+    if (node.kind === 'Scan') {
+      const widened = entityColumns.get(node.entity)!;
+      if (widened.size > node.columns.length) {
+        return { kind: 'Scan', entity: node.entity, columns: [...widened] };
+      }
+    }
+    return node;
+  });
+}
+
+// ── Tag-name shortcut ─────────────────────────────────────────────────────
+
+/**
+ * Extract a literal tag-name equality from a predicate.
+ *
+ * Matches:   eq(name, 'literal')  or  eq('literal', name)
+ * Returns the literal string, or null if the predicate isn't a simple tag-name eq.
+ */
+function extractTagNameLiteral(pred: LoweredExpr): string | null {
+  if (pred === null || pred === true || typeof pred !== 'object' || Array.isArray(pred)) return null;
+  const obj = pred as Record<string, unknown>;
+  if (obj.op !== 'eq') return null;
+  const args = obj.args as LoweredExpr[];
+  if (!Array.isArray(args) || args.length !== 2) return null;
+
+  // eq({var:'name'}, 'literal')
+  if (isVarRef(args[0], 'name') && typeof args[1] === 'string') return args[1];
+  // eq('literal', {var:'name'})
+  if (typeof args[0] === 'string' && isVarRef(args[1], 'name')) return args[0];
+  return null;
+}
+
+function isVarRef(node: LoweredExpr, name: string): boolean {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return false;
+  return (node as Record<string, unknown>).var === name;
+}
+
+/**
+ * Strip a column from all Scan nodes in a subtree.
+ * Used to remove 'tagIds' from the source when the tag-name shortcut
+ * replaces the FK-based SemiJoin with an id-based Intersect.
+ */
+function stripColumnFromScans(node: SetIrNode, column: string): SetIrNode {
+  return walkSetIr(node, (n) => {
+    if (n.kind === 'Scan' && n.columns.includes(column)) {
+      const filtered = n.columns.filter(c => c !== column);
+      return { kind: 'Scan', entity: n.entity, columns: filtered };
+    }
+    return n;
+  });
+}
+
+/**
+ * Optimizer pass: rewrite tag-container Restrictions that filter by tag name
+ * to use an AE Whose-based lookup instead of the expensive tagIds bulk read.
+ *
+ * Pattern matched (after merge-scan):
+ *   Restriction(
+ *     source: (any node — usually Scan(tasks, [id, tagIds, ...])),
+ *     fkColumn: 'tagIds',
+ *     lookup: Filter(Scan(tags, [id, name, ...]), eq(name, LITERAL)),
+ *     arrayFk: true
+ *   )
+ *
+ * Rewritten to:
+ *   Intersect(
+ *     source (with 'tagIds' stripped from Scan columns),
+ *     TagNameTaskIds(LITERAL, 'eq')
+ *   )
+ *
+ * The TagNameTaskIds node is lowered to EventPlan as:
+ *   Whose(flattenedTags, name, eq, literal) → Elements(result, flattenedTask) → Property(id)
+ *
+ * This replaces 4 AE round-trips (~500ms: tagIds + tag id + tag name + tag SemiJoin)
+ * with 2 (~278ms: whose + relationship traversal), saving ~200ms.
+ */
+function tagNameShortcut(plan: SetIrNode): SetIrNode {
+  return walkSetIr(plan, (node) => {
+    if (
+      node.kind !== 'Restriction' ||
+      node.fkColumn !== 'tagIds' ||
+      !node.arrayFk
+    ) {
+      return node;
+    }
+
+    // The lookup must be a Filter with a tag-name eq predicate.
+    // After merge-scan, the lookup is typically Filter(Scan(tags,...), pred).
+    const lookup = node.lookup;
+    if (lookup.kind !== 'Filter') return node;
+
+    const tagName = extractTagNameLiteral(lookup.predicate);
+    if (tagName === null) return node;
+
+    // Rewrite: replace Restriction with Intersect(source, TagNameTaskIds)
+    const cleanedSource = stripColumnFromScans(node.source, 'tagIds');
+    return {
+      kind: 'Intersect',
+      left:  cleanedSource,
+      right: { kind: 'TagNameTaskIds', tagName, match: 'eq' } as SetIrNode,
+    };
+  });
 }

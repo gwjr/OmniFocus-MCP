@@ -19,13 +19,15 @@
  */
 
 import type { EventNode, EventPlan, Ref } from './eventPlan.js';
-import type { SetIrNode, RestrictionNode } from './setIr.js';
+import type { SetIrNode, RestrictionNode, TagNameTaskIdsNode } from './setIr.js';
 import type { EntityType } from './variables.js';
 import {
   classCode,
   propSpec,
+  getJoinSpec,
   type PropSpec,
 } from './aeProps.js';
+import { OFClass, OFElement, OFTagProp, OFTaskProp } from '../../generated/omnifocus-sdef.js';
 
 // ── Builder ──────────────────────────────────────────────────────────────
 
@@ -85,52 +87,26 @@ function emitPropRead(spec: PropSpec, parent: Ref, push: (n: EventNode) => Ref):
 // ── Join-based Enrich ─────────────────────────────────────────────────────
 
 /**
- * Properties that cannot be read via chain access and must instead be
- * resolved by joining against a related entity scan.
+ * Enrich a column that requires a join rather than a direct chain read.
  *
+ * Join specs are declared on ChainProp entries in aeProps.ts (joinSpec field).
  * This applies to variables where the chain-relation property may point to
  * different AE object types (e.g. project.container can be a Folder or the
- * Document).  When the relation points to the Document, chaining through it
- * to read a sub-property returns `missing value` and per-item access errors.
- * Bulk-reading the relation ID (e.g. container.id()) does work, so we read
- * that, then join against the related entity scan.
+ * Document), causing chain reads to return missing values.
  *
- * Pattern (for each column c in this table):
+ * Pattern:
  *   1. lowerScan(entity, [idPropName])  — bulk chain read for relation ID
  *   2. SemiJoin to source IDs           — filter to rows we actually need
- *   3. lowerScan(joinEntity, [c])       — scan join entity for {id, joinField}
+ *   3. lowerScan(joinEntity, [joinField]) — scan join entity for {id, joinField}
  *   4. HashJoin step-2 + step-3 on idPropName = joinEntity.id
  *      → null for rows whose idPropName has no match (e.g. top-level projects)
- *   5. HashJoin source + step-4 on id = id → merges c back onto source rows
- *
- * TODO: once the legacy pipeline is removed, declare these specs at the
- * PropSpec level in strategyToEventPlan.ts and replace this table with a
- * proper CrossEntityJoin SetIR node that is lowered here.
+ *   5. HashJoin source + step-4 on id = id → merges col back onto source rows
  */
-interface JoinSpec {
-  idPropName: string;   // variable name whose propSpec gives the relation entity ID
-  joinEntity: EntityType;
-  joinField:  string;   // field in joinEntity that supplies the output value
-}
-
-const JOIN_PROPS: Readonly<Record<string, Readonly<Record<string, JoinSpec>>>> = {
-  projects: {
-    // container.name() fails when container is the Document (top-level projects).
-    // container.id() works in bulk; join that against folders.{id,name}.
-    folderName: { idPropName: 'folderId', joinEntity: 'folders', joinField: 'name' },
-  },
-  tags: {
-    // container.name() fails when container is the tag-root (Document).
-    // container.id() works in bulk; self-join against tags.{id,name}.
-    parentName: { idPropName: 'parentId', joinEntity: 'tags', joinField: 'name' },
-  },
-};
-
 function lowerJoinEnrich(
   sourceRef: Ref,
   entity: EntityType,
   col: string,
-  spec: JoinSpec,
+  spec: NonNullable<import('./aeProps.js').ChainProp['joinSpec']>,
   push: (n: EventNode) => Ref,
 ): Ref {
   // 1. Bulk-scan entity for {id, idPropName} — chain bulk read works here
@@ -284,6 +260,56 @@ function lowerRestriction(
   });
 }
 
+// ── TagNameTaskIds ────────────────────────────────────────────────────────
+
+/**
+ * Lower a TagNameTaskIds node to EventPlan.
+ *
+ * Emits:
+ *   ref0: Get(Whose(Elements(Document, flattenedTag), name, match, value))
+ *   ref1: Get(Elements(ref0, flattenedTask))
+ *   ref2: Get(Property(ref1, id))
+ *   ref3: Zip([{name:'id', ref:ref2}])
+ *
+ * This is the "tag name shortcut": instead of scanning all tags + all task
+ * tagIds arrays, look up the tag by name with .whose() (fast for targeted
+ * lookups) and traverse its tasks.id() relationship.
+ */
+function lowerTagNameTaskIds(
+  node: TagNameTaskIdsNode,
+  push: (n: EventNode) => Ref,
+): Ref {
+  // Step 1: Get the tag(s) matching the name via .whose()
+  const tagRef = push({
+    kind: 'Get',
+    specifier: {
+      kind: 'Whose',
+      parent: { kind: 'Elements', parent: { kind: 'Document' }, classCode: OFClass.flattenedTag },
+      prop: OFTagProp.name,
+      match: node.match,
+      value: node.tagName,
+    },
+    effect: 'nonMutating',
+  });
+
+  // Step 2: Get the tasks belonging to those tags
+  const tasksRef = push({
+    kind: 'Get',
+    specifier: { kind: 'Elements', parent: tagRef, classCode: OFElement.flattenedTask },
+    effect: 'nonMutating',
+  });
+
+  // Step 3: Get the IDs of those tasks
+  const idsRef = push({
+    kind: 'Get',
+    specifier: { kind: 'Property', parent: tasksRef, propCode: OFTaskProp.id },
+    effect: 'nonMutating',
+  });
+
+  // Step 4: Zip into rows with {id}
+  return push({ kind: 'Zip', columns: [{ name: 'id', ref: idsRef }] });
+}
+
 // ── Main lowering ─────────────────────────────────────────────────────────
 
 /**
@@ -332,16 +358,20 @@ export function lowerSetIrToEventPlan(root: SetIrNode, outputColumns?: string[])
 
       case 'Enrich': {
         const srcRef = lower(node.source);
-        const joinTable = JOIN_PROPS[node.entity] ?? {};
-        const directCols = node.columns.filter(c => !(c in joinTable));
-        const joinCols   = node.columns.filter(c =>   c in joinTable);
+        const directCols: string[] = [];
+        const joinCols: { col: string; spec: NonNullable<import('./aeProps.js').ChainProp['joinSpec']> }[] = [];
+        for (const c of node.columns) {
+          const js = getJoinSpec(node.entity, c);
+          if (js) joinCols.push({ col: c, spec: js });
+          else    directCols.push(c);
+        }
 
         let enrichRef = srcRef;
         if (directCols.length > 0) {
           enrichRef = lowerEnrich(enrichRef, node.entity, directCols, push, nodes);
         }
-        for (const col of joinCols) {
-          enrichRef = lowerJoinEnrich(enrichRef, node.entity, col, joinTable[col], push);
+        for (const { col, spec } of joinCols) {
+          enrichRef = lowerJoinEnrich(enrichRef, node.entity, col, spec, push);
         }
         return enrichRef;
       }
@@ -377,10 +407,15 @@ export function lowerSetIrToEventPlan(root: SetIrNode, outputColumns?: string[])
         });
       }
 
+      case 'TagNameTaskIds':
+        return lowerTagNameTaskIds(node, push);
+
       case 'Error':
         throw new Error(
-          `lowerSetIrToEventPlan: Error node not eliminated by optimizer` +
-          (node.message ? `: ${node.message}` : '')
+          `lowerSetIrToEventPlan: Error node survived into lowering (this is a planner/optimizer bug — ` +
+          `optimizeSetIr should simplify Error nodes via algebraic identities: ` +
+          `Union(Error,R)→R, Intersect(Error,R)→Error, etc.)` +
+          (node.message ? `. Original error: ${node.message}` : '')
         );
 
       default: {

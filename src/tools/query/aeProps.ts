@@ -2,17 +2,20 @@
  * Apple Events property and class-code tables.
  *
  * Shared between lowerSetIrToEventPlan and any other EventPlan-producing code.
- * Extracted from strategyToEventPlan.ts to avoid a dependency on the legacy
- * StrategyNode pipeline.
  */
 
 import type { FourCC } from './eventPlan.js';
 import type { EntityType } from './variables.js';
+import { getVarRegistry } from './variables.js';
 import { OFClass, OFTaskProp, OFProjectProp, OFFolderProp, OFTagProp } from '../../generated/omnifocus-sdef.js';
 
 // ── Entity → class code ───────────────────────────────────────────────────
 
-const ENTITY_CLASS_CODE: Record<string, FourCC> = {
+// Compile-time check: every AE-queryable entity (all EntityType values except
+// 'perspectives', which has no AE object collection) must have a class code.
+// TypeScript will error here if EntityType gains a new member without a
+// corresponding entry in this table.
+const ENTITY_CLASS_CODE: Record<Exclude<EntityType, 'perspectives'>, FourCC> = {
   tasks:    OFClass.flattenedTask,
   projects: OFClass.flattenedProject,
   folders:  OFClass.flattenedFolder,
@@ -20,7 +23,7 @@ const ENTITY_CLASS_CODE: Record<string, FourCC> = {
 };
 
 export function classCode(entity: EntityType): FourCC {
-  const code = ENTITY_CLASS_CODE[entity];
+  const code = ENTITY_CLASS_CODE[entity as Exclude<EntityType, 'perspectives'>];
   if (!code) throw new Error(`No class code for entity: ${entity}`);
   return code;
 }
@@ -113,12 +116,24 @@ const SIMPLE_PROPS: Record<string, Record<string, FourCC>> = {
  *   refersTo  — Entity this column points to (FK annotation for getChildToParentFk).
  *               Only set on chain props that read an id.
  *   isArray   — True when the relation is to-many (result is a nested array, e.g. tags.id()).
+ *   joinSpec  — When set, this chain property cannot be bulk-read directly and must
+ *               be resolved by joining against a related entity scan.  The relation
+ *               may point to different AE object types (e.g. project.container can be
+ *               a Folder or the Document), causing chain reads to return missing values.
  */
-interface ChainProp {
+export interface ChainProp {
   relation: FourCC;
   terminal: FourCC;
   refersTo?: EntityType;
   isArray?: boolean;
+  joinSpec?: {
+    /** Variable name whose propSpec gives the relation entity ID (e.g. 'folderId'). */
+    idPropName: string;
+    /** Entity to join against (e.g. 'folders'). */
+    joinEntity: EntityType;
+    /** Field in joinEntity that supplies the output value (e.g. 'name'). */
+    joinField: string;
+  };
 }
 
 const CHAIN_PROPS: Record<string, Record<string, ChainProp>> = {
@@ -131,14 +146,14 @@ const CHAIN_PROPS: Record<string, Record<string, ChainProp>> = {
   },
   projects: {
     folderId:   { relation: OFProjectProp.container, terminal: OFProjectProp.id,   refersTo: 'folders' },
-    folderName: { relation: OFProjectProp.container, terminal: OFProjectProp.name },
+    folderName: { relation: OFProjectProp.container, terminal: OFProjectProp.name, joinSpec: { idPropName: 'folderId', joinEntity: 'folders', joinField: 'name' } },
   },
   folders: {
     parentFolderId: { relation: OFFolderProp.container, terminal: OFFolderProp.id },
   },
   tags: {
     parentId:   { relation: OFTagProp.container, terminal: OFTagProp.id },
-    parentName: { relation: OFTagProp.container, terminal: OFTagProp.name },
+    parentName: { relation: OFTagProp.container, terminal: OFTagProp.name, joinSpec: { idPropName: 'parentId', joinEntity: 'tags', joinField: 'name' } },
   },
 };
 
@@ -161,7 +176,19 @@ export function propSpec(entity: EntityType, varName: string): PropSpec {
   if (entity === 'projects' && varName === 'taskCount') return { kind: 'simple', code: OFProjectProp.numberOfTasks };
   if (entity === 'tasks' && varName === 'childCount') return { kind: 'simple', code: OFTaskProp.numberOfTasks };
 
-  throw new Error(`No property spec for ${entity}.${varName}`);
+  // Distinguish "known variable without AE property mapping" vs "completely unknown variable"
+  const registry = getVarRegistry(entity);
+  if (registry[varName]) {
+    throw new Error(
+      `No AE property spec for ${entity}.${varName} — variable exists in the registry ` +
+      `(cost: '${registry[varName].cost}') but has no SIMPLE_PROPS or CHAIN_PROPS mapping. ` +
+      `Computed or special variables cannot be read as AE properties.`
+    );
+  }
+  throw new Error(
+    `Unknown variable '${varName}' for entity '${entity}' — not found in the variable registry or AE property tables. ` +
+    `Check getVarRegistry('${entity}') for valid variable names.`
+  );
 }
 
 /**
@@ -184,4 +211,17 @@ export function getChildToParentFk(
     }
   }
   return null;
+}
+
+/**
+ * Look up the join spec for a variable that requires join-based enrichment.
+ *
+ * Returns the JoinSpec if the variable is a chain property with joinSpec set,
+ * or undefined if the variable can be read directly.
+ */
+export function getJoinSpec(
+  entity: EntityType,
+  varName: string,
+): ChainProp['joinSpec'] {
+  return CHAIN_PROPS[entity]?.[varName]?.joinSpec;
 }

@@ -90,7 +90,7 @@ export interface DifferenceNode {
  * Per-row column enrichment.
  * Fetches `columns` for each row in `source` via by-id AE access
  * (i.e. OmniJS byIdentifier or AppleScript by-id specifier).
- * Used for expensive properties (note) and per-item properties (folderName).
+ * Used for expensive properties (note, folderName, parentName, projectCount).
  */
 export interface EnrichNode {
   kind: 'Enrich';
@@ -214,6 +214,28 @@ export interface ErrorNode {
   message?: string;
 }
 
+/**
+ * Tag-name task lookup via `.whose({name: value})` + relationship traversal.
+ *
+ * Produced by the tagNameShortcut optimizer when it detects a
+ * `container('tag', eq(name, literal))` pattern on tasks. This avoids the
+ * expensive `tagIds` nested-array bulk read.
+ *
+ * Semantics: produces a row set of {id} for all tasks belonging to tags
+ * whose name matches the given value. The match mode is 'eq' or 'contains'
+ * (maps directly to the AE Whose specifier).
+ *
+ * Lowered to EventPlan as:
+ *   Get(Whose(Elements(Document, flattenedTag), name, match, value))
+ *   Get(Elements(result, flattenedTask))
+ *   Get(Property(result, id))
+ */
+export interface TagNameTaskIdsNode {
+  kind: 'TagNameTaskIds';
+  tagName: string;
+  match: 'eq' | 'contains';
+}
+
 export type SetIrNode =
   | ScanNode
   | FilterNode
@@ -226,6 +248,7 @@ export type SetIrNode =
   | SortNode
   | LimitNode
   | AddSwitchNode
+  | TagNameTaskIdsNode
   | ErrorNode;
 
 // ── Tree Walk ─────────────────────────────────────────────────────────────
@@ -241,6 +264,7 @@ export function walkSetIr(node: SetIrNode, fn: (n: SetIrNode) => SetIrNode): Set
     // Leaves — no children
     case 'Scan':
     case 'Error':
+    case 'TagNameTaskIds':
       rebuilt = node;
       break;
 
