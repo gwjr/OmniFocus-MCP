@@ -40,6 +40,7 @@ const USE_EVENT_PLAN = process.env.USE_EVENT_PLAN_PIPELINE !== '0';
 function logQuery(entry: {
   where: unknown;
   entity: string;
+  op: string;
   strategy: string;
   totalMs: number;
   resultCount: number;
@@ -49,7 +50,7 @@ function logQuery(entry: {
   const err = entry.error ? ` ERROR: ${entry.error}` : '';
 
   console.error(
-    `[query] ${entry.entity} ${entry.strategy} ${entry.totalMs}ms | result=${entry.resultCount}${err}`
+    `[query] ${entry.entity} ${entry.op} ${entry.strategy} ${entry.totalMs}ms | result=${entry.resultCount}${err}`
   );
   console.error(`[query]   where: ${where}`);
 }
@@ -58,11 +59,16 @@ function logQuery(entry: {
 
 export interface QueryOmnifocusParams {
   entity: EntityType;
+  /** Explicit operation type. 'get' returns items (default); 'count' returns
+   *  the number of matches without reading output-only columns; 'exists' returns
+   *  a boolean and stops after the first match. */
+  op?: 'get' | 'count' | 'exists';
   where?: unknown;
   select?: string[];
   limit?: number;
   sort?: { by: string; direction?: 'asc' | 'desc' };
   includeCompleted?: boolean;
+  /** @deprecated Use op:'count' instead. */
   summary?: boolean;
 }
 
@@ -70,6 +76,7 @@ interface QueryResult {
   success: boolean;
   items?: any[];
   count?: number;
+  exists?: boolean;
   error?: string;
 }
 
@@ -81,34 +88,37 @@ const PASSES = [tagSemiJoinPass, crossEntityJoinPass, selfJoinEliminationPass, n
 
 export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<QueryResult> {
   const t0 = Date.now();
+
+  // Resolve effective operation. summary:true is the legacy shim for count.
+  const effectiveOp: 'get' | 'count' | 'exists' =
+    params.op ?? (params.summary ? 'count' : 'get');
+
   try {
-    // Step 1: Lower and normalise the where clause.
-    // normalizeAst applies here only (WHERE predicate). When op:'count'/'exists'
-    // is added as a top-level param, this block will restructure but the
-    // normalizeAst call stays glued to the WHERE expression.
+    // Step 1: Lower and normalise the WHERE predicate.
     let ast: LoweredExpr;
     try {
       const lowered = params.where != null ? lowerExpr(params.where) : true;
       ast = normalizeAst(lowered as LoweredExpr) as LoweredExpr;
     } catch (e) {
       if (e instanceof LowerError) {
-        logQuery({ where: params.where, entity: params.entity, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: e.message });
+        logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: e.message });
         return { success: false, error: e.message };
       }
       throw e;
     }
 
-    // Step 1b: For tasks, expand select to include mandatory minimum fields
-    // so the planner bulk-reads them (id, flagged are easy; status is computed).
-    const expandedSelect = params.entity === 'tasks' && params.select
+    // Step 1b: For 'get', expand select to include mandatory minimum task fields
+    // so the planner bulk-reads them. For count/exists, select is irrelevant —
+    // the planner only needs to read columns referenced in the WHERE clause.
+    const expandedSelect = effectiveOp === 'get' && params.entity === 'tasks' && params.select
       ? augmentTaskSelect(params.select)
-      : params.select;
+      : effectiveOp === 'get' ? params.select : undefined;
 
     // Step 2: Build plan tree
     let tree = buildPlanTree(ast, params.entity, expandedSelect, params.includeCompleted ?? false);
 
-    // Step 3: Wrap with sort/limit/project nodes
-    tree = wrapWithPostProcessing(tree, params);
+    // Step 3: Wrap with sort/limit nodes
+    tree = wrapWithPostProcessing(tree, params, effectiveOp);
 
     // Step 4: Optimize
     tree = optimize(tree, PASSES);
@@ -141,13 +151,18 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
     const totalCount = rows.length;
 
-    logQuery({ where: params.where, entity: params.entity, strategy, totalMs: Date.now() - t0, resultCount: totalCount });
+    logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy, totalMs: Date.now() - t0, resultCount: totalCount });
 
-    // Summary mode
-    if (params.summary) {
+    // Return shape depends on the operation
+    if (effectiveOp === 'count') {
       return { success: true, count: totalCount };
     }
 
+    if (effectiveOp === 'exists') {
+      return { success: true, exists: totalCount > 0 };
+    }
+
+    // 'get': return items
     // Select fields (if not already handled by Project node, which only
     // applies to tree-internal usage — for the public API, we always apply
     // select here to handle the full field mapping including OmniJS results)
@@ -162,18 +177,22 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     return { success: true, items, count: totalCount };
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error occurred';
-    logQuery({ where: params.where, entity: params.entity, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: msg });
+    logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: msg });
     return { success: false, error: msg };
   }
 }
 
 // ── Post-Processing Wrappers ────────────────────────────────────────────
 
-function wrapWithPostProcessing(tree: StrategyNode, params: QueryOmnifocusParams): StrategyNode {
+function wrapWithPostProcessing(
+  tree: StrategyNode,
+  params: QueryOmnifocusParams,
+  op: 'get' | 'count' | 'exists'
+): StrategyNode {
   let current = tree;
 
-  // Sort
-  if (params.sort) {
+  // Sort only meaningful for 'get' (count/exists don't order results)
+  if (op === 'get' && params.sort) {
     current = {
       kind: 'Sort',
       source: current,
@@ -183,13 +202,12 @@ function wrapWithPostProcessing(tree: StrategyNode, params: QueryOmnifocusParams
     };
   }
 
-  // Limit
-  if (params.limit) {
-    current = {
-      kind: 'Limit',
-      source: current,
-      count: params.limit,
-    };
+  // Limit: 'exists' always uses 1 (stop after first match);
+  // 'get'/'count' use the caller-supplied limit if present.
+  if (op === 'exists') {
+    current = { kind: 'Limit', source: current, count: 1 };
+  } else if (params.limit) {
+    current = { kind: 'Limit', source: current, count: params.limit };
   }
 
   return current;
