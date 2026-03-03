@@ -66,6 +66,14 @@ export interface ExprBackend<T> {
     toEntity: EntityType,
     fold: (node: LoweredExpr, entity: EntityType) => T
   ): T;
+
+  // Reverse containment (e.g. projects containing tasks where ...)
+  containing(
+    childEntity: EntityType,
+    subExpr: LoweredExpr,
+    fromEntity: EntityType,
+    fold: (node: LoweredExpr, entity: EntityType) => T
+  ): T;
 }
 
 // ── Fold ────────────────────────────────────────────────────────────────
@@ -179,6 +187,19 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
           subExpr,
           entity,
           toEntity,
+          (sub: LoweredExpr, ent: EntityType) => foldExpr(sub, backend, ent)
+        );
+      }
+
+      case 'containing': {
+        // args[0] is the child entity name; args[1] is the child predicate
+        const childEntity = args[0] as unknown as EntityType;
+        const subExpr = args[1];
+
+        return backend.containing(
+          childEntity,
+          subExpr,
+          entity,
           (sub: LoweredExpr, ent: EntityType) => foldExpr(sub, backend, ent)
         );
       }

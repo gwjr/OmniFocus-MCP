@@ -145,6 +145,14 @@ export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
             );
           }
         }
+        if (opName === 'containing') {
+          if (typeof loweredArgs[0] !== 'string') {
+            throw new LowerError(
+              'First argument to "containing" must be a child entity name (e.g. "tasks", "projects")',
+              `${path}.containing[0]`, node
+            );
+          }
+        }
 
         return { op: opName, args: loweredArgs };
       }

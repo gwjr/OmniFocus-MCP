@@ -346,6 +346,10 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
 
     throw new Error(`Unknown container type: "${type}"`);
   }
+
+  containing(): RowFn {
+    throw new Error('"containing" should be extracted by the planner before NodeEval');
+  }
 }
 
 /**

@@ -12,6 +12,7 @@ import type { StrategyNode } from './strategy.js';
 import type { EntityType } from './variables.js';
 import { OFClass, OFTaskProp, OFProjectProp, OFFolderProp, OFTagProp } from '../../generated/omnifocus-sdef.js';
 import { getVarRegistry } from './variables.js';
+import { collectVarsFromAst } from './backends/varCollector.js';
 
 // ── Entity → class code ─────────────────────────────────────────────────
 
@@ -269,6 +270,148 @@ function emitProjectScopedElements(
   });
 }
 
+// ── Reverse MembershipScan (child→parent for "containing") ──────────────
+
+/**
+ * Mapping from (childEntity, parentEntity) to the chain property on the
+ * child entity that yields the parent's ID.
+ */
+const REVERSE_MEMBERSHIP: Record<string, Record<string, string>> = {
+  tasks:    { projects: 'projectId' },    // containingProject.id()
+  projects: { folders:  'folderId' },     // container.id()
+};
+
+/**
+ * Check if a MembershipScan represents a reverse (containing) direction.
+ */
+function isReverseMembershipScan(sourceEntity: EntityType, targetEntity: EntityType): boolean {
+  return !!REVERSE_MEMBERSHIP[sourceEntity]?.[targetEntity];
+}
+
+/**
+ * Lower a reverse MembershipScan into EventPlan nodes.
+ *
+ * Strategy: bulk-read child entities, filter by child predicate, collect
+ * parent IDs via chain property, return as flat ID array for SemiJoin.
+ *
+ * Produces:
+ *   %0 = Get(Elements(Document, childClassCode))  — all child entities
+ *   %1..n = Get(Property(%0, ...))                 — columns for predicate + parent ID
+ *   %zip = Zip(columns)
+ *   %active = Filter(zip, activeFilter)            — exclude completed/dropped
+ *   %filtered = Filter(active, predicate)          — apply child predicate
+ *   %parentIds = ColumnValues(filtered, parentIdColumn)
+ *   return %parentIds
+ */
+function lowerReverseMembershipScan(
+  node: import('./strategy.js').MembershipScan,
+  push: (n: EventNode) => Ref,
+  nodes: EventNode[],
+): Ref {
+  const childEntity = node.sourceEntity;
+  const parentEntity = node.targetEntity;
+  const parentIdColumn = REVERSE_MEMBERSHIP[childEntity]?.[parentEntity];
+  if (!parentIdColumn) {
+    throw new Error(`No reverse membership relationship: ${childEntity} → ${parentEntity}`);
+  }
+
+  // Collect variables referenced by the child predicate
+  const predicateVars = collectVarsFromAst(node.predicate, childEntity);
+
+  // Build the column set: predicate vars + parent ID chain property
+  const varNames = new Set<string>();
+  for (const v of predicateVars) {
+    if (v === 'now') continue;
+    varNames.add(v);
+  }
+  varNames.add(parentIdColumn);
+
+  // Add active filter vars
+  if (!node.includeCompleted) {
+    for (const v of activeFilterVars(childEntity)) {
+      varNames.add(v);
+    }
+  }
+
+  // Emit Elements(Document, childClassCode)
+  const elemRef = push({
+    kind: 'Get',
+    specifier: {
+      kind: 'Elements',
+      parent: { kind: 'Document' },
+      classCode: classCode(childEntity),
+    },
+    effect: 'nonMutating',
+  });
+
+  // Emit property reads for each column
+  const colRefs: { name: string; ref: Ref }[] = [];
+  for (const varName of varNames) {
+    const spec = propSpec(childEntity, varName);
+    let ref: Ref;
+    if (spec.kind === 'simple') {
+      ref = push({
+        kind: 'Get',
+        specifier: {
+          kind: 'Property',
+          parent: elemRef,
+          propCode: spec.code,
+        },
+        effect: 'nonMutating',
+      });
+    } else {
+      // Chain property (e.g. containingProject.id(), container.id())
+      ref = push({
+        kind: 'Get',
+        specifier: {
+          kind: 'Property',
+          parent: {
+            kind: 'Property',
+            parent: elemRef,
+            propCode: spec.relation,
+          },
+          propCode: spec.terminal,
+        },
+        effect: 'nonMutating',
+      });
+    }
+    colRefs.push({ name: varName, ref });
+  }
+
+  // Zip
+  let current = push({ kind: 'Zip', columns: colRefs });
+
+  // Active filter
+  if (!node.includeCompleted) {
+    const activePred = activeFilterExpr(childEntity);
+    if (activePred !== true) {
+      current = push({
+        kind: 'Filter',
+        source: current,
+        predicate: activePred,
+        entity: childEntity,
+      });
+    }
+  }
+
+  // Filter by child predicate
+  current = push({
+    kind: 'Filter',
+    source: current,
+    predicate: node.predicate,
+    entity: childEntity,
+  });
+
+  // Extract parent IDs from filtered rows
+  current = push({
+    kind: 'ColumnValues',
+    source: current,
+    field: parentIdColumn,
+  });
+
+  return current;
+}
+
 // ── Builder ─────────────────────────────────────────────────────────────
 
 function builder() {
@@ -451,6 +594,13 @@ export function lowerStrategy(root: StrategyNode): EventPlan {
 
       // ── Leaf: MembershipScan ──────────────────────────────────────
       case 'MembershipScan': {
+        // Reverse MembershipScan (child→parent for "containing"):
+        // Bulk-scan children, filter by predicate, collect parent IDs.
+        if (isReverseMembershipScan(node.sourceEntity, node.targetEntity)) {
+          return lowerReverseMembershipScan(node, push, nodes);
+        }
+
+        // Forward MembershipScan (tags→tasks, projects→tasks, folders→projects):
         // Use a Whose specifier to keep the predicate in JXA — AE specifier
         // references can't be serialised across unit boundaries, so a separate
         // Filter node (which defaults to Node runtime) would break.

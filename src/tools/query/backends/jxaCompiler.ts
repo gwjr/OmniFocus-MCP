@@ -350,6 +350,13 @@ class JxaCompilerBackend implements ExprBackend<string> {
 
     throw new CompileError(`"container" is not supported for entity "${fromEntity}"`, 'where', { op: 'container' });
   }
+
+  containing(): string {
+    throw new CompileError(
+      '"containing" should be extracted by the planner before JXA compilation',
+      'where', { op: 'containing' }
+    );
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

@@ -37,6 +37,7 @@ export const operations: Record<string, OpMeta> = {
 
   // Container scoping
   container:    { minArgs: 2, maxArgs: 2,  description: 'Container scoping ({container: ["project"|"folder"|"tag", expr]})' },
+  containing:   { minArgs: 2, maxArgs: 2,  description: 'Reverse container ({containing: ["tasks"|"projects", predicate]}) — parent entities containing matching children' },
 
   // String (case-insensitive) — contains is polymorphic (string or array)
   contains:     { minArgs: 2, maxArgs: 2,  description: 'String/array contains (case-insensitive)' },

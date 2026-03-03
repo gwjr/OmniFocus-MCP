@@ -112,6 +112,8 @@ function describeCompactOp(op: string, args: unknown[]): string | null {
       return `${d(args[0])} between ${d(args[1])} and ${d(args[2])}`;
     case 'container':
       return `in ${args[0]} where ${d(args[1])}`;
+    case 'containing':
+      return `containing ${args[0]} where ${d(args[1])}`;
     case 'contains':
       return `${d(args[0])} contains ${d(args[1])}`;
     case 'startsWith':
@@ -262,5 +264,14 @@ class DescriberBackend implements ExprBackend<string> {
     fold: (node: LoweredExpr, entity: EntityType) => string
   ): string {
     return `in ${type} where ${fold(subExpr, toEntity)}`;
+  }
+
+  containing(
+    childEntity: EntityType,
+    subExpr: LoweredExpr,
+    _fromEntity: EntityType,
+    fold: (node: LoweredExpr, entity: EntityType) => string
+  ): string {
+    return `containing ${childEntity} where ${fold(subExpr, childEntity)}`;
   }
 }

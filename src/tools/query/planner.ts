@@ -100,12 +100,16 @@ export function buildPlanTree(
   // Try to extract a container (project, tag, or folder)
   const extraction = extractContainer(ast);
 
-  // Rule 2: unextractable container → OmniJS fallback
-  // If the AST has a container node that couldn't be extracted (e.g., complex
-  // predicate that can't compile to a Whose specifier), NodeEval can't
-  // evaluate it, so fall back to OmniJS.
-  const filterAst = extraction ? extraction.remainder : ast;
-  if (containsAnyContainer(filterAst)) {
+  // Try to extract a containing (reverse join: projects containing tasks where ...)
+  const containingExtraction = extractContaining(extraction ? extraction.remainder : ast);
+
+  // Rule 2: unextractable container/containing → OmniJS fallback
+  // If the AST has a container or containing node that couldn't be extracted
+  // (e.g., under or/not), NodeEval can't evaluate it, so fall back to OmniJS.
+  const filterAst = containingExtraction
+    ? containingExtraction.remainder
+    : (extraction ? extraction.remainder : ast);
+  if (containsAnyContainer(filterAst) || containsAnyContaining(filterAst)) {
     return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
@@ -192,6 +196,25 @@ export function buildPlanTree(
         sourceEntity,
         targetEntity,
         predicate: extraction.scope,
+        includeCompleted,
+      },
+    };
+  }
+
+  // For containing (reverse join): wrap in SemiJoin with reverse MembershipScan.
+  // e.g. projects containing tasks where flagged=true →
+  //   SemiJoin(BulkScan(projects), MembershipScan(tasks→projects, predicate))
+  if (containingExtraction) {
+    if (!columns.includes('id')) columns.push('id');
+
+    scoped = {
+      kind: 'SemiJoin',
+      source: scoped,
+      lookup: {
+        kind: 'MembershipScan',
+        sourceEntity: containingExtraction.childEntity as EntityType,
+        targetEntity: entity,
+        predicate: containingExtraction.predicate,
         includeCompleted,
       },
     };
@@ -340,7 +363,63 @@ export function extractContainer(ast: LoweredExpr): ContainerExtraction | null {
 /** @deprecated Use extractContainer */
 export const extractContainerScope = extractContainer;
 
-// ── Container Detection ─────────────────────────────────────────────────
+// ── Containing Extraction ────────────────────────────────────────────────
+
+interface ContainingExtraction {
+  /** Child entity type (currently only 'tasks') */
+  childEntity: string;
+  /** The child predicate (applied to the child entity) */
+  predicate: LoweredExpr;
+  /** Remainder filter (literal true if nothing left) */
+  remainder: LoweredExpr;
+}
+
+/**
+ * Extract a top-level `containing` from the AST.
+ *
+ * - Top-level containing("tasks", predicate) → extract
+ * - Top-level and([..., containing(...), ...]) → extract first containing, keep rest
+ * - Under or, not, nested and → do not attempt (falls back to OmniJS)
+ */
+function extractContaining(ast: LoweredExpr): ContainingExtraction | null {
+  if (typeof ast !== 'object' || ast === null || Array.isArray(ast)) return null;
+  if (!('op' in ast)) return null;
+
+  const node = ast as { op: string; args: LoweredExpr[] };
+
+  // Top-level containing("tasks", predicate)
+  if (node.op === 'containing') {
+    return {
+      childEntity: node.args[0] as unknown as string,
+      predicate: node.args[1],
+      remainder: true,
+    };
+  }
+
+  // Top-level and — look for any containing conjunct
+  if (node.op === 'and') {
+    const containingIdx = node.args.findIndex(arg => {
+      if (typeof arg !== 'object' || arg === null || Array.isArray(arg)) return false;
+      if (!('op' in arg)) return false;
+      return (arg as { op: string }).op === 'containing';
+    });
+
+    if (containingIdx === -1) return null;
+
+    const containingNode = node.args[containingIdx] as { op: string; args: LoweredExpr[] };
+    const remaining = node.args.filter((_, i) => i !== containingIdx);
+
+    return {
+      childEntity: containingNode.args[0] as unknown as string,
+      predicate: containingNode.args[1],
+      remainder: remaining.length === 1 ? remaining[0] : { op: 'and', args: remaining },
+    };
+  }
+
+  return null;
+}
+
+// ── Container / Containing Detection ────────────────────────────────────
 
 /**
  * Check if an AST contains any container node at any depth.
@@ -355,6 +434,24 @@ function containsAnyContainer(ast: LoweredExpr): boolean {
     const node = obj as { op: string; args: LoweredExpr[] };
     if (node.op === 'container') return true;
     return node.args.some(containsAnyContainer);
+  }
+
+  return false;
+}
+
+/**
+ * Check if an AST contains any containing node at any depth.
+ */
+function containsAnyContaining(ast: LoweredExpr): boolean {
+  if (typeof ast !== 'object' || ast === null) return false;
+  if (Array.isArray(ast)) return ast.some(containsAnyContaining);
+
+  const obj = ast as Record<string, unknown>;
+
+  if ('op' in obj) {
+    const node = obj as { op: string; args: LoweredExpr[] };
+    if (node.op === 'containing') return true;
+    return node.args.some(containsAnyContaining);
   }
 
   return false;
