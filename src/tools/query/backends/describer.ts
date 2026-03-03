@@ -112,6 +112,8 @@ function describeCompactOp(op: string, args: unknown[]): string | null {
       return `${d(args[0])} between ${d(args[1])} and ${d(args[2])}`;
     case 'container':
       return `in ${args[0]} where ${d(args[1])}`;
+    case 'containing':
+      return `containing ${args[0]} where ${d(args[1])}`;
     case 'contains':
       return `${d(args[0])} contains ${d(args[1])}`;
     case 'startsWith':
@@ -120,6 +122,14 @@ function describeCompactOp(op: string, args: unknown[]): string | null {
       return `${d(args[0])} ends with ${d(args[1])}`;
     case 'matches':
       return `${d(args[0])} matches ${d(args[1])}`;
+    case 'isNull':
+      return `${d(args[0])} is null`;
+    case 'isNotNull':
+      return `${d(args[0])} is not null`;
+    case 'notIn':
+      return `${d(args[0])} not in ${d(args[1])}`;
+    case 'count':
+      return `count(${d(args[0])})`;
     default:
       return `${op}(${args.map(a => d(a)).join(', ')})`;
   }
@@ -221,6 +231,18 @@ class DescriberBackend implements ExprBackend<string> {
     return `${str} matches "${pattern}"`;
   }
 
+  count(arg: string): string {
+    return `count(${arg})`;
+  }
+
+  isNull(arg: string): string {
+    return `${arg} is null`;
+  }
+
+  isNotNull(arg: string): string {
+    return `${arg} is not null`;
+  }
+
   offset(date: string, days: number): string {
     const absDays = Math.abs(days);
     const unit = absDays === 1 ? 'day' : 'days';
@@ -242,5 +264,14 @@ class DescriberBackend implements ExprBackend<string> {
     fold: (node: LoweredExpr, entity: EntityType) => string
   ): string {
     return `in ${type} where ${fold(subExpr, toEntity)}`;
+  }
+
+  containing(
+    childEntity: EntityType,
+    subExpr: LoweredExpr,
+    _fromEntity: EntityType,
+    fold: (node: LoweredExpr, entity: EntityType) => string
+  ): string {
+    return `containing ${childEntity} where ${fold(subExpr, childEntity)}`;
   }
 }

@@ -92,6 +92,18 @@ class VarCollectorBackend implements ExprBackend<Set<string>> {
     return date;
   }
 
+  count(arg: Set<string>): Set<string> {
+    return arg;
+  }
+
+  isNull(arg: Set<string>): Set<string> {
+    return arg;
+  }
+
+  isNotNull(arg: Set<string>): Set<string> {
+    return arg;
+  }
+
   container(
     _type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,
@@ -100,6 +112,18 @@ class VarCollectorBackend implements ExprBackend<Set<string>> {
     fold: (node: LoweredExpr, entity: EntityType) => Set<string>
   ): Set<string> {
     return fold(subExpr, toEntity);
+  }
+
+  containing(
+    _childEntity: EntityType,
+    _subExpr: LoweredExpr,
+    _fromEntity: EntityType,
+    _fold: (node: LoweredExpr, entity: EntityType) => Set<string>
+  ): Set<string> {
+    // The child predicate's variables belong to the child entity,
+    // not the parent entity. Return empty — the planner handles
+    // the child predicate separately when building the MembershipScan.
+    return new Set();
   }
 }
 

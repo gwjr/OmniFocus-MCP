@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { addProject as addProjectPrimitive, AddProjectParams } from '../primitives/addProject.js';
-import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
+import { coerceJson, coerceArray, appendCoercionWarnings } from '../utils/coercion.js';
 
 const projectSchema = z.object({
   name: z.string().describe("The name of the project"),
@@ -15,9 +15,9 @@ const projectSchema = z.object({
 });
 
 export const schema = z.object({
-  projects: coerceJson('projects', z.array(projectSchema).describe(
-    "Array of projects to add. For a single project, pass an array with one element."
-  )),
+  projects: coerceJson('projects', coerceArray(z.array(projectSchema).describe(
+    "Array of projects to add. A single project object is also accepted."
+  ))),
 });
 
 export async function handler(args: z.infer<typeof schema>, extra: any) {

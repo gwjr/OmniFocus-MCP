@@ -14,13 +14,13 @@
 
 import type { LoweredExpr } from '../fold.js';
 import type {
-  PlanNode,
+  StrategyNode,
   PerItemEnrich,
   PreFilter,
   BulkScan,
   OptimizationPass,
-} from '../planTree.js';
-import { walkPlan } from '../planTree.js';
+} from '../strategy.js';
+import { walkPlan } from '../strategy.js';
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -122,7 +122,7 @@ function isVarRef(node: LoweredExpr, name: string): boolean {
 
 // ── Rewrite Logic ───────────────────────────────────────────────────────
 
-function rewriteNode(node: PlanNode): PlanNode {
+function rewriteNode(node: StrategyNode): StrategyNode {
   // Only rewrite Filter → PerItemEnrich → PreFilter → BulkScan for tasks entity
   if (node.kind !== 'Filter') return node;
   const filter = node;
@@ -146,7 +146,7 @@ function rewriteNode(node: PlanNode): PlanNode {
   const newScan: BulkScan = { ...scan, columns };
 
   // Build chained SemiJoins for each tag
-  let current: PlanNode = newScan;
+  let current: StrategyNode = newScan;
   for (const tagName of extraction.tagNames) {
     current = {
       kind: 'SemiJoin',
@@ -173,7 +173,7 @@ function rewriteNode(node: PlanNode): PlanNode {
     remainingStubs.delete('tags');
 
     // PreFilter with remainder predicate and reduced stubs
-    const newPreFilter: PlanNode = remainingStubs.size > 0
+    const newPreFilter: StrategyNode = remainingStubs.size > 0
       ? {
           kind: 'PreFilter',
           source: current,
@@ -183,7 +183,7 @@ function rewriteNode(node: PlanNode): PlanNode {
         }
       : current;
 
-    const newEnrich: PlanNode = {
+    const newEnrich: StrategyNode = {
       kind: 'PerItemEnrich',
       source: newPreFilter,
       perItemVars: remainingPerItemVars,

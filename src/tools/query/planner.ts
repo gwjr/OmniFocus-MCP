@@ -8,7 +8,7 @@
 import { type LoweredExpr } from './fold.js';
 import { getVarRegistry, computedVarDeps, type EntityType, type VarDef } from './variables.js';
 import { collectVarsFromAst } from './backends/varCollector.js';
-import type { PlanNode } from './planTree.js';
+import type { StrategyNode } from './strategy.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -75,7 +75,7 @@ function expandComputedDeps(
 const PER_ITEM_THRESHOLD = 20;
 
 /**
- * Build a PlanNode tree from a pre-lowered AST.
+ * Build a StrategyNode tree from a pre-lowered AST.
  * This is the new primary planning API.
  */
 export function buildPlanTree(
@@ -83,20 +83,10 @@ export function buildPlanTree(
   entity: EntityType,
   selectVars?: string[],
   includeCompleted = false,
-): PlanNode {
-  // Rule 0: Perspectives → OmniJS fallback
+): StrategyNode {
+  // Rule 0: Perspectives → OmniJS fallback (no Apple Events class code)
   if (entity === 'perspectives') {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
-  }
-
-  // Rule 1: Tags with any container → OmniJS fallback
-  if (entity === 'tags' && containsAnyContainer(ast)) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
-  }
-
-  // Rule 2: folder container at any depth → OmniJS fallback
-  if (containsFolderContainer(ast)) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
   // Collect referenced variables
@@ -104,22 +94,28 @@ export function buildPlanTree(
   const registry = getVarRegistry(entity);
   const costMap = classifyVars(neededVars, registry);
 
-  // Rule 3: expensive vars in the where clause → OmniJS fallback
-  if (costMap.expensive.size > 0) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
-  }
+  // Note: expensive vars (e.g. note) go through PerItemEnrich — never bulk-read,
+  // but accessed per-item via byIdentifier after BulkScan pre-filters.
 
-  // Try to extract a project-scoped container
-  const extraction = extractContainerScope(ast);
+  // Try to extract a container (project, tag, or folder)
+  const extraction = extractContainer(ast);
 
-  // Rule 4: container present but not extractable → OmniJS fallback
-  if (extraction === null && containsAnyContainer(ast)) {
-    return { kind: 'OmniJSScan', entity, filterAst: ast, includeCompleted };
+  // Try to extract a containing (reverse join: projects containing tasks where ...)
+  const containingExtraction = extractContaining(extraction ? extraction.remainder : ast);
+
+  // Rule 2: unextractable container/containing → OmniJS fallback
+  // If the AST has a container or containing node that couldn't be extracted
+  // (e.g., under or/not), NodeEval can't evaluate it, so fall back to OmniJS.
+  const filterAst = containingExtraction
+    ? containingExtraction.remainder
+    : (extraction ? extraction.remainder : ast);
+  if (containsAnyContainer(filterAst) || containsAnyContaining(filterAst)) {
+    return { kind: 'FallbackScan', entity, filterAst: ast, includeCompleted };
   }
 
   // Compute bulk columns (nodeKeys)
   const bulkVarNames = new Set([...costMap.easy, ...costMap.chain]);
-  const perItemVars = new Set(costMap.perItem);
+  const perItemVars = new Set([...costMap.perItem, ...costMap.expensive]);
   const allComputed = new Set(costMap.computed);
 
   // Track which vars are needed for output (select)
@@ -159,12 +155,11 @@ export function buildPlanTree(
     ? new Set(varNamesToColumns(selectBulkVars, registry))
     : undefined;
 
-  // Use the remainder filter if project-scoped, otherwise full AST
-  const filterAst = extraction ? extraction.remainder : ast;
-  const projectScope = extraction?.scope;
+  // filterAst was computed above (after extraction)
+  const projectScope = extraction?.type === 'project' ? extraction.scope : undefined;
 
   // Build the inner scan
-  const scan: PlanNode = {
+  const scan: StrategyNode = {
     kind: 'BulkScan',
     entity,
     columns,
@@ -174,39 +169,89 @@ export function buildPlanTree(
     computedVars: allComputed.size > 0 ? allComputed : undefined,
   };
 
+  // For tag/folder containers, wrap the scan in a SemiJoin with MembershipScan.
+  // Need 'id' in columns for the SemiJoin key.
+  let scoped: StrategyNode = scan;
+  if (extraction && extraction.type !== 'project') {
+    if (!columns.includes('id')) columns.push('id');
+
+    const containerType = extraction.type;
+    let sourceEntity: EntityType;
+    let targetEntity: EntityType;
+
+    if (containerType === 'tag') {
+      sourceEntity = 'tags';
+      targetEntity = entity; // typically 'tasks'
+    } else {
+      // folder container
+      sourceEntity = 'folders';
+      targetEntity = entity; // 'projects' (direct) or 'tasks' (not yet supported)
+    }
+
+    scoped = {
+      kind: 'SemiJoin',
+      source: scan,
+      lookup: {
+        kind: 'MembershipScan',
+        sourceEntity,
+        targetEntity,
+        predicate: extraction.scope,
+        includeCompleted,
+      },
+    };
+  }
+
+  // For containing (reverse join): wrap in SemiJoin with reverse MembershipScan.
+  // e.g. projects containing tasks where flagged=true →
+  //   SemiJoin(BulkScan(projects), MembershipScan(tasks→projects, predicate))
+  if (containingExtraction) {
+    if (!columns.includes('id')) columns.push('id');
+
+    scoped = {
+      kind: 'SemiJoin',
+      source: scoped,
+      lookup: {
+        kind: 'MembershipScan',
+        sourceEntity: containingExtraction.childEntity as EntityType,
+        targetEntity: entity,
+        predicate: containingExtraction.predicate,
+        includeCompleted,
+      },
+    };
+  }
+
   if (!needsTwoPhase) {
-    // Simple path: BulkScan → Filter (if needed)
-    if (filterAst === true) return scan;
-    return { kind: 'Filter', source: scan, predicate: filterAst, entity };
+    // Simple path: scan/scoped → Filter (if needed)
+    if (filterAst === true) return scoped;
+    return { kind: 'Filter', source: scoped, predicate: filterAst, entity };
   }
 
   // Two-phase path
-  const stubVars = new Set(costMap.perItem); // only where-clause per-item vars get stubbed
+  // Stub per-item AND expensive vars in WHERE so PreFilter passes them through
+  const stubVars = new Set([...costMap.perItem, ...costMap.expensive]);
 
-  // OmniJS fallback for if threshold is exceeded
-  const fallback: PlanNode = {
-    kind: 'OmniJSScan',
-    entity,
-    filterAst: ast, // full AST for fallback (includes container if any)
-    includeCompleted,
-  };
+  // Build: Filter → PerItemEnrich → PreFilter → scan/scoped
+  const preFilter: StrategyNode = stubVars.size > 0
+    ? { kind: 'PreFilter', source: scoped, predicate: filterAst, entity, assumeTrue: stubVars }
+    : scoped;
 
-  // Build: Filter → PerItemEnrich → PreFilter → BulkScan
-  const preFilter: PlanNode = stubVars.size > 0
-    ? { kind: 'PreFilter', source: scan, predicate: filterAst, entity, assumeTrue: stubVars }
-    : scan;
+  // When expensive vars are in WHERE, disable the threshold — the user
+  // explicitly asked to filter on note/etc, so we must hydrate every row.
+  // The fallback (re-running from scoped scan) would silently drop the filter.
+  const hasExpensiveInWhere = costMap.expensive.size > 0;
+  const threshold = hasExpensiveInWhere ? Infinity : PER_ITEM_THRESHOLD;
 
-  const enrich: PlanNode = {
+  const enrich: StrategyNode = {
     kind: 'PerItemEnrich',
     source: preFilter,
     perItemVars,
     entity,
-    threshold: PER_ITEM_THRESHOLD,
-    fallback,
+    threshold,
+    fallback: scoped, // if threshold exceeded (per-item only), re-run from scoped scan
   };
 
   // Exact re-filter after enrichment (no stubs)
-  const filter: PlanNode = {
+  const filter: StrategyNode = {
     kind: 'Filter',
     source: enrich,
     predicate: filterAst,
@@ -251,48 +296,53 @@ function isVarRef(node: LoweredExpr, name: string): boolean {
 // ── Container Extraction ────────────────────────────────────────────────
 
 interface ContainerExtraction {
-  /** The project-scope predicate */
+  /** Container type: 'project', 'folder', or 'tag' */
+  type: 'project' | 'folder' | 'tag';
+  /** The container-scope predicate (applied to the container entity) */
   scope: LoweredExpr;
   /** Remainder filter (literal true if nothing left) */
   remainder: LoweredExpr;
 }
 
 /**
- * Opportunistic container extraction — syntactically obvious only.
+ * Extract ANY top-level container from the AST.
  *
- * - Top-level container("project", ...) → extract
- * - Top-level and([..., container("project", ...), ...]) → extract container, keep rest
+ * - Top-level container(type, ...) → extract
+ * - Top-level and([..., container(type, ...), ...]) → extract first container, keep rest
  * - Under or, not, nested and → do not attempt
  *
- * Never changes semantics: if extraction fails, query runs via broad path.
+ * All container types require canCompileScope (eq/contains on name) so the
+ * EventPlan lowering can encode the predicate as a Whose AE specifier.
  */
-export function extractContainerScope(ast: LoweredExpr): ContainerExtraction | null {
+export function extractContainer(ast: LoweredExpr): ContainerExtraction | null {
   if (typeof ast !== 'object' || ast === null || Array.isArray(ast)) return null;
   if (!('op' in ast)) return null;
 
   const node = ast as { op: string; args: LoweredExpr[] };
 
-  // Top-level container("project", ...)
+  // Top-level container(type, ...)
   if (node.op === 'container') {
     const containerType = node.args[0] as unknown as string;
-    if (containerType === 'project') {
-      if (!canCompileScope(node.args[1])) return null;
-      return {
-        scope: node.args[1],
-        remainder: true
-      };
-    }
-    return null;
+    // All container types require a compilable scope (eq/contains on name)
+    // so the EventPlan lowering can encode it as a Whose specifier.
+    if (!canCompileScope(node.args[1])) return null;
+    return {
+      type: containerType as 'project' | 'folder' | 'tag',
+      scope: node.args[1],
+      remainder: true,
+    };
   }
 
-  // Top-level and — look for a container("project", ...) conjunct
+  // Top-level and — look for any container conjunct
   if (node.op === 'and') {
     const containerIdx = node.args.findIndex(arg => {
       if (typeof arg !== 'object' || arg === null || Array.isArray(arg)) return false;
       if (!('op' in arg)) return false;
       const a = arg as { op: string; args: LoweredExpr[] };
-      return a.op === 'container' && (a.args[0] as unknown as string) === 'project' &&
-        canCompileScope(a.args[1]);
+      if (a.op !== 'container') return false;
+      const t = a.args[0] as unknown as string;
+      if (t !== 'project' && t !== 'tag' && t !== 'folder') return false;
+      return canCompileScope(a.args[1]);
     });
 
     if (containerIdx === -1) return null;
@@ -301,15 +351,75 @@ export function extractContainerScope(ast: LoweredExpr): ContainerExtraction | n
     const remaining = node.args.filter((_, i) => i !== containerIdx);
 
     return {
+      type: containerNode.args[0] as unknown as 'project' | 'folder' | 'tag',
       scope: containerNode.args[1],
-      remainder: remaining.length === 1 ? remaining[0] : { op: 'and', args: remaining }
+      remainder: remaining.length === 1 ? remaining[0] : { op: 'and', args: remaining },
     };
   }
 
   return null;
 }
 
-// ── Container Detection ─────────────────────────────────────────────────
+/** @deprecated Use extractContainer */
+export const extractContainerScope = extractContainer;
+
+// ── Containing Extraction ────────────────────────────────────────────────
+
+interface ContainingExtraction {
+  /** Child entity type (e.g. 'tasks', 'projects') — validated against REVERSE_MEMBERSHIP */
+  childEntity: string;
+  /** The child predicate (applied to the child entity) */
+  predicate: LoweredExpr;
+  /** Remainder filter (literal true if nothing left) */
+  remainder: LoweredExpr;
+}
+
+/**
+ * Extract a top-level `containing` from the AST.
+ *
+ * - Top-level containing("tasks", predicate) → extract
+ * - Top-level and([..., containing(...), ...]) → extract first containing, keep rest
+ * - Under or, not, nested and → do not attempt (falls back to OmniJS)
+ */
+function extractContaining(ast: LoweredExpr): ContainingExtraction | null {
+  if (typeof ast !== 'object' || ast === null || Array.isArray(ast)) return null;
+  if (!('op' in ast)) return null;
+
+  const node = ast as { op: string; args: LoweredExpr[] };
+
+  // Top-level containing("tasks", predicate)
+  if (node.op === 'containing') {
+    return {
+      childEntity: node.args[0] as unknown as string,
+      predicate: node.args[1],
+      remainder: true,
+    };
+  }
+
+  // Top-level and — look for any containing conjunct
+  if (node.op === 'and') {
+    const containingIdx = node.args.findIndex(arg => {
+      if (typeof arg !== 'object' || arg === null || Array.isArray(arg)) return false;
+      if (!('op' in arg)) return false;
+      return (arg as { op: string }).op === 'containing';
+    });
+
+    if (containingIdx === -1) return null;
+
+    const containingNode = node.args[containingIdx] as { op: string; args: LoweredExpr[] };
+    const remaining = node.args.filter((_, i) => i !== containingIdx);
+
+    return {
+      childEntity: containingNode.args[0] as unknown as string,
+      predicate: containingNode.args[1],
+      remainder: remaining.length === 1 ? remaining[0] : { op: 'and', args: remaining },
+    };
+  }
+
+  return null;
+}
+
+// ── Container / Containing Detection ────────────────────────────────────
 
 /**
  * Check if an AST contains any container node at any depth.
@@ -330,21 +440,20 @@ function containsAnyContainer(ast: LoweredExpr): boolean {
 }
 
 /**
- * Check if an AST contains a folder container at any depth.
+ * Check if an AST contains any containing node at any depth.
  */
-function containsFolderContainer(ast: LoweredExpr): boolean {
+function containsAnyContaining(ast: LoweredExpr): boolean {
   if (typeof ast !== 'object' || ast === null) return false;
-  if (Array.isArray(ast)) return ast.some(containsFolderContainer);
+  if (Array.isArray(ast)) return ast.some(containsAnyContaining);
 
   const obj = ast as Record<string, unknown>;
 
   if ('op' in obj) {
     const node = obj as { op: string; args: LoweredExpr[] };
-    if (node.op === 'container') {
-      return (node.args[0] as unknown as string) === 'folder';
-    }
-    return node.args.some(containsFolderContainer);
+    if (node.op === 'containing') return true;
+    return node.args.some(containsAnyContaining);
   }
 
   return false;
 }
+

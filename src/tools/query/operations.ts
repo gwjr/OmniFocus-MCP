@@ -37,12 +37,23 @@ export const operations: Record<string, OpMeta> = {
 
   // Container scoping
   container:    { minArgs: 2, maxArgs: 2,  description: 'Container scoping ({container: ["project"|"folder"|"tag", expr]})' },
+  containing:   { minArgs: 2, maxArgs: 2,  description: 'Reverse container ({containing: ["tasks"|"projects", predicate]}) — parent entities containing matching children' },
 
   // String (case-insensitive) — contains is polymorphic (string or array)
   contains:     { minArgs: 2, maxArgs: 2,  description: 'String/array contains (case-insensitive)' },
   startsWith:   { minArgs: 2, maxArgs: 2,  description: 'String starts with (case-insensitive)' },
   endsWith:     { minArgs: 2, maxArgs: 2,  description: 'String ends with (case-insensitive)' },
   matches:      { minArgs: 2, maxArgs: 2,  description: 'Regex match (case-insensitive)' },
+
+  // Array functions
+  count:        { minArgs: 1, maxArgs: 1,  description: 'Array length ({count: [arrayExpr]}) — returns 0 for null/non-array' },
+
+  // Null checks
+  isNull:       { minArgs: 1, maxArgs: 1,  description: 'True when value is null/undefined ({isNull: [expr]})' },
+  isNotNull:    { minArgs: 1, maxArgs: 1,  description: 'True when value is not null/undefined ({isNotNull: [expr]})' },
+
+  // Set non-membership (sugar for not(in(...)))
+  notIn:        { minArgs: 2, maxArgs: 2,  description: 'Value not in array ({notIn: [valueExpr, [array]]}) — desugars to not(in(...))' },
 };
 
 // Note: 'offset' is a special node type (object with named fields), not an array-args op.

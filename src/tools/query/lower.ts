@@ -119,6 +119,16 @@ export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
             );
           }
         }
+        if (opName === 'notIn') {
+          if (!Array.isArray(loweredArgs[1])) {
+            throw new LowerError(
+              'Second argument to "notIn" must be an array literal (e.g. ["Active","OnHold"]).',
+              `${path}.notIn[1]`, node
+            );
+          }
+          // Desugar notIn to not(in(...)) at lower time
+          return { op: 'not', args: [{ op: 'in', args: loweredArgs }] };
+        }
         if (opName === 'matches') {
           if (typeof loweredArgs[1] !== 'string') {
             throw new LowerError(
@@ -132,6 +142,14 @@ export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
             throw new LowerError(
               'First argument to "container" must be "project", "folder", or "tag"',
               `${path}.container[0]`, node
+            );
+          }
+        }
+        if (opName === 'containing') {
+          if (typeof loweredArgs[0] !== 'string') {
+            throw new LowerError(
+              'First argument to "containing" must be a child entity name (e.g. "tasks", "projects")',
+              `${path}.containing[0]`, node
             );
           }
         }

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { addOmniFocusTask, AddOmniFocusTaskParams } from '../primitives/addOmniFocusTask.js';
 import { batchAddItems, BatchAddItemsParams } from '../primitives/batchAddItems.js';
-import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
+import { coerceJson, coerceArray, appendCoercionWarnings } from '../utils/coercion.js';
 
 const taskSchema = z.object({
   name: z.string().describe("The name of the task"),
@@ -18,9 +18,9 @@ const taskSchema = z.object({
 });
 
 export const schema = z.object({
-  tasks: coerceJson('tasks', z.array(taskSchema).describe(
-    "Array of tasks to add. For a single task, pass an array with one element."
-  )),
+  tasks: coerceJson('tasks', coerceArray(z.array(taskSchema).describe(
+    "Array of tasks to add. A single task object is also accepted."
+  ))),
 });
 
 export async function handler(args: z.infer<typeof schema>, extra: any) {

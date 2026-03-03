@@ -25,6 +25,15 @@ export const schema = z.object({
     .describe("Preview without mutating. Default: true for query targeting, false for id/ids"),
 });
 
+function describeDestination(args: z.infer<typeof schema>): string {
+  if (args.toInbox) return 'inbox';
+  if (args.toProjectName) return `project "${args.toProjectName}"`;
+  if (args.toProjectId) return `project ${args.toProjectId}`;
+  if (args.toFolderName) return `folder "${args.toFolderName}"`;
+  if (args.toFolderId) return `folder ${args.toFolderId}`;
+  return '(unknown destination)';
+}
+
 export async function handler(args: z.infer<typeof schema>, _extra: any) {
   try {
     // ── Resolve targets ───────────────────────────────────────────────
@@ -78,12 +87,12 @@ export async function handler(args: z.infer<typeof schema>, _extra: any) {
     // ── Dry run ───────────────────────────────────────────────────────
     const isDryRun = args.dryRun ?? (args.query != null);
     if (isDryRun) {
-      const dest = args.toProjectId ?? args.toProjectName ?? args.toFolderId ?? args.toFolderName ?? 'Inbox';
+      const dest = describeDestination(args);
       const previews = resolved.previews ?? resolved.ids.map(id => ({ id, name: '(unknown)' }));
       const lines = previews.map(p => `- "${p.name}" (${p.id})`).join('\n');
       return {
         content: [{ type: "text" as const, text: appendCoercionWarnings(
-          `Would move ${resolved.ids.length} ${resolved.entity} to "${dest}":\n${lines}`
+          `Would move ${resolved.ids.length} ${resolved.entity} to ${dest}:\n${lines}`
         ) }],
       };
     }
@@ -102,11 +111,11 @@ export async function handler(args: z.infer<typeof schema>, _extra: any) {
     const result = await executeBatchMove(moveParams);
 
     if (result.success) {
-      const dest = result.results?.[0]?.destination ?? '(unknown)';
+      const dest = describeDestination(args);
       const names = result.results?.map(r => `"${r.name}"`).join(', ') ?? '';
       return {
         content: [{ type: "text" as const, text: appendCoercionWarnings(
-          `Moved ${result.results?.length ?? 0} ${resolved.entity} to "${dest}": ${names}`
+          `Moved ${result.results?.length ?? 0} ${resolved.entity} to ${dest}: ${names}`
         ) }],
       };
     }

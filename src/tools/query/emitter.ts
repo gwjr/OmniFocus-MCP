@@ -6,7 +6,7 @@
  * single composite script to save osascript invocations.
  */
 
-import type { BulkScan, MembershipScan } from './planTree.js';
+import type { BulkScan, MembershipScan } from './strategy.js';
 import type { EntityType } from './variables.js';
 
 // ── Fragment ─────────────────────────────────────────────────────────────

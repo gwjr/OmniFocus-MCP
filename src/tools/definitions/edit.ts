@@ -46,6 +46,27 @@ export const schema = z.object({
     .describe("Preview without mutating. Default: true for query targeting, false for id/ids"),
 });
 
+function summariseEdits(args: z.infer<typeof schema>): string {
+  const parts: string[] = [];
+  if (args.set) {
+    for (const [k, v] of Object.entries(args.set)) {
+      if (v === undefined) continue;
+      if (v === null) { parts.push(`cleared ${k}`); continue; }
+      if (typeof v === 'boolean') { parts.push(v ? `set ${k}` : `unset ${k}`); continue; }
+      parts.push(`${k}: ${v}`);
+    }
+  }
+  if (args.mark) parts.push(`marked ${args.mark}`);
+  if (args.addTags?.length) parts.push(`+tags: ${args.addTags.join(', ')}`);
+  if (args.removeTags?.length) parts.push(`-tags: ${args.removeTags.join(', ')}`);
+  if (args.offset) {
+    for (const [k, v] of Object.entries(args.offset)) {
+      if (v) parts.push(`${k} ${v.days > 0 ? '+' : ''}${v.days}d`);
+    }
+  }
+  return parts.length > 0 ? `Changes: ${parts.join(', ')}` : '';
+}
+
 export async function handler(args: z.infer<typeof schema>, _extra: any) {
   try {
     // ── Validate at least one operation ────────────────────────────────
@@ -123,9 +144,10 @@ export async function handler(args: z.infer<typeof schema>, _extra: any) {
 
     if (result.success) {
       const names = result.results?.map(r => `"${r.name}"`).join(', ') ?? '';
+      const changes = summariseEdits(args);
       return {
         content: [{ type: "text" as const, text: appendCoercionWarnings(
-          `Edited ${result.results?.length ?? 0} ${resolved.entity}: ${names}`
+          `Edited ${result.results?.length ?? 0} ${resolved.entity}: ${names}\n${changes}`
         ) }],
       };
     }

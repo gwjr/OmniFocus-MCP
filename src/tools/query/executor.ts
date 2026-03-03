@@ -1,7 +1,7 @@
 /**
  * Plan Tree Executor.
  *
- * Recursively walks a PlanNode tree, executing each node and producing
+ * Recursively walks a StrategyNode tree, executing each node and producing
  * a PlanResult ({kind:'rows', rows} or {kind:'idSet', ids}).
  *
  * Supports two entry points:
@@ -21,10 +21,10 @@ import {
   generateMembershipScript,
 } from './jxaBulkRead.js';
 import type {
-  PlanNode,
+  StrategyNode,
   PlanResult,
   BulkScan,
-  OmniJSScan,
+  FallbackScan,
   MembershipScan,
   Filter,
   PreFilter,
@@ -34,7 +34,7 @@ import type {
   Project as ProjectNode,
   SemiJoin,
   CrossEntityJoin,
-} from './planTree.js';
+} from './strategy.js';
 import type { SelfJoinEnrich } from './optimizations/selfJoinElimination.js';
 import type { CompiledQuery, SlotEntry } from './compile.js';
 
@@ -47,8 +47,8 @@ interface ExecContext {
   predicateCache: Map<string, RowFn>;
   /** Pre-computed batch results from fused JXA execution (keyed by slot index). */
   batchResults: unknown[] | null;
-  /** Map from JXA leaf PlanNode (by identity) → slot in batchResults. */
-  slotMap: Map<PlanNode, SlotEntry> | null;
+  /** Map from JXA leaf StrategyNode (by identity) → slot in batchResults. */
+  slotMap: Map<StrategyNode, SlotEntry> | null;
 }
 
 function createContext(): ExecContext {
@@ -64,7 +64,7 @@ function recordTiming(ctx: ExecContext, kind: string, ms: number): void {
 /**
  * Execute a plan tree, returning rows or an id set.
  */
-export async function executePlan(node: PlanNode): Promise<PlanResult> {
+export async function executePlan(node: StrategyNode): Promise<PlanResult> {
   const ctx = createContext();
   const result = await executeNode(node, ctx);
   logTimings(ctx);
@@ -120,10 +120,10 @@ function logTimings(ctx: ExecContext): void {
 
 // ── Node Dispatch ───────────────────────────────────────────────────────
 
-async function executeNode(node: PlanNode, ctx: ExecContext): Promise<PlanResult> {
+async function executeNode(node: StrategyNode, ctx: ExecContext): Promise<PlanResult> {
   switch (node.kind) {
     case 'BulkScan':       return executeBulkScan(node, ctx);
-    case 'OmniJSScan':     return executeOmniJSScan(node, ctx);
+    case 'FallbackScan':     return executeFallbackScan(node, ctx);
     case 'MembershipScan': return executeMembershipScan(node, ctx);
     case 'Filter':         return executeFilter(node, ctx);
     case 'PreFilter':      return executePreFilter(node, ctx);
@@ -224,13 +224,13 @@ const computedVarDerivers: Record<string, Record<string, RowDeriver>> = {
   },
 };
 
-async function executeOmniJSScan(node: OmniJSScan, ctx: ExecContext): Promise<PlanResult> {
+async function executeFallbackScan(node: FallbackScan, ctx: ExecContext): Promise<PlanResult> {
   const t = Date.now();
 
   // Perspectives use a dedicated script
   if (node.entity === 'perspectives') {
     const result = await executePerspectivesScan(node);
-    recordTiming(ctx, 'OmniJSScan', Date.now() - t);
+    recordTiming(ctx, 'FallbackScan', Date.now() - t);
     return result;
   }
 
@@ -253,7 +253,7 @@ async function executeOmniJSScan(node: OmniJSScan, ctx: ExecContext): Promise<Pl
   const result = await executeOmniFocusScript(tempFile);
   fs.unlinkSync(tempFile);
 
-  recordTiming(ctx, 'OmniJSScan', Date.now() - t);
+  recordTiming(ctx, 'FallbackScan', Date.now() - t);
 
   if (result.error) {
     throw new Error(`OmniJS error: ${result.error}`);
@@ -600,7 +600,7 @@ function applySort(rows: Row[], sortBy: string, direction: 'asc' | 'desc', entit
 // ── OmniJS Script Generation (moved from queryOmnifocus.ts) ─────────────
 
 function generateOmniJsScript(
-  node: OmniJSScan,
+  node: FallbackScan,
   whereCondition: string | null,
   preambleCode: string[]
 ): string {
@@ -780,7 +780,7 @@ function generateFieldMapping(entity: string): string {
 
 // ── Perspectives ────────────────────────────────────────────────────────
 
-async function executePerspectivesScan(node: OmniJSScan): Promise<PlanResult> {
+async function executePerspectivesScan(node: FallbackScan): Promise<PlanResult> {
   const script = `(() => {
     try {
       var items = [];

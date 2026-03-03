@@ -11,7 +11,7 @@
 
 import { JxaEmitter } from './emitters/jxaEmitter.js';
 import type { EntityType } from './variables.js';
-import type { BulkScan, MembershipScan } from './planTree.js';
+import type { BulkScan, MembershipScan } from './strategy.js';
 
 const emitter = new JxaEmitter();
 

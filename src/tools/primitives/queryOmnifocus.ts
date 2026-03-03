@@ -7,6 +7,12 @@
  *   3. Optimize plan tree (tag semi-join, normalization)
  *   4. Execute plan tree (executor)
  *   5. Sort, limit, select in Node (via tree wrapper nodes)
+ *
+ * Two execution backends:
+ *   - Legacy: compileQuery(JxaEmitter) → executeCompiledQuery (StrategyNode codegen)
+ *   - EventPlan: lowerStrategy → cseEventPlan → executeEventPlan (new IR pipeline)
+ *
+ * Set USE_EVENT_PLAN_PIPELINE=1 env var to use the new pipeline.
  */
 
 import { lowerExpr, LowerError } from '../query/lower.js';
@@ -14,14 +20,19 @@ import { buildPlanTree } from '../query/planner.js';
 import { executeCompiledQuery } from '../query/executor.js';
 import { compileQuery } from '../query/compile.js';
 import { JxaEmitter } from '../query/emitters/jxaEmitter.js';
-import { optimize, planPathLabel, type PlanNode } from '../query/planTree.js';
+import { optimize, planPathLabel, type StrategyNode } from '../query/strategy.js';
 import { tagSemiJoinPass } from '../query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../query/optimizations/normalize.js';
 import { crossEntityJoinPass } from '../query/optimizations/crossEntityJoin.js';
 import { selfJoinEliminationPass } from '../query/optimizations/selfJoinElimination.js';
+import { executeEventPlanPipeline } from '../query/executionUnits/orchestrator.js';
 import type { LoweredExpr } from '../query/fold.js';
 import type { EntityType } from '../query/variables.js';
 import type { Row } from '../query/backends/nodeEval.js';
+
+// ── Feature flag ─────────────────────────────────────────────────────
+
+const USE_EVENT_PLAN = process.env.USE_EVENT_PLAN_PIPELINE !== '0';
 
 // ── Query Logging ──────────────────────────────────────────────────────
 
@@ -82,8 +93,14 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       throw e;
     }
 
+    // Step 1b: For tasks, expand select to include mandatory minimum fields
+    // so the planner bulk-reads them (id, flagged are easy; status is computed).
+    const expandedSelect = params.entity === 'tasks' && params.select
+      ? augmentTaskSelect(params.select)
+      : params.select;
+
     // Step 2: Build plan tree
-    let tree = buildPlanTree(ast, params.entity, params.select, params.includeCompleted ?? false);
+    let tree = buildPlanTree(ast, params.entity, expandedSelect, params.includeCompleted ?? false);
 
     // Step 3: Wrap with sort/limit/project nodes
     tree = wrapWithPostProcessing(tree, params);
@@ -93,16 +110,30 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
     const strategy = planPathLabel(tree);
 
-    // Step 5: Compile and execute
-    const compiled = compileQuery(tree, new JxaEmitter());
-    const result = await executeCompiledQuery(compiled);
+    // Step 5: Compile and execute (legacy or EventPlan pipeline)
+    // Perspectives have no Apple Events class code; FallbackScan queries
+    // have unextractable container predicates that the EventPlan pipeline
+    // can't evaluate. Both use the legacy executor.
+    let rows: Row[];
 
-    // Step 6: Assert rows result
-    if (result.kind !== 'rows') {
-      throw new Error(`Plan tree produced ${result.kind} instead of rows — planner bug`);
+    if (USE_EVENT_PLAN && params.entity !== 'perspectives' && strategy !== 'fallback') {
+      // New EventPlan IR pipeline:
+      // StrategyNode → EventPlan → CSE → assignRuntimes → split → execute
+      const orchResult = await executeEventPlanPipeline(tree);
+      if (!Array.isArray(orchResult.value)) {
+        throw new Error(`EventPlan pipeline produced non-array result — pipeline bug`);
+      }
+      rows = orchResult.value as Row[];
+    } else {
+      // Legacy pipeline: compile to JXA script and execute
+      const compiled = compileQuery(tree, new JxaEmitter());
+      const result = await executeCompiledQuery(compiled);
+      if (result.kind !== 'rows') {
+        throw new Error(`Plan tree produced ${result.kind} instead of rows — planner bug`);
+      }
+      rows = result.rows;
     }
 
-    let rows = result.rows;
     const totalCount = rows.length;
 
     logQuery({ where: params.where, entity: params.entity, strategy, totalMs: Date.now() - t0, resultCount: totalCount });
@@ -115,7 +146,13 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     // Select fields (if not already handled by Project node, which only
     // applies to tree-internal usage — for the public API, we always apply
     // select here to handle the full field mapping including OmniJS results)
-    const items = params.select ? selectFields(rows, params.select) : rows;
+    let items = params.select ? selectFields(rows, params.select) : rows;
+
+    // For tasks, inject mandatory minimum fields (id, flagged, taskStatus)
+    // into every row regardless of what the user selected.
+    if (params.entity === 'tasks') {
+      items = injectMandatoryTaskFields(items);
+    }
 
     return { success: true, items, count: totalCount };
   } catch (error) {
@@ -127,7 +164,7 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
 // ── Post-Processing Wrappers ────────────────────────────────────────────
 
-function wrapWithPostProcessing(tree: PlanNode, params: QueryOmnifocusParams): PlanNode {
+function wrapWithPostProcessing(tree: StrategyNode, params: QueryOmnifocusParams): StrategyNode {
   let current = tree;
 
   // Sort
@@ -164,5 +201,42 @@ function selectFields(rows: Row[], fields: string[]): Row[] {
       }
     }
     return selected;
+  });
+}
+
+// ── Mandatory Task Fields ─────────────────────────────────────────────────
+
+/** Fields that are always needed for tasks (mapped to internal variable names). */
+const MANDATORY_TASK_VARS = ['id', 'flagged', 'status'];
+
+/**
+ * Augment a user's select list with mandatory task fields so the planner
+ * bulk-reads them. Uses internal variable names (status, not taskStatus).
+ */
+export function augmentTaskSelect(select: string[]): string[] {
+  const set = new Set(select);
+  // Map user-facing 'taskStatus' to internal 'status' computed var
+  if (set.has('taskStatus')) {
+    set.add('status');
+  }
+  for (const v of MANDATORY_TASK_VARS) {
+    set.add(v);
+  }
+  return [...set];
+}
+
+/**
+ * Inject mandatory minimum fields into task result rows.
+ * Maps the internal 'status' field to 'taskStatus' for user-facing output.
+ */
+export function injectMandatoryTaskFields(rows: Row[]): Row[] {
+  return rows.map(row => {
+    const result = { ...row };
+    // Map internal 'status' → user-facing 'taskStatus'
+    if ('status' in result && !('taskStatus' in result)) {
+      result.taskStatus = result.status;
+      delete result.status;
+    }
+    return result;
   });
 }

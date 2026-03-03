@@ -2,9 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildPlanTree, extractContainerScope } from '../dist/tools/query/planner.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
-import { planPathLabel, walkPlan } from '../dist/tools/query/planTree.js';
+import { planPathLabel, walkPlan } from '../dist/tools/query/strategy.js';
 import type { LoweredExpr } from '../dist/tools/query/fold.js';
-import type { PlanNode } from '../dist/tools/query/planTree.js';
+import type { StrategyNode } from '../dist/tools/query/strategy.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -17,8 +17,8 @@ function plan(where: unknown, entity: string = 'tasks', select?: string[]) {
   return buildPlanTree(ast, entity as any, select, false);
 }
 
-function findNode(tree: PlanNode, kind: string): PlanNode | null {
-  let found: PlanNode | null = null;
+function findNode(tree: StrategyNode, kind: string): StrategyNode | null {
+  let found: StrategyNode | null = null;
   walkPlan(tree, n => {
     if (n.kind === kind) found = n;
     return n;
@@ -50,12 +50,12 @@ describe('planner — path selection', () => {
     assert.ok(enrich.perItemVars.has('folderName'));
   });
 
-  it('projects entity with folder container → omnijs-fallback', () => {
+  it('projects entity with folder container → semijoin', () => {
     const tree = plan(
       { container: ['folder', { contains: [{ var: 'name' }, 'Legal'] }] },
       'projects'
     );
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
   });
 
   it('folders entity with easy vars → broad', () => {
@@ -79,7 +79,7 @@ describe('planner — path selection', () => {
     assert.equal(planPathLabel(tree), 'broad');
   });
 
-  it('folder container at any depth → omnijs-fallback', () => {
+  it('folder container in top-level and → semijoin with Filter remainder', () => {
     const tree = plan(
       { and: [
         { container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] },
@@ -87,7 +87,11 @@ describe('planner — path selection', () => {
       ]},
       'tasks'
     );
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
+    // The container is extracted; the remainder is a Filter
+    assert.equal(tree.kind, 'Filter');
+    const filter = tree as Extract<StrategyNode, { kind: 'Filter' }>;
+    assert.equal(filter.source.kind, 'SemiJoin');
   });
 
   it('folder container under or → omnijs-fallback', () => {
@@ -98,7 +102,7 @@ describe('planner — path selection', () => {
       ]},
       'tasks'
     );
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'fallback');
   });
 
   it('folder container under not → omnijs-fallback', () => {
@@ -106,12 +110,12 @@ describe('planner — path selection', () => {
       { not: [{ container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] }] },
       'tasks'
     );
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'fallback');
   });
 
-  it('expensive var (note) in where → omnijs-fallback', () => {
+  it('note in where → two-phase (PerItemEnrich)', () => {
     const tree = plan({ contains: [{ var: 'note' }, 'important'] }, 'tasks');
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'two-phase');
   });
 
   it('easy vars only → broad', () => {
@@ -239,20 +243,20 @@ describe('planner — tags entity', () => {
     assert.ok(enrich.perItemVars.has('parentName'));
   });
 
-  it('tags with expensive var (note) in where → omnijs-fallback', () => {
+  it('tags with note in where → two-phase (PerItemEnrich)', () => {
     const tree = plan({ contains: [{ var: 'note' }, 'important'] }, 'tags');
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'two-phase');
   });
 
-  it('tags with tag container → omnijs-fallback', () => {
+  it('tags with tag container → semijoin', () => {
     const tree = plan(
       { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
       'tags'
     );
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
   });
 
-  it('tags with tag container nested in and → omnijs-fallback', () => {
+  it('tags with tag container nested in and → semijoin with Filter', () => {
     const tree = plan(
       { and: [
         { container: ['tag', { contains: [{ var: 'name' }, 'Work'] }] },
@@ -260,7 +264,10 @@ describe('planner — tags entity', () => {
       ]},
       'tags'
     );
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'semijoin');
+    assert.equal(tree.kind, 'Filter');
+    const filter = tree as Extract<StrategyNode, { kind: 'Filter' }>;
+    assert.equal(filter.source.kind, 'SemiJoin');
   });
 
   it('tags with per-item var in select only → two-phase', () => {
@@ -346,12 +353,12 @@ describe('planner — bulkVars population', () => {
 describe('planner — perspectives entity', () => {
   it('perspectives with no where → omnijs-fallback', () => {
     const tree = plan(undefined, 'perspectives');
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'fallback');
   });
 
   it('perspectives with where clause → omnijs-fallback', () => {
     const tree = plan({ contains: [{ var: 'name' }, 'Flagged'] }, 'perspectives');
-    assert.equal(planPathLabel(tree), 'omnijs-fallback');
+    assert.equal(planPathLabel(tree), 'fallback');
   });
 });
 
@@ -378,10 +385,12 @@ describe('extractContainerScope', () => {
     assert.equal(remainder.op, 'eq');
   });
 
-  it('returns null for folder container', () => {
+  it('extracts folder container with compilable scope', () => {
     const ast = lowerExpr({ container: ['folder', { eq: [{ var: 'name' }, 'Legal'] }] }) as LoweredExpr;
     const result = extractContainerScope(ast);
-    assert.equal(result, null);
+    assert.ok(result);
+    assert.equal(result.type, 'folder');
+    assert.equal(result.remainder, true);
   });
 
   it('returns null for non-container top-level', () => {

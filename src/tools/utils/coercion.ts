@@ -81,6 +81,20 @@ export function tryFixJsLiteral(val: string): unknown | null {
 }
 
 /**
+ * Wraps an array Zod schema to accept a single object and silently promote
+ * it to a one-element array.  Composes with coerceJson (apply coerceArray
+ * to the inner schema, then wrap with coerceJson for string handling).
+ */
+export function coerceArray<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((val) => {
+    if (val != null && typeof val === 'object' && !Array.isArray(val)) {
+      return [val];
+    }
+    return val;
+  }, schema);
+}
+
+/**
  * Returns any coercion warnings accumulated since the last call, then clears
  * the buffer.
  */

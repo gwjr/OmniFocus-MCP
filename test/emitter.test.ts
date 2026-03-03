@@ -4,12 +4,12 @@ import { JxaEmitter } from '../dist/tools/query/emitters/jxaEmitter.js';
 import { compileQuery } from '../dist/tools/query/compile.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
 import { buildPlanTree } from '../dist/tools/query/planner.js';
-import { optimize, walkPlan } from '../dist/tools/query/planTree.js';
+import { optimize, walkPlan } from '../dist/tools/query/strategy.js';
 import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
 import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
 import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
 import { selfJoinEliminationPass } from '../dist/tools/query/optimizations/selfJoinElimination.js';
-import type { PlanNode, BulkScan, MembershipScan } from '../dist/tools/query/planTree.js';
+import type { StrategyNode, BulkScan, MembershipScan } from '../dist/tools/query/strategy.js';
 import type { LoweredExpr } from '../dist/tools/query/fold.js';
 
 const emitter = new JxaEmitter();
@@ -30,8 +30,8 @@ function optimizedPlan(where: unknown, entity: string = 'tasks', select?: string
   return optimize(plan(where, entity, select), PASSES);
 }
 
-function findNode(tree: PlanNode, kind: string): PlanNode | null {
-  let found: PlanNode | null = null;
+function findNode(tree: StrategyNode, kind: string): StrategyNode | null {
+  let found: StrategyNode | null = null;
   walkPlan(tree, n => {
     if (n.kind === kind) found = n;
     return n;
@@ -78,7 +78,7 @@ describe('JxaEmitter.propertyScan', () => {
     assert.ok(frag.body.includes('activeIndices'), 'should filter active items');
   });
 
-  it('omits active filter when includeCompleted', () => {
+  it('omits active filter when includeCompleted (project exclusion still applies)', () => {
     const node: BulkScan = {
       kind: 'BulkScan',
       entity: 'tasks',
@@ -86,7 +86,11 @@ describe('JxaEmitter.propertyScan', () => {
       includeCompleted: true,
     };
     const frag = emitter.propertyScan(node);
-    assert.ok(!frag.body.includes('activeIndices'), 'should not filter when includeCompleted');
+    // Task entities always use activeIndices for project exclusion, even
+    // without an active filter. Check that the completed/dropped filter
+    // is absent but project exclusion is present.
+    assert.ok(!frag.body.includes('!_fa0[j]'), 'should not have completed filter');
+    assert.ok(frag.body.includes('_projIdSet'), 'should have project exclusion');
   });
 
   it('includes chain properties', () => {
@@ -163,7 +167,7 @@ describe('JxaEmitter.membershipLookup', () => {
       includeCompleted: false,
     };
     const frag = emitter.membershipLookup(node);
-    assert.ok(frag.body.includes('completed'), 'should filter completed tasks');
+    assert.ok(frag.body.includes('effectivelyCompleted'), 'should filter effectively completed tasks');
   });
 });
 
@@ -326,7 +330,7 @@ describe('compileQuery', () => {
       ['name', 'folderName']
     );
 
-    // Should have PerItemEnrich with BulkScan source and OmniJSScan fallback
+    // Should have PerItemEnrich with BulkScan source and FallbackScan fallback
     const enrich = findNode(rawTree, 'PerItemEnrich');
     assert.ok(enrich, 'should have PerItemEnrich');
 

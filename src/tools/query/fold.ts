@@ -51,12 +51,27 @@ export interface ExprBackend<T> {
   // Date arithmetic
   offset(date: T, days: number): T;
 
+  // Array functions
+  count(arg: T): T;
+
+  // Null checks
+  isNull(arg: T): T;
+  isNotNull(arg: T): T;
+
   // Structural scoping
   container(
     type: 'project' | 'folder' | 'tag',
     subExpr: LoweredExpr,
     fromEntity: EntityType,
     toEntity: EntityType,
+    fold: (node: LoweredExpr, entity: EntityType) => T
+  ): T;
+
+  // Reverse containment (e.g. projects containing tasks where ...)
+  containing(
+    childEntity: EntityType,
+    subExpr: LoweredExpr,
+    fromEntity: EntityType,
     fold: (node: LoweredExpr, entity: EntityType) => T
   ): T;
 }
@@ -145,6 +160,15 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
         return backend.offset(f(args[0]), args[1] as number);
       }
 
+      case 'count':
+        return backend.count(f(args[0]));
+
+      case 'isNull':
+        return backend.isNull(f(args[0]));
+
+      case 'isNotNull':
+        return backend.isNotNull(f(args[0]));
+
       case 'container': {
         // args[0] is "project", "folder", or "tag"; args[1] is the sub-expression
         const containerType = args[0] as unknown as 'project' | 'folder' | 'tag';
@@ -163,6 +187,19 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
           subExpr,
           entity,
           toEntity,
+          (sub: LoweredExpr, ent: EntityType) => foldExpr(sub, backend, ent)
+        );
+      }
+
+      case 'containing': {
+        // args[0] is the child entity name; args[1] is the child predicate
+        const childEntity = args[0] as unknown as EntityType;
+        const subExpr = args[1];
+
+        return backend.containing(
+          childEntity,
+          subExpr,
+          entity,
           (sub: LoweredExpr, ent: EntityType) => foldExpr(sub, backend, ent)
         );
       }

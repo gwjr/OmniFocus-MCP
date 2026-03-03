@@ -18,12 +18,12 @@
  */
 
 import type {
-  PlanNode,
+  StrategyNode,
   CrossEntityJoin,
   BulkScan,
   OptimizationPass,
-} from '../planTree.js';
-import { walkPlan } from '../planTree.js';
+} from '../strategy.js';
+import { walkPlan } from '../strategy.js';
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ export const selfJoinEliminationPass: OptimizationPass = (root) => {
 
 // ── Rewrite Logic ───────────────────────────────────────────────────────
 
-function rewriteNode(node: PlanNode): PlanNode {
+function rewriteNode(node: StrategyNode): StrategyNode {
   if (node.kind !== 'CrossEntityJoin') return node;
   const join = node;
 
@@ -83,11 +83,11 @@ function rewriteNode(node: PlanNode): PlanNode {
 /**
  * Get the entity type from the innermost leaf scan.
  */
-function getLeafEntity(node: PlanNode): string | null {
+function getLeafEntity(node: StrategyNode): string | null {
   switch (node.kind) {
     case 'BulkScan':
       return node.entity;
-    case 'OmniJSScan':
+    case 'FallbackScan':
       return node.entity;
     case 'MembershipScan':
       return node.targetEntity;
@@ -109,7 +109,7 @@ function getLeafEntity(node: PlanNode): string | null {
  * Ensure a column exists in the source BulkScan.
  * Walks through unary nodes to find it.
  */
-function ensureColumnInSource(node: PlanNode, column: string): PlanNode {
+function ensureColumnInSource(node: StrategyNode, column: string): StrategyNode {
   if (node.kind === 'BulkScan') {
     if (!node.columns.includes(column)) {
       return { ...node, columns: [...node.columns, column] };
@@ -133,7 +133,7 @@ function ensureColumnInSource(node: PlanNode, column: string): PlanNode {
 export interface SelfJoinEnrich {
   kind: 'SelfJoinEnrich';
   /** Source rows (which also serve as the lookup table) */
-  source: PlanNode;
+  source: StrategyNode;
   /** Column in source rows to use as the foreign key */
   sourceKey: string;
   /** Column in source rows to use as the lookup key */

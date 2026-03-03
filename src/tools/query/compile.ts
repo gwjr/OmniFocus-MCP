@@ -7,7 +7,7 @@
  * osascript invocations.
  */
 
-import type { PlanNode } from './planTree.js';
+import type { StrategyNode } from './strategy.js';
 import type { Emitter, ScriptFragment } from './emitter.js';
 
 // ── CompiledQuery ────────────────────────────────────────────────────────
@@ -22,10 +22,10 @@ export interface CompiledQuery {
   batchScript: string | null;
   /** Standalone script for single-leaf case. */
   standaloneScript: string | null;
-  /** Map from JXA leaf PlanNode (by identity) → slot in batch results. */
-  slotMap: Map<PlanNode, SlotEntry>;
+  /** Map from JXA leaf StrategyNode (by identity) → slot in batch results. */
+  slotMap: Map<StrategyNode, SlotEntry>;
   /** The original plan tree. */
-  root: PlanNode;
+  root: StrategyNode;
 }
 
 // ── Compilation ──────────────────────────────────────────────────────────
@@ -37,9 +37,9 @@ export interface CompiledQuery {
  * traversing `.fallback` edges (those only execute conditionally).
  * Generates script fragments and fuses them if 2+.
  */
-export function compileQuery(root: PlanNode, emitter: Emitter): CompiledQuery {
+export function compileQuery(root: StrategyNode, emitter: Emitter): CompiledQuery {
   // 1. Collect fusible JXA leaves
-  const leaves: PlanNode[] = [];
+  const leaves: StrategyNode[] = [];
   collectLeaves(root, leaves, false);
 
   // 2. Generate fragments
@@ -53,7 +53,7 @@ export function compileQuery(root: PlanNode, emitter: Emitter): CompiledQuery {
   }
 
   // 3. Build slotMap
-  const slotMap = new Map<PlanNode, SlotEntry>();
+  const slotMap = new Map<StrategyNode, SlotEntry>();
   for (let i = 0; i < leaves.length; i++) {
     slotMap.set(leaves[i], { index: i, resultType: fragments[i].resultType });
   }
@@ -79,14 +79,14 @@ export function compileQuery(root: PlanNode, emitter: Emitter): CompiledQuery {
  * DFS-collect BulkScan and MembershipScan nodes, skipping `.fallback`
  * edges (those only execute conditionally in PerItemEnrich).
  */
-function collectLeaves(node: PlanNode, out: PlanNode[], inFallback: boolean): void {
+function collectLeaves(node: StrategyNode, out: StrategyNode[], inFallback: boolean): void {
   switch (node.kind) {
     case 'BulkScan':
     case 'MembershipScan':
       if (!inFallback) out.push(node);
       return;
 
-    case 'OmniJSScan':
+    case 'FallbackScan':
       // Not fusible
       return;
 

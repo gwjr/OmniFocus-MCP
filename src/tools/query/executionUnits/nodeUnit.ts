@@ -1,0 +1,380 @@
+/**
+ * Node ExecutionUnit executor.
+ *
+ * Executes a Node-runtime ExecutionUnit directly against in-memory data
+ * (row arrays, id sets, scalar values) produced by upstream units.
+ *
+ * All node-side ops: Zip, Filter, SemiJoin, HashJoin, Sort, Limit, Pick,
+ * Derive, ColumnValues, Flatten.
+ */
+
+import type { EventNode, Ref } from '../eventPlan.js';
+import type { TargetedEventPlan } from '../targetedEventPlan.js';
+import type { ExecutionUnit } from '../targetedEventPlan.js';
+import { compileNodePredicate, type Row } from '../backends/nodeEval.js';
+import { computedVarDeps, getVarRegistry, type EntityType } from '../variables.js';
+
+// ── Computed var derivers (mirrored from executor.ts) ───────────────────
+
+const DUE_SOON_MS = 7 * 24 * 60 * 60 * 1000;
+
+function deriveTaskStatus(row: Row): string {
+  if (row.completed) return 'Completed';
+  if (row.dropped) return 'Dropped';
+  if (row.blocked) return 'Blocked';
+  if (row.dueDate) {
+    const due = new Date(row.dueDate as string).getTime();
+    const now = Date.now();
+    if (due < now) return 'Overdue';
+    if (due < now + DUE_SOON_MS) return 'DueSoon';
+  }
+  return 'Next';
+}
+
+function deriveTaskHasChildren(row: Row): boolean {
+  return (row.childCount as number) > 0;
+}
+
+function deriveFolderStatus(row: Row): string {
+  return row.hidden ? 'Dropped' : 'Active';
+}
+
+type RowDeriver = (row: Row) => unknown;
+
+const computedVarDerivers: Record<string, Record<string, RowDeriver>> = {
+  tasks: {
+    status: deriveTaskStatus,
+    hasChildren: deriveTaskHasChildren,
+  },
+  folders: {
+    status: deriveFolderStatus,
+  },
+};
+
+// ── Execution context ───────────────────────────────────────────────────
+
+interface ExecCtx {
+  plan: TargetedEventPlan;
+  /** Map from Ref → already-computed value (populated by upstream units and earlier nodes). */
+  results: Map<number, unknown>;
+}
+
+function resolve(ctx: ExecCtx, ref: Ref): unknown {
+  const val = ctx.results.get(ref);
+  if (val === undefined && !ctx.results.has(ref)) {
+    throw new Error(`nodeUnit: unresolved ref %${ref}`);
+  }
+  return val;
+}
+
+// ── Node dispatch ───────────────────────────────────────────────────────
+
+function execNode(ctx: ExecCtx, ref: Ref): unknown {
+  const node = ctx.plan.nodes[ref];
+
+  switch (node.kind) {
+    case 'Zip':          return execZip(ctx, node);
+    case 'Filter':       return execFilter(ctx, ref, node);
+    case 'SemiJoin':     return execSemiJoin(ctx, node);
+    case 'HashJoin':     return execHashJoin(ctx, node);
+    case 'Sort':         return execSort(ctx, node);
+    case 'Limit':        return execLimit(ctx, node);
+    case 'Pick':         return execPick(ctx, node);
+    case 'Derive':       return execDerive(ctx, node);
+    case 'ColumnValues': return execColumnValues(ctx, node);
+    case 'Flatten':      return execFlatten(ctx, node);
+    default:
+      throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
+  }
+}
+
+// ── Op implementations ──────────────────────────────────────────────────
+
+function execZip(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'Zip' }>,
+): Row[] {
+  if (node.columns.length === 0) return [];
+
+  // Resolve all column arrays
+  const columns = node.columns.map(col => ({
+    name: col.name,
+    values: resolve(ctx, col.ref) as unknown[],
+  }));
+
+  // All columns must have the same length
+  const len = columns[0].values.length;
+  for (const col of columns) {
+    if (col.values.length !== len) {
+      throw new Error(
+        `nodeUnit Zip: column '${col.name}' has length ${col.values.length}, expected ${len}`
+      );
+    }
+  }
+
+  const rows: Row[] = new Array(len);
+  for (let i = 0; i < len; i++) {
+    const row: Row = {};
+    for (const col of columns) {
+      row[col.name] = col.values[i];
+    }
+    rows[i] = row;
+  }
+  return rows;
+}
+
+function execFilter(
+  ctx: ExecCtx,
+  ref: Ref,
+  node: Extract<EventNode, { kind: 'Filter' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+
+  // Defensive: identity filter (null/true predicate) passes through unchanged.
+  // Should be eliminated earlier by normalize or lowering, but guard here too.
+  if (node.predicate === null || node.predicate === true) return source;
+
+  // Use entity annotation if present; fall back to inference
+  const entity = node.entity ?? inferEntity(ctx, node.source);
+  const predicate = compileNodePredicate(node.predicate, entity);
+  return source.filter(row => !!predicate(row));
+}
+
+function execSemiJoin(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'SemiJoin' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+  const idsRaw = resolve(ctx, node.ids);
+  const ids = idsRaw instanceof Set
+    ? idsRaw as Set<string>
+    : new Set(idsRaw as string[]);
+
+  if (node.exclude) {
+    // Anti-join: keep rows whose id is NOT in the set
+    return source.filter(row => {
+      const id = row.id;
+      return id == null || !ids.has(id as string);
+    });
+  }
+
+  return source.filter(row => {
+    const id = row.id;
+    return id != null && ids.has(id as string);
+  });
+}
+
+function execHashJoin(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'HashJoin' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+  const lookup = resolve(ctx, node.lookup) as Row[];
+
+  // Check for count-aggregation mode: fieldMap = {'*': outputVarName}
+  if ('*' in node.fieldMap) {
+    const outputVar = node.fieldMap['*'];
+    const countMap = new Map<string, number>();
+    for (const row of lookup) {
+      const key = row[node.lookupKey];
+      if (key != null) {
+        const k = String(key);
+        countMap.set(k, (countMap.get(k) || 0) + 1);
+      }
+    }
+    for (const row of source) {
+      const sk = row[node.sourceKey];
+      row[outputVar] = sk != null ? (countMap.get(String(sk)) || 0) : 0;
+    }
+    return source;
+  }
+
+  // Direct join mode: build lookup index
+  const lookupMap = new Map<string, Row>();
+  for (const row of lookup) {
+    const key = row[node.lookupKey];
+    if (key != null) {
+      lookupMap.set(String(key), row);
+    }
+  }
+
+  for (const row of source) {
+    const fk = row[node.sourceKey];
+    if (fk != null) {
+      const lookupRow = lookupMap.get(String(fk));
+      if (lookupRow) {
+        for (const [lookupField, outputField] of Object.entries(node.fieldMap)) {
+          row[outputField] = lookupRow[lookupField];
+        }
+      } else {
+        for (const outputField of Object.values(node.fieldMap)) {
+          row[outputField] = null;
+        }
+      }
+    } else {
+      for (const outputField of Object.values(node.fieldMap)) {
+        row[outputField] = null;
+      }
+    }
+  }
+  return source;
+}
+
+function execSort(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'Sort' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+  const rows = [...source]; // clone to avoid mutation
+  const order = node.dir === 'desc' ? -1 : 1;
+  const key = node.by;
+
+  rows.sort((a, b) => {
+    let aVal = a[key] as any;
+    let bVal = b[key] as any;
+
+    if (aVal == null && bVal == null) return 0;
+    if (aVal == null) return 1;
+    if (bVal == null) return -1;
+
+    if (typeof aVal === 'string' && typeof bVal === 'string') {
+      const at = Date.parse(aVal);
+      const bt = Date.parse(bVal);
+      if (!isNaN(at) && !isNaN(bt)) return (at - bt) * order;
+      return aVal.localeCompare(bVal) * order;
+    }
+
+    if (typeof aVal === 'number' && typeof bVal === 'number') {
+      return (aVal - bVal) * order;
+    }
+
+    return 0;
+  });
+
+  return rows;
+}
+
+function execLimit(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'Limit' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+  return source.slice(0, node.n);
+}
+
+function execPick(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'Pick' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+  return source.map(row => {
+    const picked: Row = {};
+    for (const field of node.fields) {
+      if (field in row) {
+        picked[field] = row[field];
+      }
+    }
+    return picked;
+  });
+}
+
+function execDerive(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'Derive' }>,
+): Row[] {
+  const source = resolve(ctx, node.source) as Row[];
+
+  for (const spec of node.derivations) {
+    const derivers = computedVarDerivers[spec.entity];
+    if (!derivers) continue;
+    const derive = derivers[spec.var];
+    if (!derive) continue;
+    for (const row of source) {
+      row[spec.var] = derive(row);
+    }
+  }
+
+  return source;
+}
+
+function execColumnValues(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'ColumnValues' }>,
+): unknown[] {
+  const source = resolve(ctx, node.source) as Row[];
+  return source.map(row => row[node.field]);
+}
+
+function execFlatten(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'Flatten' }>,
+): unknown[] {
+  const source = resolve(ctx, node.source) as unknown[][];
+  return ([] as unknown[]).concat(...source);
+}
+
+// ── Entity inference ────────────────────────────────────────────────────
+
+/**
+ * Walk the source chain backwards to find a Filter/Derive node that
+ * might carry entity info, or fall back to 'tasks'.
+ *
+ * For Filter nodes, we need to know the entity to compile the predicate.
+ * Since the EventPlan IR doesn't carry entity on every node, we infer
+ * it from Derive nodes (which have entity in their DeriveSpec) or
+ * from the plan structure.
+ */
+function inferEntity(ctx: ExecCtx, ref: Ref): EntityType {
+  const visited = new Set<Ref>();
+  let current: Ref | null = ref;
+
+  while (current !== null && !visited.has(current)) {
+    visited.add(current);
+    const node = ctx.plan.nodes[current];
+
+    // Derive nodes carry entity info
+    if (node.kind === 'Derive' && node.derivations.length > 0) {
+      return node.derivations[0].entity;
+    }
+
+    // Walk source chain
+    if ('source' in node && typeof (node as any).source === 'number') {
+      current = (node as any).source as Ref;
+    } else {
+      current = null;
+    }
+  }
+
+  // Default fallback
+  return 'tasks';
+}
+
+// ── Public API ──────────────────────────────────────────────────────────
+
+/**
+ * Execute a Node ExecutionUnit directly against in-memory row arrays.
+ *
+ * @param unit    The ExecutionUnit to execute (runtime must be 'node')
+ * @param plan    The full TargetedEventPlan (for node lookup by Ref)
+ * @param results Map from Ref → already-computed value (populated by upstream units)
+ * @returns       The result value (row array or scalar)
+ */
+export function executeNodeUnit(
+  unit: ExecutionUnit,
+  plan: TargetedEventPlan,
+  results: Map<number, unknown>,
+): unknown {
+  if (unit.runtime !== 'node') {
+    throw new Error(`executeNodeUnit: expected runtime 'node', got '${unit.runtime}'`);
+  }
+
+  const ctx: ExecCtx = { plan, results };
+
+  // Execute nodes in SSA order
+  for (const ref of unit.nodes) {
+    const value = execNode(ctx, ref);
+    results.set(ref, value);
+  }
+
+  return results.get(unit.result);
+}

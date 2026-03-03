@@ -7,6 +7,7 @@
 
 import { type ExprBackend, type LoweredExpr, foldExpr } from '../fold.js';
 import { getVarRegistry, type EntityType } from '../variables.js';
+import { getJxaAccessorRegistry } from './jxaVarAccessors.js';
 import { lowerExpr, LowerError } from '../lower.js';
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -103,7 +104,16 @@ class JxaCompilerBackend implements ExprBackend<string> {
       );
     }
 
-    return varDef.jxa(this._itemVar);
+    const accessors = getJxaAccessorRegistry(entity);
+    const accessor = accessors[name];
+    if (!accessor) {
+      throw new CompileError(
+        `No JXA accessor for variable "${name}" (entity "${entity}")`,
+        'where',
+        { var: name }
+      );
+    }
+    return accessor(this._itemVar);
   }
 
   dateLiteral(isoDate: string): string {
@@ -204,6 +214,22 @@ class JxaCompilerBackend implements ExprBackend<string> {
     const rVar = this.freshVar('r');
     this._preamble.push(`var ${rVar}=new RegExp("${escapeJxaString(pattern)}","i");`);
     return `(${rVar}.test(${str}))`;
+  }
+
+  // ── Null Checks ──────────────────────────────────────────────────────
+
+  isNull(arg: string): string {
+    return `(${arg}==null)`;
+  }
+
+  isNotNull(arg: string): string {
+    return `(${arg}!=null)`;
+  }
+
+  // ── Array Functions ──────────────────────────────────────────────────
+
+  count(arg: string): string {
+    return `(function(){var _c=${arg};return _c!=null&&Array.isArray(_c)?_c.length:0;}())`;
   }
 
   // ── Date Arithmetic ─────────────────────────────────────────────────
@@ -323,6 +349,13 @@ class JxaCompilerBackend implements ExprBackend<string> {
     }
 
     throw new CompileError(`"container" is not supported for entity "${fromEntity}"`, 'where', { op: 'container' });
+  }
+
+  containing(): string {
+    throw new CompileError(
+      '"containing" should be extracted by the planner before JXA compilation',
+      'where', { op: 'containing' }
+    );
   }
 }
 
