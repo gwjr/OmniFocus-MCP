@@ -4,14 +4,16 @@
 
 ```
 User query (compact syntax)
-  → lower.ts         AST: LoweredExpr (predicate tree: and/or/not/eq/contains/...)
-  → planner.ts       PlanNode tree (physical operators: BulkScan, Filter, SemiJoin, ...)
-  → optimizations/*  PlanNode tree (rewritten: tag semi-join, cross-entity join, ...)
-  → compile.ts       CompiledQuery (fused scripts + slot map)
-  → executor.ts      Rows
+  → lower.ts                AST: LoweredExpr (predicate tree: and/or/not/eq/contains/...)
+  → lowerToSetIr.ts         SetIR tree (Scan, Filter, Intersect, Union, Restriction, ...)
+  → optimizeSetIr            SetIR tree (rewritten: scan subsumption, merge scans)
+  → lowerSetIrToEventPlan   EventPlan SSA graph (Get, Zip, Filter, SemiJoin, ...)
+  → cseEventPlan + prune    EventPlan (CSE'd, dead columns removed)
+  → assignRuntimes + split  TargetedEventPlan → ExecutionUnits
+  → orchestrator             Rows
 ```
 
-The optimisation problem: given an AST and entity type, produce the PlanNode tree that minimises wall-clock execution time. The cost is dominated by **sequential OSA phases** — the number of times we must call osascript, wait for results, then call osascript again.
+The optimisation problem: given an AST and entity type, produce execution that minimises wall-clock time. The cost is dominated by **sequential OSA phases** — the number of times we must call osascript, wait for results, then call osascript again.
 
 ## Execution Primitives
 
@@ -126,18 +128,23 @@ Cached at server startup (one fused count query, ~200ms):
 
 ## Bottom-Up Cost Computation
 
-For each PlanNode, compute `rowsOut`/`idsOut` and `phases`:
+> **Note:** The node names below are from the cost-model design space, not the
+> current implementation. The SetIR pipeline uses Scan, Filter, Restriction,
+> Enrich, Intersect, Union, Difference, and Count. The mapping is straightforward:
+> BulkScan ≈ Scan, MembershipScan ≈ Restriction (via `.whose()`), ByIdEnrich ≈
+> Enrich (ForEach + by-id read). OmniJSScan has been eliminated.
+
+For each plan node, compute `rowsOut`/`idsOut` and `phases`:
 
 | Node | Cardinality | Phases |
 |------|-------------|--------|
-| BulkScan | collectionSize(entity) | 1 phase: bulkProps = columns.length |
-| MembershipScan | heuristic (~20) | 1 phase: membershipWork |
-| ByIdEnrich | source cardinality | 1 phase: byIdItems = source.idsOut |
-| OmniJSScan | collectionSize × 0.5 | 1 phase: omnijs (penalty) |
+| BulkScan (Scan) | collectionSize(entity) | 1 phase: bulkProps = columns.length |
+| MembershipScan (Restriction) | heuristic (~20) | 1 phase: membershipWork |
+| ByIdEnrich (Enrich) | source cardinality | 1 phase: byIdItems = source.idsOut |
 | Filter | source.rowsOut × selectivity(pred) | 0 phases |
 | SemiJoin | min(source.rowsOut, lookup.idsOut) | merge child phases (fuse if independent) |
-| CrossEntityJoin | source.rowsOut | merge child phases (fuse if independent) |
-| Sort / Project | passthrough | 0 phases |
+| CrossEntityJoin (HashJoin) | source.rowsOut | merge child phases (fuse if independent) |
+| Sort / Pick | passthrough | 0 phases |
 | Limit | min(source.rowsOut, N) | 0 phases |
 
 ## Rewrites Enabled by the Cost Model
@@ -191,29 +198,15 @@ The only reason to do in-script filtering is to avoid reading many properties fo
 
 Not "filter then bulk read subset" — rather "acquire IDs cheaply, then byIdentifier."
 
-## Implementation Increments
+## Implementation Status
 
-### Increment 1: ByIdEnrich node + executor support
-- Add `ByIdEnrich` PlanNode type (source: PlanNode producing idSet or rows, entity, fields)
-- Add executor handler using OmniJS `byIdentifier()`
-- Replace `.whose()` loop in PerItemEnrich entirely
-- Add to compile.ts (ByIdEnrich is a phase-2 op, not fusible with phase-1 scans)
+> The implementation increments originally listed here (ByIdEnrich node,
+> cost estimator, MembershipScan+ByIdEnrich fusion) have been superseded by
+> the SetIR pipeline. The SetIR optimizer implements scan subsumption, project-
+> exclusion elision, and phase fusion natively. See `docs/query-engine-architecture.md`
+> for the current pipeline architecture.
 
-### Increment 2: Cost estimator answering two questions
-- "Bulk scan vs byId for enrichment?" (cardinality threshold)
-- "JXA vs AppleScript for bulk scan?" (property count threshold)
-- Phase/Cost types on PlanNode, bottom-up computation
-- Selectivity heuristics table
-
-### Increment 3: MembershipScan + ByIdEnrich fusion
-- Rewrite pass: when restPart needs only byId-fetchable fields, collapse to 1 phase
-- Per-entity field capability map
-- New emitter method: `membershipThenEnrich(membershipNode, fields)` → fused script
-
-## Caution: OmniJS Variance
-
-Keep OmniJSScan and ByIdEnrich separate in the cost model:
-- **OmniJSScan**: last resort, large penalty, high variance
-- **ByIdEnrich**: predictable linear function, low variance
-
-Do not let the optimiser discover that OmniJSScan is sometimes cheap — hard-code it as dominated.
+The remaining optimisation opportunities from this cost model:
+- **Backend choice for BulkScan** (JXA ≤8 props, AppleScript >8 props) — under investigation as AppleScript codegen (Task #38).
+- **MembershipScan + Enrich fusion** — not yet implemented; would collapse 2 phases to 1 for tag-filtered queries with expensive columns.
+- **Predicate pushdown as id-set acquisition** — the SetIR `Restriction` node implements this pattern for container/containing predicates.

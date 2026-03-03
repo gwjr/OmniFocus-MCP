@@ -1,18 +1,18 @@
 # EventPlan IR
 
-Intermediate representation between the strategy tree (`StrategyNode`) and emitted
-code (JXA / AppleScript / OmniJS / Node).
+Intermediate representation between the SetIR (algebraic query plan) and emitted
+code (JXA / AppleScript / Node).
 
 ## Purpose
 
-`StrategyNode` answers *what to compute* at the query-plan level (BulkScan, SemiJoin,
-Filter…). EventPlan answers *what primitive operations to perform* — as a traversable
-SSA graph rather than opaque strings.
+SetIR answers *what to compute* at the query-plan level (Scan, Intersect, Filter,
+Restriction…). EventPlan answers *what primitive operations to perform* — as a
+traversable SSA graph rather than opaque strings.
 
 Key properties:
 - **Runtime-agnostic**: no JXA, AppleScript, or OmniJS syntax embedded. Runtime is a
   targeting annotation added by a later pass.
-- **App-specific involvement stops here**: the Strategy→EventPlan lowering carries all
+- **App-specific involvement stops here**: the SetIR→EventPlan lowering carries all
   OmniFocus (or other app) knowledge. Everything below is generic.
 - **SSA form**: each node is a numbered binding (`%0`, `%1`, …). Values are immutable
   references. Data flow is explicit.
@@ -71,9 +71,10 @@ Property(
 No special `ChainGet` node — the specifier structure *is* the chain. The emitter walks
 it and emits dots.
 
-FourCCs come from the app's sdef. The Strategy→EventPlan lowering resolves human-
-readable names (from `variables.ts` etc.) to FourCCs at lowering time using the parsed
-sdef. The IR itself only ever contains FourCCs.
+FourCCs come from the app's sdef. The SetIR→EventPlan lowering resolves human-
+readable names (from `variables.ts` etc.) to FourCCs at lowering time using the
+`aeProps.ts` tables (derived from the parsed sdef). The IR itself only ever
+contains FourCCs.
 
 ## EventPlan nodes
 
@@ -202,9 +203,9 @@ type EventNode =
   // Carries a runtime preference that the targeting pass treats as authoritative,
   // overriding its default heuristics for the sourced node.
   //
-  // Emitted by the Strategy→EventPlan lowering, which has app-specific knowledge
+  // Emitted by the SetIR→EventPlan lowering, which has app-specific knowledge
   // the generic targeting pass does not (e.g. that a Ref comes from a ByName lookup
-  // and will always be small, so Get(ByID, Ref) should target omniJS not jxa).
+  // and will always be small, so Get(ByID, Ref) should target a specific runtime).
 
   | { kind: 'Hint';
       source:  Ref;
@@ -225,11 +226,11 @@ interface EventPlan {
 
 ### CSE (Common Subexpression Elimination) — required
 
-The Strategy→EventPlan lowering works mechanically from a tree, so the same specifier
+The SetIR→EventPlan lowering works mechanically from a tree, so the same specifier
 can appear in multiple sibling nodes without the lowering having cross-subexpression
-visibility. For example, a `BulkScan` with three columns produces three `Get` nodes
-all sharing `Elements(Document, FCft)` as parent — without CSE those are three separate
-AE round-trips.
+visibility. For example, a `Scan` with three columns produces three `Get` nodes
+all sharing `Elements(Document, FCft)` as parent — without CSE those are three
+separate AE round-trips.
 
 CSE is the one pass that cannot be deferred: it is structurally impossible to eliminate
 during lowering. Two `Get` nodes with structurally identical specifiers are the same
@@ -320,11 +321,11 @@ Same notation, with `[runtime batch:N]` suffix on each line and batch boundaries
 result: %2
 ```
 
-### StrategyNode — indented tree
+### SetIR — indented tree
 
 ```
-Filter {and:[{var:"flagged"}]}
-  BulkScan tasks [name, flagged, dueDate]
+Filter(flagged = true)
+  Scan tasks [id, name, flagged, dueDate]
 ```
 
 ### Emitted scripts
@@ -337,8 +338,8 @@ investigating regressions.
 ## What EventPlan does NOT contain
 
 - JXA, AppleScript, or OmniJS syntax
-- Cost model or query planning logic (lives in the strategy-layer planner)
-- Active-item filter semantics (lowered to a `Filter` node during Strategy→EventPlan)
+- Cost model or query planning logic (lives in the SetIR layer)
+- Active-item filter semantics (injected into the predicate before SetIR lowering)
 - Human-readable property names (resolved to FourCCs during lowering)
 - `sideEffective` annotations as optimisation hints — they are for correctness
   (ordering constraints) only

@@ -1,5 +1,7 @@
 # Future Direction: Column Acquisition Model
 
+> **Status (March 2026):** This document was written when the query engine used the StrategyNode pipeline (planner.ts → PlanNode tree → EventPlan). That pipeline has been replaced by the SetIR pipeline (lowerToSetIr → optimizeSetIr → lowerSetIrToEventPlan → EventPlan). The column acquisition *mental model* described here remains valid and informed the SetIR design, but specific references to StrategyNode types (BulkScan, FallbackScan, PerItemEnrich, MembershipScan) and to files like `planner.ts` are now historical. See `docs/query-engine-architecture.md` for the current pipeline.
+
 ## Background
 
 This document captures a design direction explored in early 2026 for the query engine IR, informed by review from compiler, database, and Apple Events specialists.
@@ -45,7 +47,7 @@ Execution order falls out of dependency resolution + cost:
 3. Acquire expensive columns per-survivor (ColumnByID)
 4. Apply final filter
 
-This is exactly the PreFilter → IterEnrich → Filter chain the current planner produces — derived from the dependency graph rather than explicitly constructed.
+This is essentially the pattern the current pipeline produces: `Scan` (cheap columns) → `Filter` → `Enrich` (expensive columns) — derived from the dependency graph rather than explicitly constructed.
 
 ### Two Levels Within the IR
 
@@ -83,7 +85,7 @@ In other AE-based apps, `ColumnWhere` may be competitive with `ColumnEvery + Nod
 
 **Do not add a new IR level now.**
 
-The compiler specialist's recommendation: extend `VarDef` to carry multiple acquisition strategies with per-strategy costs, rather than adding a new IR between StrategyNode and EventPlan. Use the column acquisition framing as a mental model to inform the planner, and to guide naming and structure of StrategyNode types.
+The compiler specialist's recommendation: extend `VarDef` to carry multiple acquisition strategies with per-strategy costs. Use the column acquisition framing as a mental model to inform the pipeline, and to guide naming and structure of SetIR/EventPlan node types. (The original recommendation referenced adding this to StrategyNode; with the SetIR pipeline now in place, the natural home is the variable registry in `variables.ts`.)
 
 ```typescript
 // Sketch — not yet implemented
@@ -109,12 +111,12 @@ interface AcquisitionStrategy {
 
 ## Impact on Current Design
 
-The column acquisition framing clarifies several naming and structural choices for the current StrategyNode layer:
+> **Note:** This section was written against the old StrategyNode layer. The SetIR pipeline has addressed several of these concerns. Updated mapping below.
 
-- `BulkScan` issues multiple `ColumnEvery` calls (one per column, batched into one AE script). The name is reasonable but "Scan" understates that it batches multiple column acquisitions.
-- `MembershipScan` is a `ColumnByName(tags/folders, target.id, name)` call — it fetches a member ID set via a by-name object reference + chain read. "MembershipScan" is misleading (it's not scanning a collection; it's addressing a named object).
-- `PerItemEnrich` is `ColumnByID` per surviving row — it's a per-row `ColumnByID` call. "Enrich" is correct (it adds columns to existing rows) but obscures the AE access pattern.
-- `FallbackScan` routes through the legacy pipeline. It should be eliminated; all paths should go through the EventPlan IR.
-- `ExistsJoin` is missing — needed for `container`/`containing` inside OR/NOT.
+The column acquisition framing maps to the current SetIR/EventPlan pipeline as follows:
 
-These are addressed in the StrategyNode cleanup described in `docs/next-steps.md` item #5 and #3.
+- **`Scan` (SetIR)** issues multiple `ColumnEvery` calls (one per column, batched into one AE script via `Get(Elements)` + `Get(Property)` + `Zip`). The scan subsumption pass (`widenScansToUnion`) ensures that duplicate scans for the same entity are widened to the same column set, enabling CSE to deduplicate them.
+- **`Restriction` (SetIR)** handles what was previously `MembershipScan` — FK-based semi-joins for `container()` predicates. The `.whose({name:})` lookup is emitted as a `Get(Whose)` EventPlan node.
+- **`Enrich` (SetIR)** handles per-survivor enrichment — lowers to `ForEach` + by-id reads in the EventPlan. Used for expensive variables like `note`.
+- **`FallbackScan` is eliminated.** All query paths now go through the SetIR → EventPlan pipeline.
+- **`container`/`containing` inside OR/NOT** — not yet implemented as an ExistsJoin; currently handled by the Union/Intersect SetIR decomposition of `or()`/`not()` predicates.

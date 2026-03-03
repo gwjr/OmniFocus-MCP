@@ -48,4 +48,8 @@ MCP_OPTIMIZATION_STRATEGY.md
 DEPLOYMENT_GUIDE.md
 Roadmap.md
 AGENTS.md
-GEMINI.md.claude/
+GEMINI.md
+.claude/
+.mcp.json
+.worktrees/
+benchmark/nsapplescript-bench

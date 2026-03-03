@@ -16,12 +16,9 @@
  */
 
 import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
-import { buildPlanTree } from '../dist/tools/query/planner.js';
 import { lowerExpr } from '../dist/tools/query/lower.js';
-import { optimize, planPathLabel } from '../dist/tools/query/strategy.js';
-import { tagSemiJoinPass } from '../dist/tools/query/optimizations/tagSemiJoin.js';
-import { normalizePass } from '../dist/tools/query/optimizations/normalize.js';
-import { crossEntityJoinPass } from '../dist/tools/query/optimizations/crossEntityJoin.js';
+import { buildSetIrPlan } from '../dist/tools/query/executionUnits/orchestrator.js';
+import { optimizeSetIr } from '../dist/tools/query/lowerToSetIr.js';
 import { readFileSync, writeFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -50,7 +47,6 @@ const testCases = [
   {
     name: 'Tasks in project (name contains)',
     category: 'project-lookup',
-    expected: 'project-scoped',
     params: {
       entity: 'tasks',
       where: { container: ['project', { contains: [{ var: 'name' }, 'bliz'] }] },
@@ -60,7 +56,6 @@ const testCases = [
   {
     name: 'Tasks in project (exact name)',
     category: 'project-lookup',
-    expected: 'project-scoped',
     params: {
       entity: 'tasks',
       where: { container: ['project', { eq: [{ var: 'name' }, 'One-offs'] }] },
@@ -72,7 +67,6 @@ const testCases = [
   {
     name: 'All active projects (broad)',
     category: 'project-list',
-    expected: 'broad',
     params: {
       entity: 'projects',
       select: ['name', 'status'],
@@ -81,7 +75,6 @@ const testCases = [
   {
     name: 'Projects with task counts',
     category: 'project-list',
-    expected: 'broad',
     params: {
       entity: 'projects',
       select: ['name', 'status', 'taskCount', 'activeTaskCount', 'modificationDate'],
@@ -91,7 +84,6 @@ const testCases = [
   {
     name: 'Projects with folder (cross-join)',
     category: 'project-list',
-    expected: 'broad',
     params: {
       entity: 'projects',
       select: ['name', 'status', 'folderName'],
@@ -102,7 +94,6 @@ const testCases = [
   {
     name: 'Flagged tasks',
     category: 'urgency',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: { eq: [{ var: 'flagged' }, true] },
@@ -112,7 +103,6 @@ const testCases = [
   {
     name: 'Tasks with due dates',
     category: 'urgency',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: { neq: [{ var: 'dueDate' }, null] },
@@ -123,7 +113,6 @@ const testCases = [
   {
     name: 'Due within 7 days',
     category: 'urgency',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: {
@@ -139,7 +128,6 @@ const testCases = [
   {
     name: 'Overdue tasks',
     category: 'urgency',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: {
@@ -156,7 +144,6 @@ const testCases = [
   {
     name: 'Name contains "review"',
     category: 'search',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: { contains: [{ var: 'name' }, 'review'] },
@@ -168,7 +155,6 @@ const testCases = [
   {
     name: 'Tasks with tag (chain)',
     category: 'tags',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: { contains: [{ var: 'tags' }, 'waiting'] },
@@ -180,7 +166,6 @@ const testCases = [
   {
     name: 'Flagged AND due date exists',
     category: 'compound',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: {
@@ -195,7 +180,6 @@ const testCases = [
   {
     name: 'Flagged OR has due date',
     category: 'compound',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: {
@@ -213,7 +197,6 @@ const testCases = [
   {
     name: 'Count all active tasks',
     category: 'summary',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       summary: true,
@@ -222,7 +205,6 @@ const testCases = [
   {
     name: 'Count flagged tasks',
     category: 'summary',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: { eq: [{ var: 'flagged' }, true] },
@@ -234,7 +216,6 @@ const testCases = [
   {
     name: 'All active tasks (limit 10)',
     category: 'list',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       select: ['name', 'flagged', 'dueDate'],
@@ -246,7 +227,6 @@ const testCases = [
   {
     name: 'All folders',
     category: 'folders',
-    expected: 'broad',
     params: {
       entity: 'folders',
       select: ['name', 'projectCount'],
@@ -257,7 +237,6 @@ const testCases = [
   {
     name: 'Tasks with projectName (chain)',
     category: 'chain',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: { eq: [{ var: 'flagged' }, true] },
@@ -269,7 +248,6 @@ const testCases = [
   {
     name: 'Due date between now and +14d',
     category: 'date-range',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: {
@@ -288,7 +266,6 @@ const testCases = [
   {
     name: 'Modified in last 3 days',
     category: 'recent',
-    expected: 'broad',
     params: {
       entity: 'tasks',
       where: {
@@ -304,7 +281,6 @@ const testCases = [
   {
     name: 'All active tags',
     category: 'tags-entity',
-    expected: 'broad',
     params: {
       entity: 'tags',
       select: ['name', 'availableTaskCount'],
@@ -313,7 +289,6 @@ const testCases = [
   {
     name: 'Tags with available tasks',
     category: 'tags-entity',
-    expected: 'broad',
     params: {
       entity: 'tags',
       where: { gt: [{ var: 'availableTaskCount' }, 0] },
@@ -323,7 +298,6 @@ const testCases = [
   {
     name: 'Tags by name search',
     category: 'tags-entity',
-    expected: 'broad',
     params: {
       entity: 'tags',
       where: { contains: [{ var: 'name' }, 'w'] },
@@ -333,7 +307,6 @@ const testCases = [
   {
     name: 'Tags with parent (self-join)',
     category: 'tags-entity',
-    expected: 'broad',
     params: {
       entity: 'tags',
       select: ['name', 'parentName', 'availableTaskCount'],
@@ -342,7 +315,6 @@ const testCases = [
   {
     name: 'Count all active tags',
     category: 'tags-entity',
-    expected: 'broad',
     params: {
       entity: 'tags',
       summary: true,
@@ -355,9 +327,17 @@ const testCases = [
 function getPlannedPath(params) {
   try {
     const ast = params.where != null ? lowerExpr(params.where) : true;
-    const tree = buildPlanTree(ast, params.entity, params.select, params.includeCompleted ?? false);
-    const optimized = optimize(tree, [tagSemiJoinPass, crossEntityJoinPass, normalizePass]);
-    return planPathLabel(optimized);
+    let plan = buildSetIrPlan({
+      predicate: ast,
+      entity: params.entity,
+      op: params.summary ? 'count' : 'get',
+      select: params.select,
+      sort: params.sort,
+      limit: params.limit,
+    });
+    plan = optimizeSetIr(plan);
+    // Return the root SetIR node kind as a simple path label
+    return plan.kind.toLowerCase();
   } catch {
     return '?';
   }
@@ -387,14 +367,11 @@ async function runBenchmark(tc) {
   }
 
   const medianMs = median(timings);
-  const pathMatch = tc.expected === path;
 
   return {
     name: tc.name,
     category: tc.category,
-    expectedPath: tc.expected,
-    actualPath: path,
-    pathMatch,
+    path,
     medianMs,
     timings,
     count: lastResult.count,
@@ -426,13 +403,13 @@ function formatDelta(current, baseline) {
 // ── Output ────────────────────────────────────────────────────────────────
 
 function printTable(results, baseline) {
-  const W = { name: 38, cat: 14, path: 18, time: 8, count: 7, delta: 20 };
+  const W = { name: 38, cat: 14, path: 14, time: 8, count: 7, delta: 20 };
   const hasDelta = baseline != null;
 
   const header = [
     'Test'.padEnd(W.name),
     'Category'.padEnd(W.cat),
-    'Path'.padStart(W.path),
+    'SetIR'.padStart(W.path),
     'Time'.padStart(W.time),
     'Count'.padStart(W.count),
     ...(hasDelta ? ['vs Baseline'.padStart(W.delta)] : []),
@@ -445,46 +422,36 @@ function printTable(results, baseline) {
   const baselineMap = baseline ? Object.fromEntries(baseline.results.map(r => [r.name, r])) : {};
 
   for (const r of results) {
-    const pathStr = r.pathMatch ? r.actualPath : `${r.actualPath} (!=${r.expectedPath})`;
     const timeStr = r.success ? `${r.medianMs}ms` : 'ERROR';
     const delta = hasDelta ? formatDelta(r.medianMs, baselineMap[r.name]?.medianMs) : '';
 
     console.log([
       r.name.padEnd(W.name),
       r.category.padEnd(W.cat),
-      pathStr.padStart(W.path),
+      r.path.padStart(W.path),
       timeStr.padStart(W.time),
       String(r.count).padStart(W.count),
       ...(hasDelta ? [delta.padStart(W.delta)] : []),
     ].join(' '));
 
     if (r.error) console.log(`  ERROR: ${r.error}`);
-    if (!r.pathMatch) console.log(`  PATH MISMATCH: expected ${r.expectedPath}, got ${r.actualPath}`);
   }
 
   console.log(divider);
 
-  // Summary stats
+  // Summary stats by category
   const succeeded = results.filter(r => r.success);
-  const broad = succeeded.filter(r => r.actualPath === 'broad');
-  const scoped = succeeded.filter(r => r.actualPath === 'project-scoped');
-  const twoPhase = succeeded.filter(r => r.actualPath === 'two-phase');
-  const semiJoin = succeeded.filter(r => r.actualPath === 'semijoin');
-  const fallback = succeeded.filter(r => r.actualPath === 'omnijs-fallback');
+  const byCategory = {};
+  for (const r of succeeded) {
+    (byCategory[r.category] ??= []).push(r.medianMs);
+  }
 
   const avg = arr => arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : 0;
 
   console.log();
-  console.log('Summary:');
-  if (broad.length) console.log(`  broad:           ${broad.length} tests, avg ${avg(broad.map(r => r.medianMs))}ms`);
-  if (scoped.length) console.log(`  project-scoped:  ${scoped.length} tests, avg ${avg(scoped.map(r => r.medianMs))}ms`);
-  if (twoPhase.length) console.log(`  two-phase:       ${twoPhase.length} tests, avg ${avg(twoPhase.map(r => r.medianMs))}ms`);
-  if (semiJoin.length) console.log(`  semijoin:    ${semiJoin.length} tests, avg ${avg(semiJoin.map(r => r.medianMs))}ms`);
-  if (fallback.length) console.log(`  omnijs-fallback: ${fallback.length} tests, avg ${avg(fallback.map(r => r.medianMs))}ms`);
-
-  const mismatches = results.filter(r => !r.pathMatch);
-  if (mismatches.length) {
-    console.log(`  PATH MISMATCHES: ${mismatches.length}`);
+  console.log('Summary by category:');
+  for (const [cat, times] of Object.entries(byCategory)) {
+    console.log(`  ${cat.padEnd(18)} ${times.length} tests, avg ${avg(times)}ms`);
   }
 }
 
@@ -531,8 +498,7 @@ if (JSON_OUT) {
     results: results.map(r => ({
       name: r.name,
       category: r.category,
-      expectedPath: r.expectedPath,
-      actualPath: r.actualPath,
+      path: r.path,
       medianMs: r.medianMs,
       timings: r.timings,
       count: r.count,
@@ -553,8 +519,7 @@ if (SAVE) {
     results: results.map(r => ({
       name: r.name,
       category: r.category,
-      expectedPath: r.expectedPath,
-      actualPath: r.actualPath,
+      path: r.path,
       medianMs: r.medianMs,
       timings: r.timings,
       count: r.count,

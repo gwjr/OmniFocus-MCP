@@ -2,79 +2,45 @@
 
 ## Near term
 
-### 5. MembershipEnrich (container/containing ops inside or/not)
+### MembershipEnrich (container/containing ops inside or/not)
 `container('tag', {pred})` and `containing('tasks', {pred})` inside
-`or`/`not` fall back to FallbackScan because we can't extract a
-SemiJoin from a non-top-level position. MembershipEnrich would enumerate
-membership inline (as a per-row boolean) rather than hoisting to a
-SemiJoin. **Blocks #3** — without this, FallbackScan cannot be removed.
+`or`/`not` currently decompose into Union/Intersect SetIR nodes. A
+MembershipEnrich approach would enumerate membership inline (as a per-row
+boolean) rather than restructuring the SetIR tree. This could reduce
+round-trips for complex predicates with mixed container/non-container branches.
 
-### 3. Eliminate legacy pipeline
-FallbackScan still routes through `compileQuery` + `JxaEmitter` (the
-pre-EventPlan path). Move FallbackScan into the EventPlan pipeline by
-emitting OmniJS evaluation nodes. This kills the double-lower bug (#1),
-removes the entire legacy codepath, and simplifies the codebase to a
-single execution pipeline. **Blocked by #5.**
-
-### 1. Fix double-lower bug (interim)
-`container` with complex sub-expressions routes to FallbackScan, which
-stores an already-lowered AST. The legacy pipeline's `compileWhere`
-calls `lowerExpr` again → "Old-style syntax" error. Straightforward
-interim fix (`compileWhereLowered`), but dies permanently with #3.
-
-### 6. First-class aggregate operators (count, exists)
-`count` and `exists` should be proper AE operators on a par with `Get`,
-not Node-side post-processing. `queryOmnifocus` currently implies `Get` —
-the entry point should be explicit about what operation it's performing,
-so aggregates and existence checks can take different paths through the
-pipeline.
-
-### 10. Mutations in the pipeline
+### Mutations in the pipeline
 `edit`, `move`, `remove`, `add_task`, `add_project` currently bypass the
 query engine entirely (direct AppleScript via primitives). Bring them
 into the EventPlan IR so they share the same execution infrastructure —
 specifier construction, error handling, batching.
 
-### 11. Dead code audit
-Post-merge cleanup. The legacy pipeline removal (#3) will create
-significant dead code. Audit for other orphaned modules, unused exports,
-stale test helpers.
+### AppleScript backend for wide bulk reads
+JXA incurs a non-linear bridge tax above ~8 properties per round-trip.
+AppleScript bulk reads scale linearly (~30ms/property). For queries
+requesting many columns, an AppleScript codegen backend would be 2-4x
+faster. (Task #38, in progress.)
 
 ## Medium term
 
-### 12. Audit for Swift rewrite friction
-Identify patterns that will be difficult to port: Node-specific APIs,
-dynamic dispatch, closure-heavy architecture, runtime type checks. Flag
-anything that should be redesigned before porting rather than translated
-literally.
+### Expression engine extraction
+The fold/lower/backend pattern is reusable. DEVONthink MCP could compile
+to DT search strings; Mail MCP could compile to SQL WHERE clauses. Wait
+for a second consumer before abstracting. Config surface: entities,
+variables (with types/costs), container topology.
 
-### 13. Design review by compiler experts
-The query engine is a small compiler (lower → plan → optimise → emit →
-execute). Get expert eyes on: the IR design, the pass architecture, CSE
-correctness, the cost model, and whether the StrategyNode → EventPlan
-split is the right abstraction boundary.
-
-**Candidate simplification (subject to review):** The cost model in
-practice makes four decisions, not N: bulk read, bulk read + SemiJoin,
-bulk read + cross-entity join, bulk read + PerItemEnrich(note). The
-planner has 12 StrategyNode types to express what is really four fixed
-emission templates selected by pattern-matching on referenced variables.
-Collapsing StrategyNode to ~4 types would simplify both lowerings
-(AST → Strategy and Strategy → EventPlan) and may make it feasible to
-lower AST → EventPlan directly, eliminating the intermediate IR. Worth
-doing in TypeScript before the Swift port to validate the simplification.
-
-## Longer term
-
-### 14. Plan Swift rewrite
+### Swift rewrite
 The TypeScript prototype validates the architecture. A Swift
 implementation would eliminate the JXA bridge tax, run as a native
 XPC service or app extension, and integrate directly with OmniFocus's
 Omni Automation runtime. Plan: define the module boundary, pick the
 concurrency model (async/await, Combine), design the AE interface layer.
 
-### 8. Expression engine extraction
-The fold/lower/backend pattern is reusable. DEVONthink MCP could compile
-to DT search strings; Mail MCP could compile to SQL WHERE clauses. Wait
-for a second consumer before abstracting. Config surface: entities,
-variables (with types/costs), container topology.
+## Resolved
+
+- **Double-lower bug** (container with complex sub-expressions) — fixed; legacy pipeline eliminated.
+- **Legacy pipeline elimination** — the StrategyNode pipeline (`planner.ts`, `strategy.ts`, `strategyToEventPlan.ts`, `compile.ts`, `executor.ts`, `jxaBulkRead.ts`, `optimizations/*`) has been replaced by the SetIR pipeline (`lowerToSetIr` → `optimizeSetIr` → `lowerSetIrToEventPlan` → `cseEventPlan` → orchestrator).
+- **First-class aggregate operators** — `op:'count'` and `op:'exists'` are proper pipeline operations with dedicated SetIR (`Count`) and EventPlan (`RowCount`) nodes.
+- **Dead code audit** — completed; OmniJS dead code, stale test files, and orphaned dist artifacts identified and cleaned.
+- **Swift rewrite friction audit** — reviewed; hazards documented in Task #15.
+- **Design review** — the StrategyNode → EventPlan split that was questioned has been resolved by the SetIR pipeline, which eliminated the intermediate IR.
