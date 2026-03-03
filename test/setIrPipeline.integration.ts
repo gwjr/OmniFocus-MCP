@@ -177,7 +177,7 @@ async function runSetIr(q: QuerySpec): Promise<Record<string, unknown>[]> {
 
   plan = optimizeSetIr(plan);
 
-  const ep      = lowerSetIrToEventPlan(plan);
+  const ep      = lowerSetIrToEventPlan(plan, q.select);
   const csed    = cseEventPlan(ep);
   const pruned  = pruneColumns(csed);
   const result  = await executeEventPlan(pruned);

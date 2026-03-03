@@ -364,7 +364,15 @@ function parseNamePred(
 
 // ── Main lowering ─────────────────────────────────────────────────────────
 
-export function lowerSetIrToEventPlan(root: SetIrNode): EventPlan {
+/**
+ * Lower a SetIR tree to an EventPlan.
+ *
+ * @param outputColumns  When provided, a Pick node is appended to project
+ *   the result to exactly these columns. This enables the column pruner to
+ *   eliminate any upstream columns that are structurally required by the IR
+ *   (e.g. 'id' for Intersect join keys) but not needed in the final output.
+ */
+export function lowerSetIrToEventPlan(root: SetIrNode, outputColumns?: string[]): EventPlan {
   const { nodes, push } = builder();
 
   function lower(node: SetIrNode): Ref {
@@ -460,6 +468,14 @@ export function lowerSetIrToEventPlan(root: SetIrNode): EventPlan {
     }
   }
 
-  const result = lower(root);
+  let result = lower(root);
+
+  // When the caller specifies output columns, append a Pick so the column
+  // pruner can propagate the narrow set and eliminate dead upstream reads
+  // (e.g. 'id' injected by scan() but not needed in the final output).
+  if (outputColumns && outputColumns.length > 0) {
+    result = push({ kind: 'Pick', source: result, fields: outputColumns });
+  }
+
   return { nodes, result };
 }

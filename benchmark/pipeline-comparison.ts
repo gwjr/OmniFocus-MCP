@@ -193,7 +193,7 @@ async function timeSetIr(q: QuerySpec): Promise<number> {
   plan = optimizeSetIr(plan);
 
   const t0 = performance.now();
-  const ep = lowerSetIrToEventPlan(plan);
+  const ep = lowerSetIrToEventPlan(plan, q.select);
   const csed = cseEventPlan(ep);
   const pruned = pruneColumns(csed);
   await executeEventPlan(pruned);
