@@ -13,6 +13,7 @@ import { buildExtractLinksScript } from '../dist/utils/extractLinks.js';
 import { buildWriteLinksScript } from '../dist/utils/writeLinks.js';
 import { taskVars, projectVars, getVarRegistry, isArrayVar } from '../dist/tools/query/variables.js';
 import { buildSetIrPlan, analyseColumnOverlap } from '../dist/tools/query/executionUnits/orchestrator.js';
+import { formatTasks, formatProjects } from '../dist/tools/formatters/queryResults.js';
 
 // ── extractLinks script generation ──────────────────────────────────────
 
@@ -183,5 +184,51 @@ describe('orchestrator — links column handling', () => {
     assert.ok(overlap.outputOnlyColumns.includes('links') || overlap.outputOnlyColumns.includes('name'),
       'links and/or name should be output-only');
     assert.ok(overlap.filterColumns.has('flagged'), 'flagged should be a filter column');
+  });
+});
+
+// ── Formatter — link text deduplication ──────────────────────────────────
+
+describe('formatter — stripLinkLines from note', () => {
+  it('strips trailing link text lines from note when links are present', () => {
+    const out = formatTasks([{
+      name: 'Test',
+      note: 'Some notes\nLink A\nLink B',
+      links: [{ text: 'Link A', url: 'https://a.com' }, { text: 'Link B', url: 'https://b.com' }],
+    }]);
+    assert.ok(out.includes('Note: Some notes'), 'Should show note without link lines');
+    assert.ok(!out.includes('Note: Some notes\nLink A'), 'Should not include link text in note');
+    assert.ok(out.includes('[Link A](https://a.com)'), 'Should still show link');
+    assert.ok(out.includes('[Link B](https://b.com)'), 'Should still show link');
+  });
+
+  it('preserves note when no links are present', () => {
+    const out = formatTasks([{
+      name: 'Test',
+      note: 'Some notes\nMore notes',
+    }]);
+    assert.ok(out.includes('Note: Some notes\nMore notes'), 'Full note should be preserved');
+  });
+
+  it('omits Note line entirely when note is only link text', () => {
+    const out = formatTasks([{
+      name: 'Test',
+      note: 'Link A',
+      links: [{ text: 'Link A', url: 'https://a.com' }],
+    }]);
+    assert.ok(!out.includes('Note:'), 'Should not show empty Note section');
+    assert.ok(out.includes('[Link A](https://a.com)'), 'Should show link');
+  });
+
+  it('works for projects too', () => {
+    const out = formatProjects([{
+      name: 'Proj',
+      status: 'Active',
+      note: 'Project notes\nDoc Link',
+      links: [{ text: 'Doc Link', url: 'https://docs.com' }],
+    }]);
+    assert.ok(out.includes('Note: Project notes'), 'Should strip link line from project note');
+    assert.ok(!out.includes('Note: Project notes\nDoc Link'), 'Should not include link text');
+    assert.ok(out.includes('[Doc Link](https://docs.com)'), 'Should show link');
   });
 });

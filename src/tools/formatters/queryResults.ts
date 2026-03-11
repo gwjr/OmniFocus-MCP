@@ -12,6 +12,34 @@ function formatDate(dateStr: string): string {
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Strip trailing note lines that duplicate link text.
+ * Links are appended as paragraphs at the end of the note, so when both
+ * `note` and `links` are displayed we'd show the same text twice.
+ */
+function stripLinkLines(note: string, links: Array<{ text: string }>): string {
+  const lines = note.split('\n');
+  const remaining = new Map<string, number>();
+  for (const l of links) {
+    const key = l.text.trim();
+    remaining.set(key, (remaining.get(key) ?? 0) + 1);
+  }
+  // Remove from the end while lines match link texts
+  while (lines.length > 0) {
+    const key = lines[lines.length - 1].trim();
+    const count = remaining.get(key);
+    if (count && count > 0) {
+      remaining.set(key, count - 1);
+      lines.pop();
+    } else {
+      break;
+    }
+  }
+  return lines.join('\n').trimEnd();
+}
+
 // ── Per-entity formatters ────────────────────────────────────────────────
 
 export function formatTasks(tasks: any[]): string {
@@ -67,7 +95,8 @@ export function formatTasks(tasks: any[]): string {
     let result = parts.join(' ');
 
     if (task.note) {
-      result += `\n  Note: ${task.note}`;
+      const noteText = task.links?.length > 0 ? stripLinkLines(task.note, task.links) : task.note;
+      if (noteText) result += `\n  Note: ${noteText}`;
     }
 
     if (task.links?.length > 0) {
@@ -104,7 +133,8 @@ export function formatProjects(projects: any[]): string {
     }
 
     if (project.note) {
-      result += `\n  Note: ${project.note}`;
+      const noteText = project.links?.length > 0 ? stripLinkLines(project.note, project.links) : project.note;
+      if (noteText) result += `\n  Note: ${noteText}`;
     }
 
     if (project.links?.length > 0) {
