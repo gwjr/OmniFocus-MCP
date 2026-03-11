@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { addOmniFocusTask, AddOmniFocusTaskParams } from '../primitives/addOmniFocusTask.js';
 import { batchAddItems, BatchAddItemsParams } from '../primitives/batchAddItems.js';
+import { writeLinks } from '../../utils/writeLinks.js';
 import { coerceJson, coerceArray, appendCoercionWarnings } from '../utils/coercion.js';
 
 const taskSchema = z.object({
@@ -12,6 +13,10 @@ const taskSchema = z.object({
   flagged: z.boolean().optional().describe("Whether the task is flagged"),
   estimatedMinutes: z.number().optional().describe("Estimated time to complete, in minutes"),
   tags: z.array(z.string()).optional().describe("Tags to assign to the task"),
+  links: z.array(z.object({
+    text: z.string().describe("Display text for the link"),
+    url: z.string().describe("URL target for the hyperlink"),
+  })).optional().describe("Hyperlinks to add to the note (clickable in OmniFocus)"),
   projectName: z.string().optional().describe("Project to add the task to (inbox if not specified)"),
   parentTaskId: z.string().optional().describe("ID of the parent task (preferred for accuracy)"),
   parentTaskName: z.string().optional().describe("Name of the parent task (matched within project or globally)"),
@@ -40,6 +45,10 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       const result = await addOmniFocusTask(task as AddOmniFocusTaskParams);
 
       if (result.success) {
+        // Append hyperlinks via JXA if provided
+        if (task.links?.length && result.taskId) {
+          await writeLinks([{ id: result.taskId, links: task.links }], 'task');
+        }
         const placement = (result as any).placement as string | undefined;
         const location = placement === 'parent' ? 'under the parent task'
           : task.projectName ? `in project "${task.projectName}"`
@@ -57,6 +66,21 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
     // Multiple tasks: batch add
     const batchItems = tasks.map(t => ({ ...t, type: 'task' as const }));
     const result = await batchAddItems(batchItems as BatchAddItemsParams[]);
+
+    // Append hyperlinks to successfully created tasks that have links
+    const linkItems = tasks
+      .map((t, i) => {
+        const r = result.results[i];
+        if (r?.success && r.id && t.links?.length) {
+          return { id: r.id, links: t.links };
+        }
+        return null;
+      })
+      .filter((item): item is { id: string; links: Array<{ text: string; url: string }> } => item !== null);
+
+    if (linkItems.length > 0) {
+      await writeLinks(linkItems, 'task');
+    }
 
     const successes = result.results.filter(r => r.success).length;
     const failures = result.results.filter(r => !r.success).length;

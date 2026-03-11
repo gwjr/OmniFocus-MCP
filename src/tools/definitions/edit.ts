@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { resolveTargets, TargetingError, type MutationEntity } from '../targeting.js';
 import { executeBatchEdit, type BatchEditParams, type MarkValue } from '../primitives/batchEdit.js';
+import { writeLinks, type LinkToAdd } from '../../utils/writeLinks.js';
+import { extractLinks } from '../../utils/extractLinks.js';
 import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 
 const offsetDaysSchema = z.object({ days: z.number() });
@@ -36,6 +38,11 @@ export const schema = z.object({
   mark: z.enum(['completed', 'dropped', 'active', 'onHold', 'flagged', 'unflagged']).optional()
     .describe("Status transition"),
 
+  addLinks: z.array(z.object({
+    text: z.string().describe("Display text for the link"),
+    url: z.string().describe("URL target for the hyperlink"),
+  })).optional().describe("Hyperlinks to append to the note (clickable in OmniFocus)"),
+
   offset: z.object({
     dueDate: offsetDaysSchema.optional(),
     deferDate: offsetDaysSchema.optional(),
@@ -59,6 +66,9 @@ function summariseEdits(args: z.infer<typeof schema>): string {
   if (args.mark) parts.push(`marked ${args.mark}`);
   if (args.addTags?.length) parts.push(`+tags: ${args.addTags.join(', ')}`);
   if (args.removeTags?.length) parts.push(`-tags: ${args.removeTags.join(', ')}`);
+  if (args.addLinks?.length) {
+    parts.push(...args.addLinks.map(l => `+link: "${l.text}" → ${l.url}`));
+  }
   if (args.offset) {
     for (const [k, v] of Object.entries(args.offset)) {
       if (v) parts.push(`${k} ${v.days > 0 ? '+' : ''}${v.days}d`);
@@ -70,10 +80,10 @@ function summariseEdits(args: z.infer<typeof schema>): string {
 export async function handler(args: z.infer<typeof schema>, _extra: any) {
   try {
     // ── Validate at least one operation ────────────────────────────────
-    if (!args.set && !args.addTags && !args.removeTags && !args.mark && !args.offset) {
+    if (!args.set && !args.addTags && !args.removeTags && !args.mark && !args.offset && !args.addLinks) {
       return {
         content: [{ type: "text" as const, text: appendCoercionWarnings(
-          "At least one operation (set, addTags, removeTags, mark, offset) is required."
+          "At least one operation (set, addTags, removeTags, mark, offset, addLinks) is required."
         ) }],
         isError: true,
       };
@@ -140,7 +150,55 @@ export async function handler(args: z.infer<typeof schema>, _extra: any) {
       offset: args.offset,
     };
 
-    const result = await executeBatchEdit(editParams);
+    // Execute the standard batch edit (properties, tags, marks, offsets).
+    // If addLinks is the ONLY operation, skip the AppleScript edit entirely.
+    const hasStandardOps = !!(args.set || args.addTags || args.removeTags || args.mark || args.offset);
+    const entitySingular = resolved.entity === 'tasks' ? 'task' as const : 'project' as const;
+
+    // ── Preserve existing links when note is being overwritten ──────
+    // Setting note via AppleScript replaces rich text with plain text,
+    // destroying link attributes. Read existing links before the edit
+    // so we can re-apply them afterwards.
+    let preservedLinks: Map<string, Array<{ text: string; url: string }>> | null = null;
+    if (args.set?.note !== undefined && hasStandardOps) {
+      preservedLinks = await extractLinks(resolved.ids, entitySingular);
+    }
+
+    let result: Awaited<ReturnType<typeof executeBatchEdit>>;
+    if (hasStandardOps) {
+      result = await executeBatchEdit(editParams);
+    } else {
+      // Links-only edit: synthesise a success result with item names
+      result = {
+        success: true,
+        results: resolved.ids.map(id => {
+          const preview = resolved.previews?.find(p => p.id === id);
+          return { id, name: preview?.name ?? id, success: true };
+        }),
+      };
+    }
+
+    // ── Write links (preserved + new) ───────────────────────────────
+    // Combine preserved links with any new addLinks. writeLinks handles
+    // the read-then-rewrite internally for its own appended text, but
+    // when set.note replaced the entire note, the preserved links need
+    // to be explicitly re-applied.
+    if (result.success) {
+      const newLinks = args.addLinks ?? [];
+      const linkItems: Array<{ id: string; links: LinkToAdd[] }> = [];
+
+      for (const id of resolved.ids) {
+        const preserved = preservedLinks?.get(id) ?? [];
+        const combined = [...preserved, ...newLinks];
+        if (combined.length > 0) {
+          linkItems.push({ id, links: combined });
+        }
+      }
+
+      if (linkItems.length > 0) {
+        await writeLinks(linkItems, entitySingular);
+      }
+    }
 
     if (result.success) {
       const names = result.results?.map(r => `"${r.name}"`).join(', ') ?? '';

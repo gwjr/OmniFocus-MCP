@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { addProject as addProjectPrimitive, AddProjectParams } from '../primitives/addProject.js';
+import { writeLinks } from '../../utils/writeLinks.js';
 import { coerceJson, coerceArray, appendCoercionWarnings } from '../utils/coercion.js';
 
 const projectSchema = z.object({
@@ -10,6 +11,10 @@ const projectSchema = z.object({
   flagged: z.boolean().optional().describe("Whether the project is flagged"),
   estimatedMinutes: z.number().optional().describe("Estimated time to complete, in minutes"),
   tags: z.array(z.string()).optional().describe("Tags to assign to the project"),
+  links: z.array(z.object({
+    text: z.string().describe("Display text for the link"),
+    url: z.string().describe("URL target for the hyperlink"),
+  })).optional().describe("Hyperlinks to add to the note (clickable in OmniFocus)"),
   folderName: z.string().optional().describe("Folder to add the project to (root if not specified)"),
   sequential: z.boolean().optional().describe("Whether tasks should be sequential (default: false)"),
 });
@@ -36,6 +41,10 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
 
     for (const project of projects) {
       const result = await addProjectPrimitive(project as AddProjectParams);
+      // Append hyperlinks if project was created successfully
+      if (result.success && result.projectId && project.links?.length) {
+        await writeLinks([{ id: result.projectId, links: project.links }], 'project');
+      }
       results.push({
         name: project.name,
         success: result.success,

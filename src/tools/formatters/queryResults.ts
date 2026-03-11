@@ -70,6 +70,13 @@ export function formatTasks(tasks: any[]): string {
       result += `\n  Note: ${task.note}`;
     }
 
+    if (task.links?.length > 0) {
+      result += '\n  Links:';
+      for (const link of task.links) {
+        result += `\n    - [${link.text}](${link.url})`;
+      }
+    }
+
     return result;
   }).join('\n');
 }
@@ -98,6 +105,13 @@ export function formatProjects(projects: any[]): string {
 
     if (project.note) {
       result += `\n  Note: ${project.note}`;
+    }
+
+    if (project.links?.length > 0) {
+      result += '\n  Links:';
+      for (const link of project.links) {
+        result += `\n    - [${link.text}](${link.url})`;
+      }
     }
 
     return result;

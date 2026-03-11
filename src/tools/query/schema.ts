@@ -158,8 +158,8 @@ OPERATIONS (16):
 - String (case-insensitive): {contains: [expr, "pattern"]}, {startsWith: [expr, "pat"]}, {endsWith: [expr, "pat"]}, {matches: [expr, "regex"]}
 - Tags: {contains: [{var: "tags"}, "tagName"]} — tag membership (tasks only)
 
-TASK VARS: id, name, note, flagged, status, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, modificationDate, creationDate, estimatedMinutes, projectId, parentId, inInbox, sequential, hasChildren, childCount, tags, now
-PROJECT VARS: id, name, note, status, flagged, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, modificationDate, creationDate, estimatedMinutes, sequential, folderId, taskCount, activeTaskCount, now
+TASK VARS: id, name, note, links, flagged, status, dueDate, deferDate, plannedDate, effectiveDueDate, effectiveDeferDate, effectivePlannedDate, completionDate, modificationDate, creationDate, estimatedMinutes, projectId, parentId, inInbox, sequential, hasChildren, childCount, tags, now
+PROJECT VARS: id, name, note, links, status, flagged, dueDate, deferDate, effectiveDueDate, effectiveDeferDate, modificationDate, creationDate, estimatedMinutes, sequential, folderId, taskCount, activeTaskCount, now
 FOLDER VARS: id, name, status, parentFolderId, projectCount, now
 TAG VARS: id, name, note, allowsNextAction, hidden, effectivelyHidden, availableTaskCount, remainingTaskCount, parentName, now
 
@@ -177,7 +177,7 @@ EXAMPLES:
       select: {
         type: 'array',
         items: { type: 'string' },
-        description: "Specific fields to return (reduces response size). COMMON (all entities): id, name. SHARED: note (tasks/projects/tags), dueDate/deferDate/effectiveDueDate/effectiveDeferDate/modificationDate/creationDate/sequential/completedByChildren (tasks/projects), status (projects/folders). TASK-ONLY: flagged, taskStatus, plannedDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, inInbox. PROJECT-ONLY: folderName, folderID, containsSingletonActions, taskCount, activeTaskCount, tasks. FOLDER-ONLY: path, parentFolderID, projectCount, projects, subfolders. TAG-ONLY: allowsNextAction, hidden, effectivelyHidden, availableTaskCount, remainingTaskCount, parentName"
+        description: "Specific fields to return (reduces response size). COMMON (all entities): id, name. SHARED: note, links (tasks/projects — links returns [{text, url}] hyperlinks from rich-text notes), dueDate/deferDate/effectiveDueDate/effectiveDeferDate/modificationDate/creationDate/sequential/completedByChildren (tasks/projects), status (projects/folders). TASK-ONLY: flagged, taskStatus, plannedDate, effectivePlannedDate, completionDate, estimatedMinutes, tagNames, tags, projectName, projectId, parentId, childIds, hasChildren, inInbox. PROJECT-ONLY: folderName, folderID, containsSingletonActions, taskCount, activeTaskCount, tasks. FOLDER-ONLY: path, parentFolderID, projectCount, projects, subfolders. TAG-ONLY: allowsNextAction, hidden, effectivelyHidden, availableTaskCount, remainingTaskCount, parentName"
       },
       limit: {
         type: 'number',

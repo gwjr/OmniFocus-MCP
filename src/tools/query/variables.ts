@@ -162,6 +162,7 @@ export const taskVars: VarRegistry = {
 
   // expensive
   note:                 str( 'note',                 null,                    'expensive'),
+  links:                arr( 'links',                null,                    'expensive'),
 
   // special
   now:                  date('now',                  null,                    'easy'),
@@ -197,6 +198,7 @@ export const projectVars: VarRegistry = {
 
   // expensive
   note:               str( 'note',               null,                    'expensive'),
+  links:              arr( 'links',              null,                    'expensive'),
 
   // special
   now:                date('now',                null,                    'easy'),

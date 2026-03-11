@@ -33,7 +33,40 @@ import { lowerSetIrToEventPlan } from '../lowerSetIrToEventPlan.js';
 import type { LoweredExpr } from '../fold.js';
 import { isTaskOnlyVar, type EntityType } from '../variables.js';
 import { enrichByIdentifier, canEnrichColumn } from '../../../utils/omniJsEnrich.js';
+import { extractLinks } from '../../../utils/extractLinks.js';
 import type { Row } from '../backends/nodeEval.js';
+
+// ── Custom post-query enrichment registry ─────────────────────────────────
+//
+// Columns that can't be read via the standard AE bulk pipeline or OmniJS
+// enrichment. Each entry specifies which entities it applies to and a
+// function that takes (ids, entity) → Map<id, value>.
+//
+// The orchestrator strips these columns from the select list before plan
+// generation, then enriches the results after the main query completes.
+
+interface CustomEnrichment {
+  /** Entity types this enrichment applies to. */
+  entities: Set<EntityType>;
+  /** Fetch values for the given IDs. Returns Map from ID → column value. */
+  fetch: (ids: string[], entity: EntityType) => Promise<Map<string, unknown>>;
+  /** Default value for items not found in the enrichment map. */
+  defaultValue: unknown;
+  /** Label for timing output. */
+  timingLabel: string;
+}
+
+const CUSTOM_ENRICHMENTS: Record<string, CustomEnrichment> = {
+  links: {
+    entities: new Set(['tasks', 'projects']),
+    timingLabel: 'jxa-links',
+    defaultValue: [],
+    fetch: async (ids, entity) => {
+      const singular = entity === 'tasks' ? 'task' as const : 'project' as const;
+      return extractLinks(ids, singular);
+    },
+  },
+};
 
 // ── Topological sort ────────────────────────────────────────────────────
 
@@ -546,6 +579,24 @@ export async function executeQueryFromAst(
 ): Promise<OrchestratorResult> {
   const { select, entity, op, predicate, limit } = params;
 
+  // ── Strip custom-enrichment columns from select ───────────────────────
+  //
+  // Columns registered in CUSTOM_ENRICHMENTS can't go through the standard
+  // AE bulk pipeline or OmniJS enrichment. Strip them from the select list
+  // before building the plan; enrich via their custom fetch after results.
+
+  const customCols = op === 'get' && select
+    ? select.filter(c => CUSTOM_ENRICHMENTS[c]?.entities.has(entity))
+    : [];
+
+  const planSelect = customCols.length > 0
+    ? select!.filter(c => !CUSTOM_ENRICHMENTS[c]?.entities.has(entity))
+    : select;
+
+  const planParams = customCols.length > 0
+    ? { ...params, select: planSelect && planSelect.length > 0 ? planSelect : undefined }
+    : params;
+
   // ── Native count / exists fast-paths ──────────────────────────────────
   //
   // When querying ALL rows of an entity with no filter (predicate === true),
@@ -572,30 +623,84 @@ export async function executeQueryFromAst(
 
   if (
     op === 'get' &&
-    select && select.length > 0 &&
+    planSelect && planSelect.length > 0 &&
     limit != null && limit <= DEFERRED_ENRICH_MAX_ROWS &&
     entity !== 'perspectives'
   ) {
-    const overlap = analyseColumnOverlap(predicate, select);
+    const overlap = analyseColumnOverlap(predicate, planSelect);
     const outputOnly = overlap.outputOnlyColumns;
 
     if (
       outputOnly.length >= DEFERRED_ENRICH_MIN_OUTPUT_COLS &&
       outputOnly.every(col => canEnrichColumn(entity, col))
     ) {
-      return executeDeferredEnrichment(params, overlap);
+      const result = await executeDeferredEnrichment(
+        { ...planParams, select: planSelect },
+        overlap,
+      );
+      if (customCols.length > 0) return applyCustomEnrichments(result, entity, customCols);
+      return result;
     }
   }
 
   // ── Standard full-scan path ────────────────────────────────────────────
 
-  let plan = buildSetIrPlan(params);
+  let plan = buildSetIrPlan(planParams);
   plan = optimizeSetIr(plan);
-  const ep     = lowerSetIrToEventPlan(plan, select);
+  const ep     = lowerSetIrToEventPlan(plan, planParams.select);
   const csed   = cseEventPlan(ep);
   const pruned = pruneColumns(csed);
   const merged = mergeSemiJoins(pruned);
-  return executeEventPlan(merged);
+  const result = await executeEventPlan(merged);
+
+  if (customCols.length > 0) return applyCustomEnrichments(result, entity, customCols);
+  return result;
+}
+
+// ── Custom post-query enrichment execution ───────────────────────────────────
+
+/**
+ * Apply registered custom enrichments to query result rows.
+ *
+ * For each custom column, calls the registered fetch function with the
+ * row IDs and merges values back into the result rows.
+ */
+async function applyCustomEnrichments(
+  result: OrchestratorResult,
+  entity: EntityType,
+  columns: string[],
+): Promise<OrchestratorResult> {
+  if (!Array.isArray(result.value) || result.value.length === 0) return result;
+
+  const rows = result.value as Row[];
+  const ids = rows
+    .map(row => row.id as string)
+    .filter(id => id != null);
+
+  if (ids.length === 0) return result;
+
+  const extraTimings: OrchestratorResult['timings'] = [];
+
+  for (const col of columns) {
+    const enrichment = CUSTOM_ENRICHMENTS[col];
+    if (!enrichment) continue;
+
+    const t = Date.now();
+    const valueMap = await enrichment.fetch(ids, entity);
+    const ms = Date.now() - t;
+
+    for (const row of rows) {
+      const id = row.id as string;
+      row[col] = valueMap.get(id) ?? enrichment.defaultValue;
+    }
+
+    extraTimings.push({ runtime: enrichment.timingLabel, refs: [], ms });
+  }
+
+  return {
+    value: rows,
+    timings: [...result.timings, ...extraTimings],
+  };
 }
 
 // ── Native count fast-path execution ─────────────────────────────────────────
