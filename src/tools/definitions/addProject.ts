@@ -11,10 +11,10 @@ const projectSchema = z.object({
   flagged: z.boolean().optional().describe("Whether the project is flagged"),
   estimatedMinutes: z.number().optional().describe("Estimated time to complete, in minutes"),
   tags: z.array(z.string()).optional().describe("Tags to assign to the project"),
-  links: z.array(z.object({
+  links: coerceJson('links', z.array(z.object({
     text: z.string().describe("Display text for the link"),
     url: z.string().describe("URL target for the hyperlink"),
-  })).optional().describe("Hyperlinks to add to the note (clickable in OmniFocus)"),
+  })).optional().describe("Hyperlinks to add to the note (clickable in OmniFocus)")),
   folderName: z.string().optional().describe("Folder to add the project to (root if not specified)"),
   sequential: z.boolean().optional().describe("Whether tasks should be sequential (default: false)"),
 });

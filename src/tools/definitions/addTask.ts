@@ -13,10 +13,10 @@ const taskSchema = z.object({
   flagged: z.boolean().optional().describe("Whether the task is flagged"),
   estimatedMinutes: z.number().optional().describe("Estimated time to complete, in minutes"),
   tags: z.array(z.string()).optional().describe("Tags to assign to the task"),
-  links: z.array(z.object({
+  links: coerceJson('links', z.array(z.object({
     text: z.string().describe("Display text for the link"),
     url: z.string().describe("URL target for the hyperlink"),
-  })).optional().describe("Hyperlinks to add to the note (clickable in OmniFocus)"),
+  })).optional().describe("Hyperlinks to add to the note (clickable in OmniFocus)")),
   projectName: z.string().optional().describe("Project to add the task to (inbox if not specified)"),
   parentTaskId: z.string().optional().describe("ID of the parent task (preferred for accuracy)"),
   parentTaskName: z.string().optional().describe("Name of the parent task (matched within project or globally)"),

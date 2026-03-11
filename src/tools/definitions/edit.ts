@@ -38,10 +38,10 @@ export const schema = z.object({
   mark: z.enum(['completed', 'dropped', 'active', 'onHold', 'flagged', 'unflagged']).optional()
     .describe("Status transition"),
 
-  addLinks: z.array(z.object({
+  addLinks: coerceJson('addLinks', z.array(z.object({
     text: z.string().describe("Display text for the link"),
     url: z.string().describe("URL target for the hyperlink"),
-  })).optional().describe("Hyperlinks to append to the note (clickable in OmniFocus)"),
+  })).optional().describe("Hyperlinks to append to the note (clickable in OmniFocus)")),
 
   offset: z.object({
     dueDate: offsetDaysSchema.optional(),
