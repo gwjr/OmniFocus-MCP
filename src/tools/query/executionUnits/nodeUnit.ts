@@ -13,6 +13,8 @@ import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import { compileNodePredicate, type Row } from '../backends/nodeEval.js';
 import { getVarRegistry, type EntityType } from '../variables.js';
+import { EVENT_NODE_IR, type Kind } from '../eventNodeRegistry.js';
+import { dispatchCollectRefs } from '../eventNodeRegistry.js';
 
 // ── Computed var derivers (mirrored from executor.ts) ───────────────────
 
@@ -67,29 +69,46 @@ function resolve(ctx: ExecCtx, ref: Ref): unknown {
   return val;
 }
 
-// ── Node dispatch ───────────────────────────────────────────────────────
+// ── Node execution registry ─────────────────────────────────────────────
+
+/**
+ * EventNode kinds whose default runtime is 'node'.
+ * TypeScript enforces exhaustiveness: adding a new node-runtime kind
+ * without adding a NODE_EXEC entry causes a compile error.
+ *
+ * This must match the set of kinds where EVENT_NODE_IR[K].runtime === 'node'.
+ */
+type NodeKind =
+  | 'Zip' | 'Filter' | 'SemiJoin' | 'HashJoin' | 'Sort' | 'Limit'
+  | 'Pick' | 'Derive' | 'ColumnValues' | 'Flatten' | 'Union' | 'RowCount'
+  | 'AddSwitch' | 'SetOp';
+
+type NodeExecEntry = (ctx: ExecCtx, ref: Ref, node: EventNode) => unknown;
+
+const NODE_EXEC: { [K in NodeKind]: NodeExecEntry } = {
+  Zip:          (ctx, _ref, node) => execZip(ctx, node as Extract<EventNode, { kind: 'Zip' }>),
+  Filter:       (ctx, ref, node)  => execFilter(ctx, ref, node as Extract<EventNode, { kind: 'Filter' }>),
+  SemiJoin:     (ctx, _ref, node) => execSemiJoin(ctx, node as Extract<EventNode, { kind: 'SemiJoin' }>),
+  HashJoin:     (ctx, _ref, node) => execHashJoin(ctx, node as Extract<EventNode, { kind: 'HashJoin' }>),
+  Sort:         (ctx, _ref, node) => execSort(ctx, node as Extract<EventNode, { kind: 'Sort' }>),
+  Limit:        (ctx, _ref, node) => execLimit(ctx, node as Extract<EventNode, { kind: 'Limit' }>),
+  Pick:         (ctx, _ref, node) => execPick(ctx, node as Extract<EventNode, { kind: 'Pick' }>),
+  Derive:       (ctx, _ref, node) => execDerive(ctx, node as Extract<EventNode, { kind: 'Derive' }>),
+  ColumnValues: (ctx, _ref, node) => execColumnValues(ctx, node as Extract<EventNode, { kind: 'ColumnValues' }>),
+  Flatten:      (ctx, _ref, node) => execFlatten(ctx, node as Extract<EventNode, { kind: 'Flatten' }>),
+  Union:        (ctx, _ref, node) => execUnion(ctx, node as Extract<EventNode, { kind: 'Union' }>),
+  RowCount:     (ctx, _ref, node) => execRowCount(ctx, node as Extract<EventNode, { kind: 'RowCount' }>),
+  AddSwitch:    (ctx, ref, node)  => execAddSwitch(ctx, ref, node as Extract<EventNode, { kind: 'AddSwitch' }>),
+  SetOp:        (ctx, _ref, node) => execSetOp(ctx, node as Extract<EventNode, { kind: 'SetOp' }>),
+};
 
 function execNode(ctx: ExecCtx, ref: Ref): unknown {
   const node = ctx.plan.nodes[ref];
-
-  switch (node.kind) {
-    case 'Zip':          return execZip(ctx, node);
-    case 'Filter':       return execFilter(ctx, ref, node);
-    case 'SemiJoin':     return execSemiJoin(ctx, node);
-    case 'HashJoin':     return execHashJoin(ctx, node);
-    case 'Sort':         return execSort(ctx, node);
-    case 'Limit':        return execLimit(ctx, node);
-    case 'Pick':         return execPick(ctx, node);
-    case 'Derive':       return execDerive(ctx, node);
-    case 'ColumnValues': return execColumnValues(ctx, node);
-    case 'Flatten':      return execFlatten(ctx, node);
-    case 'Union':        return execUnion(ctx, node);
-    case 'RowCount':     return execRowCount(ctx, node);
-    case 'AddSwitch':    return execAddSwitch(ctx, ref, node);
-    case 'SetOp':        return execSetOp(ctx, node);
-    default:
-      throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
+  const handler = (NODE_EXEC as Record<string, NodeExecEntry>)[node.kind];
+  if (!handler) {
+    throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
   }
+  return handler(ctx, ref, node);
 }
 
 // ── Op implementations ──────────────────────────────────────────────────
@@ -591,31 +610,7 @@ function detectFilterLimitFusion(
   return fused;
 }
 
-/** Extract input refs from a node (subset of collectRefs from eventPlanUtils). */
+/** Extract input refs from a node — delegates to IR registry. */
 function collectNodeInputRefs(node: EventNode): Ref[] {
-  switch (node.kind) {
-    case 'Filter':
-    case 'Sort':
-    case 'Limit':
-    case 'Pick':
-    case 'Derive':
-    case 'ColumnValues':
-    case 'Flatten':
-    case 'RowCount':
-    case 'AddSwitch':
-      return [(node as { source: Ref }).source];
-    case 'SemiJoin':
-      return [node.source, node.ids];
-    case 'HashJoin':
-      return [node.source, node.lookup];
-    case 'Union':
-    case 'SetOp':
-      return [(node as { left: Ref }).left, (node as { right: Ref }).right];
-    case 'Zip':
-      return node.columns.map(c => c.ref);
-    case 'ForEach':
-      return [node.source];
-    default:
-      return [];
-  }
+  return dispatchCollectRefs(node);
 }

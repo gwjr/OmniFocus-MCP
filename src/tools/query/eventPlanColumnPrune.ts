@@ -22,6 +22,7 @@
 
 import type { EventPlan, EventNode, Ref, Specifier } from './eventPlan.js';
 import type { LoweredExpr } from './fold.js';
+import type { Kind } from './eventNodeRegistry.js';
 import { collectRefs, rewriteNode, compactPlan } from './eventPlanUtils.js';
 import { computedVarDeps } from './variables.js';
 
@@ -58,6 +59,140 @@ function predicateVars(expr: LoweredExpr): Set<string> {
   return vars;
 }
 
+// ── Column-propagation registry ─────────────────────────────────────────
+
+type PropagateCtx = {
+  myNeeded: Set<string> | null;
+  needed: Map<Ref, Set<string> | null>;
+};
+
+type ColumnPropEntry = (node: EventNode, ctx: PropagateCtx) => void;
+
+/**
+ * Typed registry defining how each EventNode kind propagates needed columns
+ * upstream. Adding a new kind without an entry is a compile error.
+ */
+const COLUMN_PROPAGATION: { [K in Kind]: ColumnPropEntry } = {
+
+  Pick(node, { needed }) {
+    const n = node as Extract<EventNode, { kind: 'Pick' }>;
+    propagate(needed, n.source, new Set(n.fields));
+  },
+
+  Filter(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'Filter' }>;
+    const predVars = predicateVars(n.predicate);
+    propagate(needed, n.source, myNeeded ? union(myNeeded, predVars) : null);
+  },
+
+  Sort(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'Sort' }>;
+    const sortVars = new Set([n.by]);
+    propagate(needed, n.source, myNeeded ? union(myNeeded, sortVars) : null);
+  },
+
+  Limit(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'Limit' }>;
+    propagate(needed, n.source, myNeeded);
+  },
+
+  SemiJoin(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'SemiJoin' }>;
+    const joinField = n.field ?? 'id';
+    const joinVars = new Set([joinField]);
+    propagate(needed, n.source, myNeeded ? union(myNeeded, joinVars) : null);
+    propagate(needed, n.ids, null);
+  },
+
+  HashJoin(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'HashJoin' }>;
+    const addedFields = new Set(Object.values(n.fieldMap));
+    const sourceVars = new Set([n.sourceKey]);
+    let combined: Set<string> | null;
+    if (myNeeded) {
+      const fromSource = new Set([...myNeeded].filter(f => !addedFields.has(f)));
+      combined = union(fromSource, sourceVars);
+    } else {
+      combined = null;
+    }
+    propagate(needed, n.source, combined);
+    const lookupVars = new Set([n.lookupKey, ...Object.keys(n.fieldMap)]);
+    propagate(needed, n.lookup, lookupVars);
+  },
+
+  Derive(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'Derive' }>;
+    let combined: Set<string> | null;
+    if (myNeeded) {
+      combined = new Set(myNeeded);
+      for (const spec of n.derivations) {
+        if (combined.has(spec.var)) {
+          const deps = computedVarDeps(spec.entity, spec.var);
+          if (deps) {
+            for (const d of deps) combined.add(d);
+          }
+        }
+      }
+    } else {
+      combined = null;
+    }
+    propagate(needed, n.source, combined);
+  },
+
+  ColumnValues(node, { needed }) {
+    const n = node as Extract<EventNode, { kind: 'ColumnValues' }>;
+    propagate(needed, n.source, new Set([n.field]));
+  },
+
+  Flatten(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'Flatten' }>;
+    propagate(needed, n.source, myNeeded);
+  },
+
+  AddSwitch(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'AddSwitch' }>;
+    if (myNeeded === null) {
+      propagate(needed, n.source, null);
+    } else {
+      const fromSource = new Set([...myNeeded].filter(f => f !== n.column));
+      for (const c of n.cases) {
+        for (const v of predicateVars(c.predicate)) fromSource.add(v);
+      }
+      propagate(needed, n.source, fromSource);
+    }
+  },
+
+  Union(node, { myNeeded, needed }) {
+    const n = node as Extract<EventNode, { kind: 'Union' }>;
+    const unionNeeded = myNeeded ? union(myNeeded, new Set(['id'])) : null;
+    propagate(needed, n.left, unionNeeded);
+    propagate(needed, n.right, unionNeeded);
+  },
+
+  RowCount(node, { needed }) {
+    const n = node as Extract<EventNode, { kind: 'RowCount' }>;
+    propagate(needed, n.source, new Set());
+  },
+
+  SetOp(node, { needed }) {
+    const n = node as Extract<EventNode, { kind: 'SetOp' }>;
+    propagate(needed, n.left, null);
+    propagate(needed, n.right, null);
+  },
+
+  ForEach(node, { needed }) {
+    const n = node as Extract<EventNode, { kind: 'ForEach' }>;
+    propagate(needed, n.source, null);
+  },
+
+  // Terminals — don't propagate column needs
+  Zip()     { /* terminal */ },
+  Get()     { /* terminal */ },
+  Count()   { /* terminal */ },
+  Set()     { /* terminal */ },
+  Command() { /* terminal */ },
+};
+
 // ── Needed-columns analysis ─────────────────────────────────────────────
 
 /**
@@ -84,167 +219,7 @@ function computeNeededColumns(
     // If this node isn't needed at all, skip it
     if (myNeeded === undefined) continue;
 
-    switch (node.kind) {
-      case 'Pick': {
-        // Pick narrows to specific fields — propagate only those upstream
-        const fields = new Set(node.fields);
-        propagate(needed, node.source, fields);
-        break;
-      }
-
-      case 'Filter': {
-        // Filter needs its predicate vars plus whatever downstream needs
-        const predVars = predicateVars(node.predicate);
-        const combined = myNeeded ? union(myNeeded, predVars) : null;
-        propagate(needed, node.source, combined);
-        break;
-      }
-
-      case 'Sort': {
-        // Sort needs its `by` column plus downstream
-        const sortVars = new Set([node.by]);
-        const combined = myNeeded ? union(myNeeded, sortVars) : null;
-        propagate(needed, node.source, combined);
-        break;
-      }
-
-      case 'Limit': {
-        // Pass-through
-        propagate(needed, node.source, myNeeded);
-        break;
-      }
-
-      case 'SemiJoin': {
-        // SemiJoin needs the join field (default 'id') plus downstream columns
-        const joinField = node.field ?? 'id';
-        const joinVars = new Set([joinField]);
-        const combined = myNeeded ? union(myNeeded, joinVars) : null;
-        propagate(needed, node.source, combined);
-        // ids ref is a separate data flow (not row columns)
-        propagate(needed, node.ids, null);
-        break;
-      }
-
-      case 'HashJoin': {
-        // Source needs sourceKey + downstream columns (minus fields added by join)
-        const addedFields = new Set(Object.values(node.fieldMap));
-        const sourceVars = new Set([node.sourceKey]);
-        let combined: Set<string> | null;
-        if (myNeeded) {
-          // Remove fields that the join adds (they come from lookup, not source)
-          const fromSource = new Set([...myNeeded].filter(f => !addedFields.has(f)));
-          combined = union(fromSource, sourceVars);
-        } else {
-          combined = null;
-        }
-        propagate(needed, node.source, combined);
-        // Lookup needs lookupKey + the lookup-side fields from fieldMap
-        const lookupVars = new Set([node.lookupKey, ...Object.keys(node.fieldMap)]);
-        propagate(needed, node.lookup, lookupVars);
-        break;
-      }
-
-      case 'Derive': {
-        // Derive adds computed columns. It needs its dependency columns
-        // plus whatever downstream needs (minus derived columns that
-        // downstream doesn't need).
-        let combined: Set<string> | null;
-        if (myNeeded) {
-          combined = new Set(myNeeded);
-          for (const spec of node.derivations) {
-            // If the derived var is needed, add its dependencies
-            if (combined.has(spec.var)) {
-              const deps = computedVarDeps(spec.entity, spec.var);
-              if (deps) {
-                for (const d of deps) combined.add(d);
-              }
-            }
-          }
-        } else {
-          combined = null;
-        }
-        propagate(needed, node.source, combined);
-        break;
-      }
-
-      case 'ColumnValues': {
-        // Needs its specific field from the source
-        const fields = new Set([node.field]);
-        propagate(needed, node.source, fields);
-        break;
-      }
-
-      case 'Flatten': {
-        propagate(needed, node.source, myNeeded);
-        break;
-      }
-
-      case 'AddSwitch': {
-        // AddSwitch adds node.column to rows from source.
-        // Source needs: downstream columns (minus node.column, which AddSwitch provides)
-        // plus all variables referenced in the case predicates.
-        if (myNeeded === null) {
-          propagate(needed, node.source, null);
-        } else {
-          const fromSource = new Set([...myNeeded].filter(f => f !== node.column));
-          for (const c of node.cases) {
-            for (const v of predicateVars(c.predicate)) fromSource.add(v);
-          }
-          propagate(needed, node.source, fromSource);
-        }
-        break;
-      }
-
-      case 'Union': {
-        // Union deduplicates rows by row.id (see execUnion in nodeUnit.ts).
-        // Always preserve 'id' on both sides so deduplication is correct.
-        const unionNeeded = myNeeded ? union(myNeeded, new Set(['id'])) : null;
-        propagate(needed, node.left, unionNeeded);
-        propagate(needed, node.right, unionNeeded);
-        break;
-      }
-
-      case 'RowCount': {
-        // RowCount only needs the row count — no column values are required.
-        // Propagate an empty set so intermediate Filter/SemiJoin nodes can
-        // add only the columns they actually need (predicate vars, join key).
-        // This avoids the spurious 'id' bulk read that new Set(['id']) forced.
-        //
-        // Note: if there is no Filter/SemiJoin between RowCount and Zip (which
-        // can't happen in practice because predicate===true uses the native
-        // fast-path), the Zip would receive an empty needed set and produce [].
-        // That edge case is already short-circuited before reaching this path.
-        propagate(needed, node.source, new Set());
-        break;
-      }
-
-      case 'SetOp': {
-        // SetOp operates on id arrays, not row columns — propagate null (all)
-        propagate(needed, node.left, null);
-        propagate(needed, node.right, null);
-        break;
-      }
-
-      case 'ForEach': {
-        // ForEach iterates source (a flat array, e.g. from ColumnValues).
-        // The source doesn't carry row columns — propagate null.
-        propagate(needed, node.source, null);
-        // Propagate needed columns into the body Zip (at body[collect]).
-        // myNeeded tells us what columns the outer plan needs from this
-        // ForEach's collected output. The body Zip produces those columns.
-        // We don't recurse further into body Get nodes here — that's
-        // handled by the body-pruning step in pruneColumns().
-        break;
-      }
-
-      case 'Zip':
-      case 'Get':
-      case 'Count':
-      case 'Set':
-      case 'Command':
-        // These are terminals or don't propagate column needs
-        break;
-    }
+    COLUMN_PROPAGATION[node.kind](node, { myNeeded, needed });
   }
 
   return needed;
