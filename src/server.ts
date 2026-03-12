@@ -15,6 +15,7 @@ import * as addProjectTool from './tools/definitions/addProject.js';
 import * as editTool from './tools/definitions/edit.js';
 import * as moveTool from './tools/definitions/move.js';
 import * as removeTool from './tools/definitions/removeItem.js';
+import * as semanticSearchTool from './tools/definitions/semanticSearch.js';
 
 // Create an MCP server
 const server = new McpServer({
@@ -64,6 +65,12 @@ register("show_forecast",
   showForecastTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   showForecastTool.handler);
+
+register("semantic_search",
+  "Search OmniFocus tasks and projects by meaning using natural language. Uses a pre-built semantic index (run the indexer first). Best for fuzzy/conceptual searches where exact keyword matching would miss relevant items.",
+  semanticSearchTool.schema,
+  { readOnlyHint: true, openWorldHint: false },
+  semanticSearchTool.handler);
 
 // Additive tools (not destructive, not idempotent)
 register("add_task",

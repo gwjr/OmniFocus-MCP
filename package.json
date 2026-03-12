@@ -19,7 +19,8 @@
     "test:legacy": "node --test test/emitter.test.ts test/codegenBaseline.test.ts",
     "test:integration": "node --test --test-concurrency 1 --test-timeout=60000 test/eventPlanPipeline.integration.ts test/tools.integration.ts",
     "test:mutations": "node --test --test-concurrency 1 --test-timeout=60000 test/mutations.integration.ts",
-    "test:all": "npm test && npm run test:integration"
+    "test:all": "npm test && npm run test:integration",
+    "index": "node dist/indexer/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
