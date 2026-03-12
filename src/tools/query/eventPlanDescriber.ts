@@ -212,6 +212,12 @@ const DESCRIBE_NODE: DescriberRegistry = {
     return [`${lhs} = AddSwitch(${fmtRef(node.source)}, '${node.column}', ${node.cases.length} cases, default:${defStr})`];
   },
 
+  Embed: (node, lhs) =>
+    [`${lhs} = Embed("${node.query}")`],
+
+  SemanticSearch: (node, lhs) =>
+    [`${lhs} = SemanticSearch(${node.entity}, ${fmtRef(node.embeddingRef)})`],
+
   ForEach: (node, lhs, idx, prefix) => {
     const lines: string[] = [];
     lines.push(`${lhs} = ForEach(${fmtRef(node.source)}) {`);

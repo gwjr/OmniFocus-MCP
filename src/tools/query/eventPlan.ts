@@ -239,6 +239,21 @@ export type EventNode =
       column:  string;
       cases:   Array<{ predicate: LoweredExpr; value: LoweredExpr }>;
       default: LoweredExpr | 'error';
+    }
+
+  // ── Semantic search ──────────────────────────────────────────────────────
+
+  // Calls embeddingd via Apple Events to embed a query string.
+  // Returns number[384] (float array). JXA runtime — fusible with other JXA work.
+  | { kind: 'Embed';
+      query: string;
+    }
+
+  // Node-side KNN search against the sqlite-vec semantic index.
+  // Consumes the float array from Embed, returns {id, distance}[] rows.
+  | { kind: 'SemanticSearch';
+      entity: EntityType;
+      embeddingRef: Ref;
     };
 
 // ── EventPlan ────────────────────────────────────────────────────────────────

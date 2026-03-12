@@ -175,12 +175,17 @@ const COLUMN_PROPAGATION: ColumnPropRegistry = {
     propagate(needed, node.source, null);
   },
 
+  SemanticSearch: (node, { needed }) => {
+    propagate(needed, node.embeddingRef, null);
+  },
+
   // Terminals — don't propagate column needs
   Zip:     () => { /* terminal */ },
   Get:     () => { /* terminal */ },
   Count:   () => { /* terminal */ },
   Set:     () => { /* terminal */ },
   Command: () => { /* terminal */ },
+  Embed:   () => { /* terminal */ },
 };
 
 // ── Needed-columns analysis ─────────────────────────────────────────────

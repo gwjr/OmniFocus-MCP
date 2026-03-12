@@ -114,6 +114,28 @@ const queries: QuerySpec[] = [
     select:         ['name'],
     requiredFields: ['name'],
   },
+  // ── Semantic search (similar) ───────────────────────────────────────
+  {
+    label:          'similar tasks (standalone)',
+    entity:         'tasks',
+    where:          { similar: ['kitchen'] },
+    select:         ['name'],
+    requiredFields: ['name'],
+  },
+  {
+    label:          'similar tasks (composed with flagged)',
+    entity:         'tasks',
+    where:          { and: [{ similar: ['legal'] }, { eq: [{ var: 'flagged' }, true] }] },
+    select:         ['name', 'flagged'],
+    requiredFields: ['name'],
+  },
+  {
+    label:          'similar projects',
+    entity:         'projects',
+    where:          { similar: ['planning'] },
+    select:         ['name'],
+    requiredFields: ['name'],
+  },
 ];
 
 // ── Pipeline runner ───────────────────────────────────────────────────────────

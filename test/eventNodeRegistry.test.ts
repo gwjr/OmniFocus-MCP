@@ -42,8 +42,8 @@ const ALL_NODES = {
 // ── Registry completeness ────────────────────────────────────────────────
 
 describe('EVENT_NODE_IR — completeness', () => {
-  it('has exactly 19 entries', () => {
-    assert.equal(Object.keys(EVENT_NODE_IR).length, 19);
+  it('has exactly 21 entries', () => {
+    assert.equal(Object.keys(EVENT_NODE_IR).length, 21);
   });
 
   it('covers all EventNode kinds from fixtures', () => {

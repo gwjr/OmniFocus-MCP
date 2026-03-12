@@ -195,6 +195,7 @@ function opTier(op: FoldOp): number {
     case 'matches':
     case 'isNull':
     case 'isNotNull':
+    case 'similar':
       return 0;
 
     case 'not':

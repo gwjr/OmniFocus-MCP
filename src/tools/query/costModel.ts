@@ -65,12 +65,16 @@ const NODE_COST: { [K in Kind]: CostFn } = {
   AddSwitch:    (c) => 0.05 * c,
   SetOp:        (c) => 0.01 * c,
 
+  // ── Semantic search ──────────────────────────────────────────────
+  SemanticSearch: () => 35,
+
   // ── AE ops should not be assigned to node — penalty costs ─────────
   Get:          () => 10000,
   Count:        () => 10000,
   Set:          () => 10000,
   Command:      () => 10000,
   ForEach:      () => 10000,
+  Embed:        () => 10000,
 };
 
 /**
@@ -91,6 +95,10 @@ const JXA_COST: { [K in Kind]: CostFn } = {
 
   // ── Iteration ─────────────────────────────────────────────────────
   ForEach:      (c) => 100 + c * 75,
+
+  // ── Semantic search ──────────────────────────────────────────────
+  Embed:        () => 15,
+  SemanticSearch: (c) => NODE_COST.SemanticSearch(c),
 
   // ── Node-side ops in JXA context — delegate to NODE_COST ──────────
   Zip:          (c) => NODE_COST.Zip(c),

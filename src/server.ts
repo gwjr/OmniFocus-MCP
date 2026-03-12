@@ -15,7 +15,6 @@ import * as addProjectTool from './tools/definitions/addProject.js';
 import * as editTool from './tools/definitions/edit.js';
 import * as moveTool from './tools/definitions/move.js';
 import * as removeTool from './tools/definitions/removeItem.js';
-import * as semanticSearchTool from './tools/definitions/semanticSearch.js';
 
 // Create an MCP server
 const server = new McpServer({
@@ -65,12 +64,6 @@ register("show_forecast",
   showForecastTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   showForecastTool.handler);
-
-register("semantic_search",
-  "Search OmniFocus tasks and projects by meaning using a semantic index. Use concrete, specific terms — e.g. 'painting photography framing' not 'creative hobbies'. Use entity='tasks' or entity='projects' to reduce noise. Not for date/status filtering (use the query tool for that).",
-  semanticSearchTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  semanticSearchTool.handler);
 
 // Additive tools (not destructive, not idempotent)
 register("add_task",

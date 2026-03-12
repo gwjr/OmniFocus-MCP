@@ -54,6 +54,9 @@ export const operations = {
 
   // Set non-membership (sugar for not(in(...)))
   notIn:        { minArgs: 2, maxArgs: 2,  description: 'Value not in array ({notIn: [valueExpr, [array]]}) — desugars to not(in(...))' },
+
+  // Semantic similarity
+  similar:      { minArgs: 1, maxArgs: 1,  description: 'Semantic similarity search ({similar: ["query"]})' },
 } as const satisfies Record<string, OpMeta>;
 
 /** All operation names as a literal union type. */

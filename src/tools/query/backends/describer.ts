@@ -130,6 +130,8 @@ function describeCompactOp(op: string, args: unknown[]): string | null {
       return `${d(args[0])} not in ${d(args[1])}`;
     case 'count':
       return `count(${d(args[0])})`;
+    case 'similar':
+      return `similar to ${d(args[0])}`;
     default:
       return `${op}(${args.map(a => d(a)).join(', ')})`;
   }
@@ -275,5 +277,9 @@ class DescriberBackend {
     fold: (node: LoweredExpr, entity: EntityType) => string
   ): string {
     return `containing ${childEntity} where ${fold(subExpr, childEntity)}`;
+  }
+
+  similar(arg: string): string {
+    return `similar to ${arg}`;
   }
 }

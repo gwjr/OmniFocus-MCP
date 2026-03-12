@@ -295,6 +295,12 @@ function emitNode(ctx: EmitCtx, ref: Ref): void {
       break;
     }
 
+    case 'Embed': {
+      const escaped = node.query.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      ctx.lines.push(`const ${varName} = (function() { var emb = Application('com.gwjrmwd.embeddingd'); return emb.embed('${escaped}'); })();`);
+      break;
+    }
+
     default:
       // Node-side ops should not appear in JXA units
       throw new Error(`jxaUnit: unexpected node kind '${node.kind}' in JXA unit (ref %${ref})`);

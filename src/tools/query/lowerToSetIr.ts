@@ -593,7 +593,11 @@ export function mergeSameEntityScans(node: SetIrNode): SetIrNode {
  *      resulting identical Get+Zip chains
  */
 export function optimizeSetIr(plan: SetIrNode): SetIrNode {
-  let result = applyMergeScanPass(plan);
+  // similarShortcut runs before merge-scan: the merge pass collapses
+  // Intersect(Filter(Scan,p1), Filter(Scan,p2)) into Filter(Scan, and(p1,p2)),
+  // burying `similar` inside nested and() where extraction is harder.
+  let result = similarShortcut(plan);
+  result = applyMergeScanPass(result);
   result = tagNameShortcut(result);
   result = widenScansToUnion(result);
   return result;
@@ -611,6 +615,7 @@ function rebuildChildren(node: SetIrNode): SetIrNode {
     case 'Scan':
     case 'Error':
     case 'TagNameTaskIds':
+    case 'SimilarItems':
       return node;
     case 'Restriction':
       return { ...node, source: applyMergeScanPass(node.source), lookup: applyMergeScanPass(node.lookup) };
@@ -781,5 +786,78 @@ function tagNameShortcut(plan: SetIrNode): SetIrNode {
       left:  cleanedSource,
       right: { kind: 'TagNameTaskIds', tagName, match: 'eq' } as SetIrNode,
     };
+  });
+}
+
+// ── Similar shortcut ──────────────────────────────────────────────────────
+
+/**
+ * Extract a `similar` op from a predicate expression.
+ *
+ * Returns the query string if found at the top level, or null.
+ * For composed predicates (and(similar(..), other)), returns
+ * { query, remaining } where remaining is the predicate without the similar op.
+ */
+function extractSimilar(pred: LoweredExpr): { query: string; remaining: LoweredExpr | null } | null {
+  if (pred === null || pred === true || typeof pred !== 'object' || Array.isArray(pred)) return null;
+  const obj = pred as Record<string, unknown>;
+  if (!('op' in obj)) return null;
+
+  const { op, args } = obj as { op: string; args: LoweredExpr[] };
+
+  // Direct similar: {op: 'similar', args: ["query"]}
+  if (op === 'similar' && args.length === 1 && typeof args[0] === 'string') {
+    return { query: args[0], remaining: null };
+  }
+
+  // Inside and(): extract similar from conjuncts
+  if (op === 'and') {
+    for (let i = 0; i < args.length; i++) {
+      const inner = args[i];
+      if (typeof inner === 'object' && inner !== null && !Array.isArray(inner) &&
+          'op' in (inner as Record<string, unknown>)) {
+        const innerObj = inner as { op: string; args: LoweredExpr[] };
+        if (innerObj.op === 'similar' && innerObj.args.length === 1 && typeof innerObj.args[0] === 'string') {
+          const rest = args.filter((_, j) => j !== i);
+          const remaining = rest.length === 1 ? rest[0] : { op: 'and', args: rest } as LoweredExpr;
+          return { query: innerObj.args[0], remaining };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Optimizer pass: extract `similar` op from Filter predicates and rewrite
+ * to SimilarItems leaf node.
+ *
+ * Patterns:
+ *   Filter(Scan(entity, cols), similar("q"))
+ *     → SimilarItems(entity, "q")
+ *
+ *   Filter(Scan(entity, cols), and(similar("q"), otherPred))
+ *     → Intersect(SimilarItems(entity, "q"), Filter(Scan(entity, cols), otherPred))
+ *     SimilarItems on LEFT preserves semantic ordering through SemiJoin.
+ */
+function similarShortcut(plan: SetIrNode): SetIrNode {
+  return walkSetIr(plan, (node) => {
+    if (node.kind !== 'Filter') return node;
+
+    const extracted = extractSimilar(node.predicate);
+    if (!extracted) return node;
+
+    const entity = node.entity;
+    const similarNode: SetIrNode = { kind: 'SimilarItems', entity, query: extracted.query };
+
+    if (extracted.remaining === null) {
+      // Standalone similar — replace Filter entirely
+      return similarNode;
+    }
+
+    // Composed: SimilarItems on LEFT preserves semantic ordering
+    const filteredSource: SetIrNode = { kind: 'Filter', source: node.source, predicate: extracted.remaining, entity };
+    return { kind: 'Intersect', left: similarNode, right: filteredSource };
   });
 }

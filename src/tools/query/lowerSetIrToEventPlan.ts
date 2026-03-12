@@ -19,7 +19,7 @@
  */
 
 import type { EventNode, EventPlan, Ref } from './eventPlan.js';
-import type { SetIrNode, RestrictionNode, TagNameTaskIdsNode } from './setIr.js';
+import type { SetIrNode, RestrictionNode, TagNameTaskIdsNode, SimilarItemsNode } from './setIr.js';
 import type { EntityType } from './variables.js';
 import {
   classCode,
@@ -310,6 +310,35 @@ function lowerTagNameTaskIds(
   return push({ kind: 'Zip', columns: [{ name: 'id', ref: idsRef }] });
 }
 
+// ── SimilarItems ──────────────────────────────────────────────────────────
+
+/**
+ * Lower a SimilarItems node to EventPlan.
+ *
+ * Emits a two-node chain:
+ *   ref0: Embed(query)            — JXA, calls embeddingd → number[384]
+ *   ref1: SemanticSearch(entity, ref0) — Node, KNN against sqlite-vec → {id, distance}[]
+ */
+function lowerSimilarItems(
+  node: SimilarItemsNode,
+  push: (n: EventNode) => Ref,
+): Ref {
+  // Step 1: Embed the query string (JXA — calls embeddingd via Apple Events)
+  const embedRef = push({
+    kind: 'Embed',
+    query: node.query,
+  } as EventNode);
+
+  // Step 2: KNN search against the semantic index (Node-side)
+  const searchRef = push({
+    kind: 'SemanticSearch',
+    entity: node.entity,
+    embeddingRef: embedRef,
+  } as EventNode);
+
+  return searchRef;
+}
+
 // ── Main lowering ─────────────────────────────────────────────────────────
 
 /**
@@ -409,6 +438,9 @@ export function lowerSetIrToEventPlan(root: SetIrNode, outputColumns?: string[])
 
       case 'TagNameTaskIds':
         return lowerTagNameTaskIds(node, push);
+
+      case 'SimilarItems':
+        return lowerSimilarItems(node, push);
 
       case 'Error':
         throw new Error(

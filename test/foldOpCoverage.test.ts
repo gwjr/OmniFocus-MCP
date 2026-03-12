@@ -55,6 +55,9 @@ const OP_SPECIMENS: Record<string, unknown> = {
   isNull:     { isNull: [{ var: 'dueDate' }] },
   isNotNull:  { isNotNull: [{ var: 'dueDate' }] },
 
+  // Semantic similarity
+  similar:    { similar: ['test query'] },
+
   // Sugar (desugared by lower — doesn't reach fold, but should still work end-to-end)
   notIn:      { notIn: [{ var: 'name' }, ['a', 'b']] },
 };
@@ -87,7 +90,7 @@ describe('foldOp coverage — every operations.ts op dispatches through foldExpr
   }
 
   // NodeEval backend: every op (except container/containing which throw by design)
-  const NODEEVAL_SKIP = new Set(['container', 'containing']);
+  const NODEEVAL_SKIP = new Set(['container', 'containing', 'similar']);
 
   for (const [op, specimen] of [...Object.entries(OP_SPECIMENS), ...Object.entries(SYNTHETIC_SPECIMENS)]) {
     if (NODEEVAL_SKIP.has(op)) continue;

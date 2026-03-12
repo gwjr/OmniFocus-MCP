@@ -372,6 +372,10 @@ class NodeEvalBackend {
   containing(): RowFn {
     throw new Error('"containing" should be extracted by the planner before NodeEval');
   }
+
+  similar(_arg: RowFn): RowFn {
+    throw new Error('similar() requires the semantic index — must be extracted by the planner before NodeEval');
+  }
 }
 
 /**

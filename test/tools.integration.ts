@@ -323,6 +323,86 @@ describe('integration: show_forecast', () => {
   });
 });
 
+// ── query tool — similar predicate ────────────────────────────────────────
+
+describe('integration: query similar predicate', () => {
+  it('tasks — similar returns results without crashing', async () => {
+    const result = await queryTool.handler({
+      entity: 'tasks',
+      where: { similar: ['kitchen'] },
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar tasks');
+    assertSuccess(r, 'similar tasks');
+  });
+
+  it('projects — similar returns results without crashing', async () => {
+    const result = await queryTool.handler({
+      entity: 'projects',
+      where: { similar: ['planning'] },
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar projects');
+    assertSuccess(r, 'similar projects');
+  });
+
+  it('tasks — similar composed with flagged filter', async () => {
+    const result = await queryTool.handler({
+      entity: 'tasks',
+      where: { and: [{ similar: ['legal'] }, { eq: [{ var: 'flagged' }, true] }] },
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar+flagged');
+    assertSuccess(r, 'similar+flagged');
+  });
+
+  it('tasks — similar with limit', async () => {
+    const result = await queryTool.handler({
+      entity: 'tasks',
+      where: { similar: ['email'] },
+      limit: 3,
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar+limit');
+    assertSuccess(r, 'similar+limit');
+  });
+
+  it('tasks — similar with select', async () => {
+    const result = await queryTool.handler({
+      entity: 'tasks',
+      where: { similar: ['shopping'] },
+      select: ['id', 'name'],
+      limit: 5,
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar+select');
+    assertSuccess(r, 'similar+select');
+  });
+
+  it('tasks — similar with op:count', async () => {
+    const result = await queryTool.handler({
+      entity: 'tasks',
+      where: { similar: ['meeting'] },
+      op: 'count',
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar+count');
+    assertSuccess(r, 'similar+count');
+  });
+
+  it('folders — similar returns entity error', async () => {
+    const result = await queryTool.handler({
+      entity: 'folders',
+      where: { similar: ['test'] },
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar folders');
+    assert.ok(r.isError || r.content[0].text.includes('not supported'), 'folders should be rejected');
+  });
+
+  it('tags — similar returns entity error', async () => {
+    const result = await queryTool.handler({
+      entity: 'tags',
+      where: { similar: ['test'] },
+    } as any, {});
+    const r = assertMcpResponse(result, 'similar tags');
+    assert.ok(r.isError || r.content[0].text.includes('not supported'), 'tags should be rejected');
+  });
+});
+
 // ── edit with query targeting (calls OmniFocus for dry run) ──────────────
 
 describe('integration: edit dry run', () => {

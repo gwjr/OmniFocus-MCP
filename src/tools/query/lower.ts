@@ -153,6 +153,14 @@ export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
             );
           }
         }
+        if (opName === 'similar') {
+          if (typeof loweredArgs[0] !== 'string') {
+            throw new LowerError(
+              'similar requires a string query argument (e.g. {similar: ["search terms"]})',
+              `${path}.similar[0]`, node
+            );
+          }
+        }
 
         return { op: opName as FoldOp, args: loweredArgs };
       }

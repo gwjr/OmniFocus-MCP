@@ -203,6 +203,20 @@ export const EVENT_NODE_IR = {
     rewriteRefs(node: Extract<EventNode, { kind: 'SetOp' }>, remap: (r: Ref) => Ref) { return { ...node, left: remap(node.left), right: remap(node.right) }; },
   },
 
+  // ── Semantic search ──────────────────────────────────────────────────
+
+  Embed: {
+    runtime: 'jxa',
+    collectRefs() { return []; },
+    rewriteRefs(node: Extract<EventNode, { kind: 'Embed' }>) { return node; },
+  },
+
+  SemanticSearch: {
+    runtime: 'node',
+    collectRefs(node: Extract<EventNode, { kind: 'SemanticSearch' }>) { return [node.embeddingRef]; },
+    rewriteRefs(node: Extract<EventNode, { kind: 'SemanticSearch' }>, remap: (r: Ref) => Ref) { return { ...node, embeddingRef: remap(node.embeddingRef) }; },
+  },
+
 } as const satisfies EventNodeIR;
 
 // ── Derived runtime classification ──────────────────────────────────────

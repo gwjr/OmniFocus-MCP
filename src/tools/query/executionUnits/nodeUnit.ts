@@ -12,8 +12,10 @@ import type { EventNode, Ref } from '../eventPlan.js';
 import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import { compileNodePredicate, type Row } from '../backends/nodeEval.js';
-import { getVarRegistry, type EntityType } from '../variables.js';
+import type { EntityType } from '../variables.js';
 import { type Kind, type NodeKind, dispatchCollectRefs, isNodeKind, dispatchNodeKind3 } from '../eventNodeRegistry.js';
+import { embeddingToHex } from '../../../indexer/embeddingClient.js';
+import { knnSearch, isIndexReady } from '../../../indexer/db.js';
 
 // ── Computed var derivers (mirrored from executor.ts) ───────────────────
 
@@ -95,6 +97,7 @@ const NODE_EXEC: { [K in NodeKind]: (node: Extract<EventNode, { kind: K }>, ctx:
   RowCount:     (node, ctx) => execRowCount(ctx, node),
   AddSwitch:    (node, ctx, ref) => execAddSwitch(ctx, ref, node),
   SetOp:        (node, ctx) => execSetOp(ctx, node),
+  SemanticSearch: (node, ctx) => execSemanticSearch(ctx, node),
 };
 
 function execNode(ctx: ExecCtx, ref: Ref): unknown {
@@ -432,6 +435,20 @@ function execRowCount(
   node: Extract<EventNode, { kind: 'RowCount' }>,
 ): number {
   return (resolve(ctx, node.source) as Row[]).length;
+}
+
+function execSemanticSearch(
+  ctx: ExecCtx,
+  node: Extract<EventNode, { kind: 'SemanticSearch' }>,
+): Row[] {
+  if (!isIndexReady()) {
+    throw new Error('Semantic index not built yet. Run the indexer first: npm run index');
+  }
+  const floats = resolve(ctx, node.embeddingRef) as number[];
+  const hex = embeddingToHex(floats);
+  const entityFilter = (node.entity === 'tasks' || node.entity === 'projects') ? node.entity : 'all';
+  const results = knnSearch(hex, 200, entityFilter, true);
+  return results.map(r => ({ id: r.id, distance: r.distance }));
 }
 
 function execSetOp(

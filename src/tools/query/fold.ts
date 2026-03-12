@@ -40,7 +40,7 @@ export type OpSpec<T> = {
   [K in FoldOp]:
     K extends 'and' | 'or'
       ? (args: T[]) => T :
-    K extends 'not' | 'count' | 'isNull' | 'isNotNull'
+    K extends 'not' | 'count' | 'isNull' | 'isNotNull' | 'similar'
       ? (arg: T) => T :
     K extends 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
          | 'in' | 'startsWith' | 'endsWith'
@@ -112,7 +112,7 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
         return backend[op](args.map(f));
 
       // ── Unary ──
-      case 'not': case 'count': case 'isNull': case 'isNotNull':
+      case 'not': case 'count': case 'isNull': case 'isNotNull': case 'similar':
         return backend[op](f(args[0]));
 
       // ── Binary (fold both) ──

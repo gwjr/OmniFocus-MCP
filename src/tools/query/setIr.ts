@@ -236,6 +236,25 @@ export interface TagNameTaskIdsNode {
   match: 'eq' | 'contains';
 }
 
+/**
+ * Semantic similarity search leaf.
+ *
+ * Produced by the similarShortcut optimizer when it detects a `similar("query")`
+ * op in a Filter predicate. Queries the pre-built semantic index for items
+ * matching the query string.
+ *
+ * Semantics: produces a row set of {id, distance} for items semantically
+ * similar to the query. Distance is L2 distance from the embedding model.
+ *
+ * Lowered to EventPlan as:
+ *   Embed(query) → SemanticSearch(entity, embeddingRef) → Zip([id, distance])
+ */
+export interface SimilarItemsNode {
+  kind: 'SimilarItems';
+  entity: EntityType;
+  query: string;
+}
+
 export type SetIrNode =
   | ScanNode
   | FilterNode
@@ -249,6 +268,7 @@ export type SetIrNode =
   | LimitNode
   | AddSwitchNode
   | TagNameTaskIdsNode
+  | SimilarItemsNode
   | ErrorNode;
 
 // ── Tree Walk ─────────────────────────────────────────────────────────────
@@ -265,6 +285,7 @@ export function walkSetIr(node: SetIrNode, fn: (n: SetIrNode) => SetIrNode): Set
     case 'Scan':
     case 'Error':
     case 'TagNameTaskIds':
+    case 'SimilarItems':
       rebuilt = node;
       break;
 
