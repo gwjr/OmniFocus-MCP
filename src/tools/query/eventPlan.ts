@@ -250,10 +250,12 @@ export type EventNode =
     }
 
   // Node-side KNN search against the sqlite-vec semantic index.
-  // Consumes the float array from Embed, returns {id, distance}[] rows.
+  // Consumes the float array from Embed, returns {id, similarity}[] rows.
+  // Optional threshold filters out rows below the minimum similarity %.
   | { kind: 'SemanticSearch';
       entity: EntityType;
       embeddingRef: Ref;
+      threshold?: number;
     };
 
 // ── EventPlan ────────────────────────────────────────────────────────────────

@@ -334,6 +334,7 @@ function lowerSimilarItems(
     kind: 'SemanticSearch',
     entity: node.entity,
     embeddingRef: embedRef,
+    ...(node.threshold !== undefined ? { threshold: node.threshold } : {}),
   } as EventNode);
 
   return searchRef;

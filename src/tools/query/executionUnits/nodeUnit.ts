@@ -458,7 +458,11 @@ function execSemanticSearch(
   const hex = embeddingToHex(floats);
   const entityFilter = (node.entity === 'tasks' || node.entity === 'projects') ? node.entity : 'all';
   const results = knnSearch(hex, 200, entityFilter, true);
-  return results.map(r => ({ id: r.id, similarity: distanceToSimilarity(r.distance) }));
+  const rows = results.map(r => ({ id: r.id, similarity: distanceToSimilarity(r.distance) }));
+  if (node.threshold !== undefined) {
+    return rows.filter(r => r.similarity >= node.threshold!);
+  }
+  return rows;
 }
 
 function execSetOp(

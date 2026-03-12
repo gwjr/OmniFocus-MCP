@@ -182,20 +182,8 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       return { success: true, exists: totalCount > 0 };
     }
 
-    // Similarity is now a real column from the pipeline (computed in
-    // SemanticSearch, carried through via HashJoin on the output Intersect).
-    // Threshold filter: remove rows below the minimum similarity threshold.
-    const hasSimilarColumn = rows.length > 0 && 'similarity' in rows[0];
-    let filteredRows = rows;
-    if (hasSimilarColumn) {
-      const threshold = extractSimilarThreshold(params.where);
-      if (threshold !== undefined) {
-        filteredRows = rows.filter(row => (row.similarity as number) >= threshold);
-      }
-    }
-
     // 'get': return items
-    let items = params.select ? selectFields(filteredRows, params.select) : filteredRows;
+    let items = params.select ? selectFields(rows, params.select) : rows;
 
     // For tasks, inject mandatory minimum fields (id, flagged, taskStatus)
     // into every row regardless of what the user selected.
@@ -205,12 +193,10 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
     // Inject similarity AFTER field selection — always visible for similar queries
     // regardless of what the user selected.
+    const hasSimilarColumn = rows.length > 0 && 'similarity' in rows[0];
     if (hasSimilarColumn) {
-      for (const item of items) {
-        const row = filteredRows[items.indexOf(item)];
-        if (row && 'similarity' in row) {
-          item.similarity = row.similarity;
-        }
+      for (let i = 0; i < items.length; i++) {
+        items[i].similarity = rows[i].similarity;
       }
     }
 
@@ -236,32 +222,6 @@ function containsSimilar(where: unknown): boolean {
     if (containsSimilar(val)) return true;
   }
   return false;
-}
-
-/**
- * Extract the minimum similarity threshold from all `{similar: [..., N]}` terms.
- * Returns undefined if no threshold is specified.
- */
-function extractSimilarThreshold(where: unknown): number | undefined {
-  const thresholds: number[] = [];
-
-  function walk(node: unknown): void {
-    if (node == null || typeof node !== 'object') return;
-    if (Array.isArray(node)) { node.forEach(walk); return; }
-    const obj = node as Record<string, unknown>;
-    if ('similar' in obj && Array.isArray(obj.similar)) {
-      const args = obj.similar as unknown[];
-      if (args.length > 1 && typeof args[1] === 'number') {
-        thresholds.push(args[1]);
-      }
-    }
-    for (const val of Object.values(obj)) {
-      if (typeof val === 'object' && val !== null) walk(val);
-    }
-  }
-
-  walk(where);
-  return thresholds.length > 0 ? Math.min(...thresholds) : undefined;
 }
 
 // ── Field Selection ─────────────────────────────────────────────────────────
