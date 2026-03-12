@@ -296,8 +296,8 @@ function emitNode(ctx: EmitCtx, ref: Ref): void {
     }
 
     case 'Embed': {
-      const escaped = node.query.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-      ctx.lines.push(`const ${varName} = (function() { var emb = Application('com.gwjrmwd.embeddingd'); return emb.embed('${escaped}'); })();`);
+      const queryStr = JSON.stringify(node.query);
+      ctx.lines.push(`const ${varName} = (function() { var emb = Application('com.gwjrmwd.embeddingd'); return emb.embed(${queryStr}); })();`);
       break;
     }
 

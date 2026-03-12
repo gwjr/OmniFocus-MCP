@@ -384,22 +384,24 @@ describe('integration: query similar predicate', () => {
     assertSuccess(r, 'similar+count');
   });
 
-  it('folders — similar returns entity error', async () => {
+  it('folders — similar returns error (no semantic index)', async () => {
     const result = await queryTool.handler({
       entity: 'folders',
       where: { similar: ['test'] },
     } as any, {});
     const r = assertMcpResponse(result, 'similar folders');
-    assert.ok(r.isError || r.content[0].text.includes('not supported'), 'folders should be rejected');
+    // similar on unsupported entities is not extracted by the optimizer;
+    // NodeEval throws its safety message when it encounters the unextracted op.
+    assert.ok(r.isError || r.content[0].text.includes('planner'), 'folders should fail with planner error');
   });
 
-  it('tags — similar returns entity error', async () => {
+  it('tags — similar returns error (no semantic index)', async () => {
     const result = await queryTool.handler({
       entity: 'tags',
       where: { similar: ['test'] },
     } as any, {});
     const r = assertMcpResponse(result, 'similar tags');
-    assert.ok(r.isError || r.content[0].text.includes('not supported'), 'tags should be rejected');
+    assert.ok(r.isError || r.content[0].text.includes('planner'), 'tags should fail with planner error');
   });
 });
 

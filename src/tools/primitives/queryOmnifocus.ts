@@ -114,17 +114,6 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
 
     const entity = params.entity;
 
-    // Validate entity for `similar` — only tasks and projects have a semantic index.
-    if (ast !== null && containsSimilarOp(ast)) {
-      const unsupported = entity !== 'tasks' && entity !== 'projects';
-      if (unsupported) {
-        return {
-          success: false,
-          error: `similar() is not supported for ${entity} — only tasks and projects have a semantic index`,
-        };
-      }
-    }
-
     // Special case: perspectives have no Apple Events class code.
     if (entity === 'perspectives') {
       const filterAst: LoweredExpr | true = ast ?? true;
@@ -212,20 +201,6 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: msg });
     return { success: false, error: msg };
   }
-}
-
-// ── Similar op detection ──────────────────────────────────────────────────
-
-/** Recursively check if a LoweredExpr contains a `similar` op. */
-function containsSimilarOp(expr: LoweredExpr): boolean {
-  if (expr === null || typeof expr !== 'object') return false;
-  if (Array.isArray(expr)) return false;
-  const obj = expr as Record<string, unknown>;
-  if (obj.op === 'similar') return true;
-  if (Array.isArray(obj.args)) {
-    return (obj.args as LoweredExpr[]).some(containsSimilarOp);
-  }
-  return false;
 }
 
 // ── Confidence computation ──────────────────────────────────────────────

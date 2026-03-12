@@ -792,13 +792,13 @@ function tagNameShortcut(plan: SetIrNode): SetIrNode {
 // ── Similar shortcut ──────────────────────────────────────────────────────
 
 /**
- * Extract a `similar` op from a predicate expression.
+ * Extract ALL `similar` ops from a predicate expression.
  *
- * Returns the query string if found at the top level, or null.
- * For composed predicates (and(similar(..), other)), returns
- * { query, remaining } where remaining is the predicate without the similar op.
+ * Returns an array of query strings and the remaining predicate with all
+ * similar ops removed. Extracts from the top level and from direct children
+ * of and().
  */
-function extractSimilar(pred: LoweredExpr): { query: string; remaining: LoweredExpr | null } | null {
+function extractAllSimilar(pred: LoweredExpr): { queries: string[]; remaining: LoweredExpr | null } | null {
   if (pred === null || pred === true || typeof pred !== 'object' || Array.isArray(pred)) return null;
   const obj = pred as Record<string, unknown>;
   if (!('op' in obj)) return null;
@@ -807,57 +807,89 @@ function extractSimilar(pred: LoweredExpr): { query: string; remaining: LoweredE
 
   // Direct similar: {op: 'similar', args: ["query"]}
   if (op === 'similar' && args.length === 1 && typeof args[0] === 'string') {
-    return { query: args[0], remaining: null };
+    return { queries: [args[0]], remaining: null };
   }
 
-  // Inside and(): extract similar from conjuncts
+  // Inside and(): extract ALL similar terms from conjuncts
   if (op === 'and') {
-    for (let i = 0; i < args.length; i++) {
-      const inner = args[i];
+    const queries: string[] = [];
+    const rest: LoweredExpr[] = [];
+    for (const inner of args) {
       if (typeof inner === 'object' && inner !== null && !Array.isArray(inner) &&
           'op' in (inner as Record<string, unknown>)) {
         const innerObj = inner as { op: string; args: LoweredExpr[] };
         if (innerObj.op === 'similar' && innerObj.args.length === 1 && typeof innerObj.args[0] === 'string') {
-          const rest = args.filter((_, j) => j !== i);
-          const remaining = rest.length === 1 ? rest[0] : { op: 'and', args: rest } as LoweredExpr;
-          return { query: innerObj.args[0], remaining };
+          queries.push(innerObj.args[0]);
+          continue;
         }
       }
+      rest.push(inner);
     }
+    if (queries.length === 0) return null;
+    const remaining = rest.length === 0 ? null
+      : rest.length === 1 ? rest[0]
+      : { op: 'and', args: rest } as LoweredExpr;
+    return { queries, remaining };
   }
 
   return null;
 }
 
+/** Entity types that have a semantic index. */
+const SIMILAR_ENTITIES = new Set<string>(['tasks', 'projects']);
+
 /**
  * Optimizer pass: extract `similar` op from Filter predicates and rewrite
- * to SimilarItems leaf node.
+ * to SimilarItems leaf nodes.
+ *
+ * Extracts ALL similar terms in one pass (not just the first) to prevent
+ * surviving similar ops from reaching NodeEval and throwing.
+ *
+ * Entity validation: only tasks and projects have a semantic index. If a
+ * Filter carries an unsupported entity, the similar op is left in place
+ * for NodeEval to throw with its safety message. This allows cross-entity
+ * composition (e.g. folders containing tasks similar to "X") where the
+ * similar operates on tasks, not folders.
  *
  * Patterns:
- *   Filter(Scan(entity, cols), similar("q"))
+ *   Filter(source, similar("q"))
  *     → SimilarItems(entity, "q")
  *
- *   Filter(Scan(entity, cols), and(similar("q"), otherPred))
- *     → Intersect(SimilarItems(entity, "q"), Filter(Scan(entity, cols), otherPred))
+ *   Filter(source, and(similar("q"), otherPred))
+ *     → Intersect(SimilarItems(entity, "q"), Filter(source, otherPred))
  *     SimilarItems on LEFT preserves semantic ordering through SemiJoin.
+ *
+ *   Filter(source, and(similar("a"), similar("b"), otherPred))
+ *     → Intersect(SimilarItems("a"), Intersect(SimilarItems("b"), Filter(source, otherPred)))
  */
 function similarShortcut(plan: SetIrNode): SetIrNode {
   return walkSetIr(plan, (node) => {
     if (node.kind !== 'Filter') return node;
+    if (!SIMILAR_ENTITIES.has(node.entity)) return node;
 
-    const extracted = extractSimilar(node.predicate);
+    const extracted = extractAllSimilar(node.predicate);
     if (!extracted) return node;
 
     const entity = node.entity;
-    const similarNode: SetIrNode = { kind: 'SimilarItems', entity, query: extracted.query };
+
+    // Build SimilarItems nodes for each query
+    const similarNodes: SetIrNode[] = extracted.queries.map(
+      q => ({ kind: 'SimilarItems' as const, entity, query: q }),
+    );
 
     if (extracted.remaining === null) {
-      // Standalone similar — replace Filter entirely
-      return similarNode;
+      // All predicates were similar — reduce to intersected SimilarItems
+      return similarNodes.reduce((acc, cur): SetIrNode =>
+        ({ kind: 'Intersect', left: acc, right: cur }),
+      );
     }
 
     // Composed: SimilarItems on LEFT preserves semantic ordering
-    const filteredSource: SetIrNode = { kind: 'Filter', source: node.source, predicate: extracted.remaining, entity };
-    return { kind: 'Intersect', left: similarNode, right: filteredSource };
+    let result: SetIrNode = { kind: 'Filter', source: node.source, predicate: extracted.remaining, entity };
+    // Wrap with each SimilarItems, first query outermost (leftmost = primary ordering)
+    for (let i = similarNodes.length - 1; i >= 0; i--) {
+      result = { kind: 'Intersect', left: similarNodes[i], right: result };
+    }
+    return result;
   });
 }

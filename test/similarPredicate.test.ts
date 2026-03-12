@@ -83,6 +83,29 @@ describe('similar — SetIR optimizer', () => {
     assert.ok(findNode(optimized, 'SimilarItems'), 'Expected SimilarItems node');
   });
 
+  it('multiple similar terms all extracted (no surviving similar in Filter)', () => {
+    const ast = lowerExpr({
+      and: [{ similar: ['kitchen'] }, { similar: ['cooking'] }, { eq: [{ var: 'flagged' }, true] }],
+    });
+    const setIr = lowerToSetIr({ predicate: ast, entity: 'tasks', op: 'get' });
+    const optimized = optimizeSetIr(setIr);
+
+    // Both similar terms should be extracted as SimilarItems nodes
+    const similarNodes: any[] = [];
+    collectNodes(optimized, 'SimilarItems', similarNodes);
+    assert.equal(similarNodes.length, 2, 'Expected 2 SimilarItems nodes');
+    const queries = similarNodes.map((n: any) => n.query).sort();
+    assert.deepEqual(queries, ['cooking', 'kitchen']);
+
+    // No Filter should contain a similar predicate
+    const filters: any[] = [];
+    collectNodes(optimized, 'Filter', filters);
+    for (const f of filters) {
+      const pred = JSON.stringify(f.predicate);
+      assert.ok(!pred.includes('"similar"'), `Filter still contains similar: ${pred}`);
+    }
+  });
+
   it('SimilarItems preserves semantic ordering (left of Intersect)', () => {
     const ast = lowerExpr({
       and: [{ similar: ['legal'] }, { eq: [{ var: 'flagged' }, true] }],
@@ -135,45 +158,34 @@ describe('similar — EventPlan lowering', () => {
 
 // ── Layer 4: queryOmnifocus — entity validation ─────────────────────────
 
-describe('similar — entity validation', () => {
-  it('rejects folders entity', async () => {
+describe('similar — entity validation (via similarShortcut)', () => {
+  it('unsupported entity (folders) fails at eval, not at gate', async () => {
+    // similar on folders is not extracted by similarShortcut — it remains
+    // in the Filter predicate and NodeEval throws its safety message.
     const result = await queryOmnifocus({
       entity: 'folders',
       where: { similar: ['test'] },
     });
     assert.equal(result.success, false);
-    assert.ok(result.error?.includes('not supported'));
-    assert.ok(result.error?.includes('folders'));
+    assert.ok(result.error?.includes('planner'), `expected planner error, got: ${result.error}`);
   });
 
-  it('rejects tags entity', async () => {
+  it('unsupported entity (tags) fails at eval', async () => {
     const result = await queryOmnifocus({
       entity: 'tags',
       where: { similar: ['test'] },
     });
     assert.equal(result.success, false);
-    assert.ok(result.error?.includes('not supported'));
-    assert.ok(result.error?.includes('tags'));
-  });
-
-  it('rejects perspectives entity', async () => {
-    const result = await queryOmnifocus({
-      entity: 'perspectives',
-      where: { similar: ['test'] },
-    });
-    assert.equal(result.success, false);
-    assert.ok(result.error?.includes('not supported'));
+    assert.ok(result.error?.includes('planner'), `expected planner error, got: ${result.error}`);
   });
 
   it('accepts tasks entity (no entity error)', async () => {
-    // This will fail downstream (no OmniFocus/embeddingd) but should NOT
-    // fail with the entity validation error.
     const result = await queryOmnifocus({
       entity: 'tasks',
       where: { similar: ['test'] },
     });
     if (!result.success) {
-      assert.ok(!result.error?.includes('not supported'), 'tasks should not be rejected by entity validation');
+      assert.ok(!result.error?.includes('planner'), 'tasks should have similar extracted');
     }
   });
 
@@ -245,4 +257,13 @@ function findNode(node: any, kind: string): any | null {
     }
   }
   return null;
+}
+
+/** Recursively collect all nodes of a given kind in a SetIR tree. */
+function collectNodes(node: any, kind: string, out: any[]): void {
+  if (!node || typeof node !== 'object') return;
+  if (node.kind === kind) out.push(node);
+  for (const key of ['source', 'left', 'right', 'lookup']) {
+    if (node[key]) collectNodes(node[key], kind, out);
+  }
 }
