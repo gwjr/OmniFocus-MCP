@@ -14,43 +14,49 @@ function uniqueTempFile(prefix: string): string {
   return join(tmpdir(), `${prefix}_${Date.now()}_${_seq++}.js`);
 }
 
-// Helper function to execute OmniFocus scripts
-export async function executeJXA(script: string): Promise<any[]> {
+// Helper function to execute OmniFocus scripts (single attempt)
+async function executeJXAOnce(script: string): Promise<any[]> {
+  // Write the script to a temporary file in the system temp directory
+  const tempFile = uniqueTempFile('jxa_script');
+
+  // Write the script to the temporary file
+  writeFileSync(tempFile, script);
+
+  let stdout: string;
   try {
-    // Write the script to a temporary file in the system temp directory
-    const tempFile = uniqueTempFile('jxa_script');
-
-    // Write the script to the temporary file
-    writeFileSync(tempFile, script);
-
-    let stdout: string;
-    try {
-      const result = await execAsync(`osascript -l JavaScript "${tempFile}"`, { timeout: 30000 });
-      stdout = result.stdout;
-      if (result.stderr) {
-        console.error("Script stderr output:", result.stderr);
-      }
-    } finally {
-      try { unlinkSync(tempFile); } catch { /* ignore */ }
+    const result = await execAsync(`osascript -l JavaScript "${tempFile}"`, { timeout: 30000 });
+    stdout = result.stdout;
+    if (result.stderr) {
+      console.error("Script stderr output:", result.stderr);
     }
+  } finally {
+    try { unlinkSync(tempFile); } catch { /* ignore */ }
+  }
 
-    // Parse the output as JSON
-    try {
-      const result = JSON.parse(stdout);
-      return result;
-    } catch (e) {
-      console.error("Failed to parse script output as JSON:", e);
+  // Parse the output as JSON
+  try {
+    const result = JSON.parse(stdout);
+    return result;
+  } catch (e) {
+    console.error("Failed to parse script output as JSON:", e);
 
-      // If this contains a "Found X tasks" message, treat it as a successful non-JSON response
-      if (stdout.includes("Found") && stdout.includes("tasks")) {
-        return [];
-      }
-
+    // If this contains a "Found X tasks" message, treat it as a successful non-JSON response
+    if (stdout.includes("Found") && stdout.includes("tasks")) {
       return [];
     }
+
+    return [];
+  }
+}
+
+// Execute JXA with a single retry on transient failures (e.g. embeddingd hiccups)
+export async function executeJXA(script: string): Promise<any[]> {
+  try {
+    return await executeJXAOnce(script);
   } catch (error) {
-    console.error("Failed to execute JXA script:", error);
-    throw error;
+    console.error('[jxa] First attempt failed, retrying in 200ms:', (error as Error).message);
+    await new Promise(r => setTimeout(r, 200));
+    return await executeJXAOnce(script);
   }
 }
 

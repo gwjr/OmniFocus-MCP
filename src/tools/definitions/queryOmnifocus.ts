@@ -11,7 +11,7 @@ export const schema = z.object({
   ),
 
   where: coerceJson('where', z.any().optional().describe(
-    `Expression tree for filtering using compact syntax. ${ALL_OPS.length} operations: ${ALL_OPS.join(', ')}. Use {opName: [args]} syntax (e.g. {contains: [{var: "name"}, "review"]}). Dates: {date: "YYYY-MM-DD"}, {offset: {date: "now", days: -3}}, {var: "now"}. Date ranges: {between: [{var: "dueDate"}, {var: "now"}, {offset: {date: "now", days: 7}}]}. Tags: {contains: [{var: "tags"}, "tagName"]}. Container scoping: {container: ["project"|"folder"|"tag", expr]} — "project" for tasks, "folder" for tasks/projects/folders, "tag" for tags (ancestor walk). Project name: {contains: [{var: "projectName"}, "text"]}.`
+    `Expression tree for filtering using compact syntax. ${ALL_OPS.length} operations: ${ALL_OPS.join(', ')}. Use {opName: [args]} syntax (e.g. {contains: [{var: "name"}, "review"]}). Dates: {date: "YYYY-MM-DD"}, {offset: {date: "now", days: -3}}, {var: "now"}. Date ranges: {between: [{var: "dueDate"}, {var: "now"}, {offset: {date: "now", days: 7}}]}. Tags: {contains: [{var: "tags"}, "tagName"]}. Container scoping: {container: ["project"|"folder"|"tag", expr]} — "project" for tasks, "folder" for tasks/projects/folders, "tag" for tags (ancestor walk). Project name: {contains: [{var: "projectName"}, "text"]}. Semantic search: {similar: ["query"]} or {similar: ["query", 60]} with optional 0-100 threshold. Similar queries default to limit 20 and auto-inject a similarity field.`
   )),
 
   select: coerceJson('select', z.array(z.string()).optional().describe(
@@ -24,7 +24,7 @@ export const schema = z.object({
 
   sort: coerceJson('sort', z.object({
     by: z.string().describe(
-      "Field to sort by. OPTIONS: name, dueDate, deferDate, modificationDate, creationDate, estimatedMinutes, taskStatus"
+      "Field to sort by. OPTIONS: name, dueDate, deferDate, modificationDate, creationDate, estimatedMinutes, taskStatus, similarity (for similar queries)"
     ),
     direction: z.enum(['asc', 'desc']).optional().describe(
       "Sort order. 'asc' = ascending (A-Z, old-new), 'desc' = descending (Z-A, new-old). Default: 'asc'"

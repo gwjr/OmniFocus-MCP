@@ -145,14 +145,22 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       ? augmentTaskSelect(params.select)
       : effectiveOp === 'get' ? params.select : undefined;
 
+    // Step 3b: Similar queries default to limit 20 if no explicit limit.
+    const hasSimilar = containsSimilar(params.where);
+    const effectiveLimit = params.limit ?? (hasSimilar ? 20 : undefined);
+
+    // Step 3c: For similar queries, don't pass sort:'similarity' to the pipeline —
+    // it's a virtual column computed post-pipeline. Other sorts pass through.
+    const pipelineSort = params.sort?.by === 'similarity' ? undefined : params.sort;
+
     // Step 4: Delegate full pipeline (SetIR → EventPlan → execute) to orchestrator.
     const orchResult = await executeQueryFromAst({
       predicate,
       entity,
       op: effectiveOp,
       select: expandedSelect,
-      sort: params.sort,
-      limit: params.limit,
+      sort: pipelineSort,
+      limit: effectiveLimit,
     });
 
     // op:'count' produces a numeric result from the RowCount EventPlan node.
@@ -177,17 +185,32 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       return { success: true, exists: totalCount > 0 };
     }
 
-    // Confidence enrichment: if rows carry a 'distance' column from SemanticSearch,
-    // compute confidence and strip the internal distance field.
-    if (rows.length > 0 && 'distance' in rows[0]) {
-      for (const row of rows) {
-        row.confidence = distanceToConfidence(row.distance as number);
+    // Similarity enrichment: compute similarity from distance BEFORE selectFields
+    // strips columns, then inject into final output AFTER selectFields.
+    const hasSimilarDistance = rows.length > 0 && 'distance' in rows[0];
+    let similarities: number[] | null = null;
+    if (hasSimilarDistance) {
+      similarities = rows.map(row => {
+        const sim = distanceToSimilarity(row.distance as number);
         delete row.distance;
+        return sim;
+      });
+    }
+
+    // Threshold filter: remove rows below the minimum similarity threshold.
+    let filteredRows = rows;
+    let filteredSimilarities = similarities;
+    if (similarities) {
+      const threshold = extractSimilarThreshold(params.where);
+      if (threshold !== undefined) {
+        const keep: boolean[] = similarities.map(s => s >= threshold);
+        filteredRows = rows.filter((_, i) => keep[i]);
+        filteredSimilarities = similarities.filter((_, i) => keep[i]);
       }
     }
 
     // 'get': return items
-    let items = params.select ? selectFields(rows, params.select) : rows;
+    let items = params.select ? selectFields(filteredRows, params.select) : filteredRows;
 
     // For tasks, inject mandatory minimum fields (id, flagged, taskStatus)
     // into every row regardless of what the user selected.
@@ -195,7 +218,20 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       items = injectMandatoryTaskFields(items);
     }
 
-    return { success: true, items, count: totalCount };
+    // Inject similarity AFTER field selection — always visible for similar queries.
+    if (filteredSimilarities) {
+      for (let i = 0; i < items.length; i++) {
+        items[i].similarity = filteredSimilarities[i];
+      }
+    }
+
+    // Post-pipeline sort by similarity if requested.
+    if (params.sort?.by === 'similarity' && filteredSimilarities) {
+      const dir = params.sort.direction === 'asc' ? 1 : -1;
+      items.sort((a, b) => dir * ((a.similarity as number) - (b.similarity as number)));
+    }
+
+    return { success: true, items, count: items.length };
   } catch (error) {
     const msg = error instanceof Error ? error.message : 'Unknown error occurred';
     logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: msg });
@@ -203,15 +239,57 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
   }
 }
 
-// ── Confidence computation ──────────────────────────────────────────────
+// ── Similarity computation ──────────────────────────────────────────────
 
 /**
- * Convert L2 distance to a 0-100 confidence percentage.
+ * Convert L2 distance to a 0-100 similarity percentage.
  * Matches the formula from the former standalone semantic_search tool.
  */
-function distanceToConfidence(distance: number): number {
-  const conf = 100 * Math.exp(-distance * distance);
-  return Math.round(conf * 10) / 10;
+function distanceToSimilarity(distance: number): number {
+  const sim = 100 * Math.exp(-distance * distance);
+  return Math.round(sim * 10) / 10;
+}
+
+// ── Similar predicate helpers ───────────────────────────────────────────
+
+/**
+ * Walk compact-syntax WHERE clause to detect any `{similar: [...]}` term.
+ */
+function containsSimilar(where: unknown): boolean {
+  if (where == null || typeof where !== 'object') return false;
+  if (Array.isArray(where)) return where.some(containsSimilar);
+  const obj = where as Record<string, unknown>;
+  if ('similar' in obj) return true;
+  for (const val of Object.values(obj)) {
+    if (containsSimilar(val)) return true;
+  }
+  return false;
+}
+
+/**
+ * Extract the minimum similarity threshold from all `{similar: [..., N]}` terms.
+ * Returns undefined if no threshold is specified.
+ */
+function extractSimilarThreshold(where: unknown): number | undefined {
+  const thresholds: number[] = [];
+
+  function walk(node: unknown): void {
+    if (node == null || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    const obj = node as Record<string, unknown>;
+    if ('similar' in obj && Array.isArray(obj.similar)) {
+      const args = obj.similar as unknown[];
+      if (args.length > 1 && typeof args[1] === 'number') {
+        thresholds.push(args[1]);
+      }
+    }
+    for (const val of Object.values(obj)) {
+      if (typeof val === 'object' && val !== null) walk(val);
+    }
+  }
+
+  walk(where);
+  return thresholds.length > 0 ? Math.min(...thresholds) : undefined;
 }
 
 // ── Field Selection ─────────────────────────────────────────────────────────

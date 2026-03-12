@@ -253,6 +253,7 @@ export interface SimilarItemsNode {
   kind: 'SimilarItems';
   entity: EntityType;
   query: string;
+  threshold?: number;
 }
 
 export type SetIrNode =

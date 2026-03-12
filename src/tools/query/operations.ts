@@ -56,7 +56,7 @@ export const operations = {
   notIn:        { minArgs: 2, maxArgs: 2,  description: 'Value not in array ({notIn: [valueExpr, [array]]}) — desugars to not(in(...))' },
 
   // Semantic similarity
-  similar:      { minArgs: 1, maxArgs: 1,  description: 'Semantic similarity search ({similar: ["query"]})' },
+  similar:      { minArgs: 1, maxArgs: 2,  description: 'Semantic similarity search ({similar: ["query"]} or {similar: ["query", threshold]})' },
 } as const satisfies Record<string, OpMeta>;
 
 /** All operation names as a literal union type. */

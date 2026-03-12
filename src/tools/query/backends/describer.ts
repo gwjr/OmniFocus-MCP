@@ -131,6 +131,9 @@ function describeCompactOp(op: string, args: unknown[]): string | null {
     case 'count':
       return `count(${d(args[0])})`;
     case 'similar':
+      if (args.length > 1 && typeof args[1] === 'number') {
+        return `similar to ${d(args[0])} (≥${args[1]}% similarity)`;
+      }
       return `similar to ${d(args[0])}`;
     default:
       return `${op}(${args.map(a => d(a)).join(', ')})`;

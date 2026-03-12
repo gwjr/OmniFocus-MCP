@@ -160,6 +160,14 @@ export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
               `${path}.similar[0]`, node
             );
           }
+          if (loweredArgs.length > 1) {
+            if (typeof loweredArgs[1] !== 'number' || loweredArgs[1] < 0 || loweredArgs[1] > 100) {
+              throw new LowerError(
+                'similar threshold must be a number 0-100 (e.g. {similar: ["query", 60]})',
+                `${path}.similar[1]`, node
+              );
+            }
+          }
         }
 
         return { op: opName as FoldOp, args: loweredArgs };

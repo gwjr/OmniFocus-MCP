@@ -798,38 +798,45 @@ function tagNameShortcut(plan: SetIrNode): SetIrNode {
  * similar ops removed. Extracts from the top level and from direct children
  * of and().
  */
-function extractAllSimilar(pred: LoweredExpr): { queries: string[]; remaining: LoweredExpr | null } | null {
+interface SimilarTerm {
+  query: string;
+  threshold?: number;
+}
+
+function extractAllSimilar(pred: LoweredExpr): { terms: SimilarTerm[]; remaining: LoweredExpr | null } | null {
   if (pred === null || pred === true || typeof pred !== 'object' || Array.isArray(pred)) return null;
   const obj = pred as Record<string, unknown>;
   if (!('op' in obj)) return null;
 
   const { op, args } = obj as { op: string; args: LoweredExpr[] };
 
-  // Direct similar: {op: 'similar', args: ["query"]}
-  if (op === 'similar' && args.length === 1 && typeof args[0] === 'string') {
-    return { queries: [args[0]], remaining: null };
+  // Direct similar: {op: 'similar', args: ["query"]} or {op: 'similar', args: ["query", 60]}
+  if (op === 'similar' && args.length >= 1 && typeof args[0] === 'string') {
+    const threshold = typeof args[1] === 'number' ? args[1] : undefined;
+    return { terms: [{ query: args[0], threshold }], remaining: null };
   }
 
   // Inside and(): extract ALL similar terms from conjuncts
   if (op === 'and') {
-    const queries: string[] = [];
+    const terms: SimilarTerm[] = [];
     const rest: LoweredExpr[] = [];
     for (const inner of args) {
       if (typeof inner === 'object' && inner !== null && !Array.isArray(inner) &&
           'op' in (inner as Record<string, unknown>)) {
         const innerObj = inner as { op: string; args: LoweredExpr[] };
-        if (innerObj.op === 'similar' && innerObj.args.length === 1 && typeof innerObj.args[0] === 'string') {
-          queries.push(innerObj.args[0]);
+        if (innerObj.op === 'similar' && innerObj.args.length >= 1 && typeof innerObj.args[0] === 'string') {
+          const threshold = typeof innerObj.args[1] === 'number' ? innerObj.args[1] : undefined;
+          terms.push({ query: innerObj.args[0], threshold });
           continue;
         }
       }
       rest.push(inner);
     }
-    if (queries.length === 0) return null;
+    if (terms.length === 0) return null;
     const remaining = rest.length === 0 ? null
       : rest.length === 1 ? rest[0]
       : { op: 'and', args: rest } as LoweredExpr;
-    return { queries, remaining };
+    return { terms, remaining };
   }
 
   return null;
@@ -865,16 +872,23 @@ const SIMILAR_ENTITIES = new Set<string>(['tasks', 'projects']);
 function similarShortcut(plan: SetIrNode): SetIrNode {
   return walkSetIr(plan, (node) => {
     if (node.kind !== 'Filter') return node;
-    if (!SIMILAR_ENTITIES.has(node.entity)) return node;
 
     const extracted = extractAllSimilar(node.predicate);
     if (!extracted) return node;
 
+    // Unsupported entity — throw a clear user-facing error
+    if (!SIMILAR_ENTITIES.has(node.entity)) {
+      throw new Error(
+        `Semantic search (similar) is not supported for ${node.entity}. ` +
+        `Only tasks and projects have a semantic index.`
+      );
+    }
+
     const entity = node.entity;
 
     // Build SimilarItems nodes for each query
-    const similarNodes: SetIrNode[] = extracted.queries.map(
-      q => ({ kind: 'SimilarItems' as const, entity, query: q }),
+    const similarNodes: SetIrNode[] = extracted.terms.map(
+      t => ({ kind: 'SimilarItems' as const, entity, query: t.query, ...(t.threshold !== undefined ? { threshold: t.threshold } : {}) }),
     );
 
     if (extracted.remaining === null) {

@@ -2,7 +2,8 @@
  * Tests for the `similar` predicate operator.
  *
  * Covers: operations registry, lower validation, describer output,
- * nodeEval safety throw, SetIR optimizer rewrite, and EventPlan lowering.
+ * nodeEval safety throw, SetIR optimizer rewrite, EventPlan lowering,
+ * threshold support, and similarity enrichment.
  *
  * Type-safety (exhaustive registry entries, cost model completeness) is
  * enforced at compile time via mapped types — no runtime tests needed.
@@ -23,10 +24,10 @@ import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
 // ── Layer 1: Operations + Lower + Describer ─────────────────────────────
 
 describe('similar — operations registry', () => {
-  it('similar is registered as a unary op', () => {
+  it('similar is registered with minArgs 1, maxArgs 2', () => {
     assert.ok('similar' in operations);
     assert.equal(operations.similar.minArgs, 1);
-    assert.equal(operations.similar.maxArgs, 1);
+    assert.equal(operations.similar.maxArgs, 2);
   });
 });
 
@@ -44,6 +45,35 @@ describe('similar — lower', () => {
   it('rejects missing argument', () => {
     assert.throws(() => lowerExpr({ similar: [] }));
   });
+
+  it('accepts threshold as second arg (number 0-100)', () => {
+    const ast = lowerExpr({ similar: ['kitchen', 60] });
+    assert.ok(ast);
+    assert.equal((ast as any).op, 'similar');
+    assert.deepEqual((ast as any).args, ['kitchen', 60]);
+  });
+
+  it('accepts threshold of 0', () => {
+    const ast = lowerExpr({ similar: ['kitchen', 0] });
+    assert.deepEqual((ast as any).args, ['kitchen', 0]);
+  });
+
+  it('accepts threshold of 100', () => {
+    const ast = lowerExpr({ similar: ['kitchen', 100] });
+    assert.deepEqual((ast as any).args, ['kitchen', 100]);
+  });
+
+  it('rejects negative threshold', () => {
+    assert.throws(() => lowerExpr({ similar: ['kitchen', -1] }), /threshold must be a number 0-100/);
+  });
+
+  it('rejects threshold > 100', () => {
+    assert.throws(() => lowerExpr({ similar: ['kitchen', 101] }), /threshold must be a number 0-100/);
+  });
+
+  it('rejects non-numeric threshold', () => {
+    assert.throws(() => lowerExpr({ similar: ['kitchen', 'high'] }), /threshold must be a number 0-100/);
+  });
 });
 
 describe('similar — describer', () => {
@@ -51,6 +81,12 @@ describe('similar — describer', () => {
     const result = describeExpr({ similar: ['legal brief'] });
     assert.ok(result.includes('similar to'));
     assert.ok(result.includes('legal brief'));
+  });
+
+  it('describes threshold as "≥N% similarity"', () => {
+    const result = describeExpr({ similar: ['kitchen', 60] });
+    assert.ok(result.includes('similar to'), `expected 'similar to', got: ${result}`);
+    assert.ok(result.includes('≥60%'), `expected '≥60%', got: ${result}`);
   });
 });
 
@@ -122,6 +158,24 @@ describe('similar — SetIR optimizer', () => {
       }
     }
   });
+
+  it('threshold propagates to SimilarItems node', () => {
+    const ast = lowerExpr({ similar: ['kitchen', 50] });
+    const setIr = lowerToSetIr({ predicate: ast, entity: 'tasks', op: 'get' });
+    const optimized = optimizeSetIr(setIr);
+    const similarNode = findNode(optimized, 'SimilarItems');
+    assert.ok(similarNode, 'Expected SimilarItems node');
+    assert.equal(similarNode.threshold, 50, 'Expected threshold 50');
+  });
+
+  it('no threshold → SimilarItems.threshold is undefined', () => {
+    const ast = lowerExpr({ similar: ['kitchen'] });
+    const setIr = lowerToSetIr({ predicate: ast, entity: 'tasks', op: 'get' });
+    const optimized = optimizeSetIr(setIr);
+    const similarNode = findNode(optimized, 'SimilarItems');
+    assert.ok(similarNode, 'Expected SimilarItems node');
+    assert.equal(similarNode.threshold, undefined);
+  });
 });
 
 // ── Layer 3: EventPlan — Embed + SemanticSearch ─────────────────────────
@@ -159,24 +213,22 @@ describe('similar — EventPlan lowering', () => {
 // ── Layer 4: queryOmnifocus — entity validation ─────────────────────────
 
 describe('similar — entity validation (via similarShortcut)', () => {
-  it('unsupported entity (folders) fails at eval, not at gate', async () => {
-    // similar on folders is not extracted by similarShortcut — it remains
-    // in the Filter predicate and NodeEval throws its safety message.
+  it('unsupported entity (folders) gives clear error message', async () => {
     const result = await queryOmnifocus({
       entity: 'folders',
       where: { similar: ['test'] },
     });
     assert.equal(result.success, false);
-    assert.ok(result.error?.includes('planner'), `expected planner error, got: ${result.error}`);
+    assert.ok(result.error?.includes('not supported for folders'), `expected clear entity error, got: ${result.error}`);
   });
 
-  it('unsupported entity (tags) fails at eval', async () => {
+  it('unsupported entity (tags) gives clear error message', async () => {
     const result = await queryOmnifocus({
       entity: 'tags',
       where: { similar: ['test'] },
     });
     assert.equal(result.success, false);
-    assert.ok(result.error?.includes('planner'), `expected planner error, got: ${result.error}`);
+    assert.ok(result.error?.includes('not supported for tags'), `expected clear entity error, got: ${result.error}`);
   });
 
   it('accepts tasks entity (no entity error)', async () => {
@@ -185,7 +237,7 @@ describe('similar — entity validation (via similarShortcut)', () => {
       where: { similar: ['test'] },
     });
     if (!result.success) {
-      assert.ok(!result.error?.includes('planner'), 'tasks should have similar extracted');
+      assert.ok(!result.error?.includes('not supported'), 'tasks should have similar extracted');
     }
   });
 
@@ -200,45 +252,45 @@ describe('similar — entity validation (via similarShortcut)', () => {
   });
 });
 
-// ── Confidence conversion ────────────────────────────────────────────────
+// ── Similarity conversion ────────────────────────────────────────────────
 
-describe('similar — distanceToConfidence', () => {
+describe('similar — distanceToSimilarity', () => {
   // Mirror the formula: 100 * exp(-d²), rounded to 1 decimal
-  function distanceToConfidence(d: number): number {
+  function distanceToSimilarity(d: number): number {
     return Math.round(100 * Math.exp(-d * d) * 10) / 10;
   }
 
-  it('distance 0 → 100% confidence', () => {
-    assert.equal(distanceToConfidence(0), 100);
+  it('distance 0 → 100% similarity', () => {
+    assert.equal(distanceToSimilarity(0), 100);
   });
 
-  it('distance 0.5 → ~77-78% confidence', () => {
-    const c = distanceToConfidence(0.5);
-    assert.ok(c > 75 && c < 80, `expected ~78, got ${c}`);
+  it('distance 0.5 → ~77-78% similarity', () => {
+    const s = distanceToSimilarity(0.5);
+    assert.ok(s > 75 && s < 80, `expected ~78, got ${s}`);
   });
 
-  it('distance 0.7 → ~61% confidence', () => {
-    const c = distanceToConfidence(0.7);
-    assert.ok(c > 58 && c < 65, `expected ~61, got ${c}`);
+  it('distance 0.7 → ~61% similarity', () => {
+    const s = distanceToSimilarity(0.7);
+    assert.ok(s > 58 && s < 65, `expected ~61, got ${s}`);
   });
 
-  it('distance 1.0 → ~36.8% confidence', () => {
-    const c = distanceToConfidence(1.0);
-    assert.ok(c > 34 && c < 40, `expected ~36.8, got ${c}`);
+  it('distance 1.0 → ~36.8% similarity', () => {
+    const s = distanceToSimilarity(1.0);
+    assert.ok(s > 34 && s < 40, `expected ~36.8, got ${s}`);
   });
 
-  it('distance 2.0 → near 0% confidence', () => {
-    const c = distanceToConfidence(2.0);
-    assert.ok(c < 5, `expected near 0, got ${c}`);
+  it('distance 2.0 → near 0% similarity', () => {
+    const s = distanceToSimilarity(2.0);
+    assert.ok(s < 5, `expected near 0, got ${s}`);
   });
 
   it('monotonically decreasing', () => {
     const distances = [0, 0.1, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0];
-    const confidences = distances.map(distanceToConfidence);
-    for (let i = 1; i < confidences.length; i++) {
+    const similarities = distances.map(distanceToSimilarity);
+    for (let i = 1; i < similarities.length; i++) {
       assert.ok(
-        confidences[i] <= confidences[i - 1],
-        `confidence should decrease: d=${distances[i]} (${confidences[i]}) should be <= d=${distances[i-1]} (${confidences[i-1]})`,
+        similarities[i] <= similarities[i - 1],
+        `similarity should decrease: d=${distances[i]} (${similarities[i]}) should be <= d=${distances[i-1]} (${similarities[i-1]})`,
       );
     }
   });
