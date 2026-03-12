@@ -67,7 +67,7 @@ register("show_forecast",
   showForecastTool.handler);
 
 register("semantic_search",
-  "Search OmniFocus tasks and projects by meaning using natural language. Uses a pre-built semantic index (run the indexer first). Best for fuzzy/conceptual searches where exact keyword matching would miss relevant items.",
+  "Search OmniFocus tasks and projects by meaning using a semantic index. Use concrete, specific terms — e.g. 'painting photography framing' not 'creative hobbies'. Use entity='tasks' or entity='projects' to reduce noise. Not for date/status filtering (use the query tool for that).",
   semanticSearchTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   semanticSearchTool.handler);

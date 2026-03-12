@@ -2,10 +2,10 @@ import { z } from 'zod';
 import { semanticSearch } from '../primitives/semanticSearch.js';
 
 export const schema = z.object({
-  query: z.string().describe('Natural language search query'),
-  limit: z.number().optional().describe('Max results to return (default: 10)'),
+  query: z.string().describe('Concrete search terms — use specific nouns/verbs like "draft legal brief" not abstract concepts like "things to do". More specific = better results.'),
+  limit: z.number().optional().describe('Max results (default: 5)'),
   entity: z.enum(['tasks', 'projects', 'all']).optional()
-    .describe('Restrict to tasks or projects (default: all)'),
+    .describe('Filter by entity type. Use "tasks" for actionable items, "projects" for containers. Default: all.'),
   includeCompleted: z.boolean().optional()
     .describe('Include completed/dropped items (default: false)'),
 });

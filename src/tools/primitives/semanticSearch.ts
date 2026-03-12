@@ -39,16 +39,22 @@ interface FormattedResult {
 /**
  * Convert L2 distance to a 0-100 confidence percentage.
  * Lower distance = higher confidence. Empirically, MiniLM L2 distances:
- *   < 0.5 = very relevant, 0.5-1.0 = relevant, 1.0-1.5 = marginal, > 1.5 = poor
+ *   < 0.4 = very relevant, 0.4-0.7 = relevant, 0.7-0.9 = marginal, > 0.9 = noise
+ *
+ * Uses a steeper exponential decay so that the 60-80% range better
+ * separates signal from noise (the old 1/(1+d²) curve was too flat).
  */
 function distanceToConfidence(distance: number): number {
-  // Sigmoid-like mapping: d=0 → 100%, d=1.0 → ~50%, d=2.0 → ~12%
-  const conf = 100 / (1 + distance * distance);
+  // Exponential decay: d=0 → 100%, d=0.5 → 78%, d=0.7 → 61%, d=0.9 → 44%, d=1.2 → 24%
+  const conf = 100 * Math.exp(-distance * distance);
   return Math.round(conf * 10) / 10;
 }
 
+/** Minimum confidence below which results are noise. */
+const MIN_CONFIDENCE = 45;
+
 export async function semanticSearch(params: SemanticSearchParams): Promise<SemanticSearchResult> {
-  const { query, limit = 10, entity = 'all', includeCompleted = false } = params;
+  const { query, limit = 5, entity = 'all', includeCompleted = false } = params;
 
   // Check index exists
   if (!isIndexReady()) {
@@ -63,23 +69,30 @@ export async function semanticSearch(params: SemanticSearchParams): Promise<Sema
     const queryVec = await embedText(query);
     const queryHex = embeddingToHex(queryVec);
 
-    // 2. KNN search
-    const raw = knnSearch(queryHex, limit, entity, includeCompleted);
+    // 2. KNN search — over-fetch to allow post-filtering
+    const raw = knnSearch(queryHex, limit * 3, entity, includeCompleted);
 
-    // 3. Format results
-    const results: FormattedResult[] = raw.map((r: SearchResult) => ({
-      id: r.id,
-      entity: r.entity,
-      name: r.name,
-      projectName: r.projectName || null,
-      tags: r.tags || null,
-      note: r.note ? (r.note.length > 200 ? r.note.slice(0, 200) + '…' : r.note) : null,
-      flagged: r.flagged === 1,
-      dueDate: r.dueDate || null,
-      deferDate: r.deferDate || null,
-      confidence: distanceToConfidence(r.distance),
-      distance: Math.round(r.distance * 1000) / 1000,
-    }));
+    // 3. Format results, filtering out empty names and low-confidence noise
+    const results: FormattedResult[] = [];
+    for (const r of raw) {
+      if (!r.name || !r.name.trim()) continue; // skip empty-name items
+      const confidence = distanceToConfidence(r.distance);
+      if (confidence < MIN_CONFIDENCE) continue; // below noise floor
+      results.push({
+        id: r.id,
+        entity: r.entity,
+        name: r.name,
+        projectName: r.projectName || null,
+        tags: r.tags || null,
+        note: r.note ? (r.note.length > 200 ? r.note.slice(0, 200) + '…' : r.note) : null,
+        flagged: r.flagged === 1,
+        dueDate: r.dueDate || null,
+        deferDate: r.deferDate || null,
+        confidence,
+        distance: Math.round(r.distance * 1000) / 1000,
+      });
+      if (results.length >= limit) break;
+    }
 
     return { success: true, results, count: results.length };
   } catch (err) {
