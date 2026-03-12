@@ -437,6 +437,16 @@ function execRowCount(
   return (resolve(ctx, node.source) as Row[]).length;
 }
 
+/**
+ * Convert L2 distance to a 0-100 similarity percentage.
+ * Applied at the SemanticSearch boundary so 'similarity' is a real column
+ * that flows through the pipeline (Sort, Pick, HashJoin, etc.).
+ */
+function distanceToSimilarity(distance: number): number {
+  const sim = 100 * Math.exp(-distance * distance);
+  return Math.round(sim * 10) / 10;
+}
+
 function execSemanticSearch(
   ctx: ExecCtx,
   node: Extract<EventNode, { kind: 'SemanticSearch' }>,
@@ -448,7 +458,7 @@ function execSemanticSearch(
   const hex = embeddingToHex(floats);
   const entityFilter = (node.entity === 'tasks' || node.entity === 'projects') ? node.entity : 'all';
   const results = knnSearch(hex, 200, entityFilter, true);
-  return results.map(r => ({ id: r.id, distance: r.distance }));
+  return results.map(r => ({ id: r.id, similarity: distanceToSimilarity(r.distance) }));
 }
 
 function execSetOp(

@@ -600,6 +600,9 @@ export function optimizeSetIr(plan: SetIrNode): SetIrNode {
   result = applyMergeScanPass(result);
   result = tagNameShortcut(result);
   result = widenScansToUnion(result);
+  // Annotate Intersect nodes whose right subtree contains SimilarItems
+  // so that lowerSetIrToEventPlan emits a HashJoin to carry 'similarity' through.
+  result = annotateSimilarityMerge(result);
   return result;
 }
 
@@ -844,6 +847,31 @@ function extractAllSimilar(pred: LoweredExpr): { terms: SimilarTerm[]; remaining
 
 /** Entity types that have a semantic index. */
 const SIMILAR_ENTITIES = new Set<string>(['tasks', 'projects']);
+
+/** Check if a SetIR tree contains a SimilarItems node. */
+function containsSimilarItems(node: SetIrNode): boolean {
+  if (node.kind === 'SimilarItems') return true;
+  let found = false;
+  walkSetIr(node, (n) => { if (n.kind === 'SimilarItems') found = true; return n; });
+  return found;
+}
+
+/**
+ * Post-optimization pass: annotate Intersect nodes whose right subtree
+ * contains SimilarItems with mergeColumns: ['similarity']. This tells
+ * lowerSetIrToEventPlan to emit a HashJoin (not just SemiJoin) so the
+ * similarity column from SemanticSearch survives through the output merge.
+ */
+function annotateSimilarityMerge(plan: SetIrNode): SetIrNode {
+  return walkSetIr(plan, (node) => {
+    if (node.kind !== 'Intersect') return node;
+    if (node.mergeColumns) return node; // already annotated
+    if (containsSimilarItems(node.right)) {
+      return { ...node, mergeColumns: ['similarity'] };
+    }
+    return node;
+  });
+}
 
 /**
  * Optimizer pass: extract `similar` op from Filter predicates and rewrite

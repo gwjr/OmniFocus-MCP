@@ -56,6 +56,8 @@ export interface IntersectNode {
   kind: 'Intersect';
   left: SetIrNode;
   right: SetIrNode;
+  /** Columns to copy from right side into left side rows (via HashJoin). */
+  mergeColumns?: string[];
 }
 
 /**

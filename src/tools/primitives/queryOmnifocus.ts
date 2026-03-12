@@ -149,17 +149,14 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     const hasSimilar = containsSimilar(params.where);
     const effectiveLimit = params.limit ?? (hasSimilar ? 20 : undefined);
 
-    // Step 3c: For similar queries, don't pass sort:'similarity' to the pipeline —
-    // it's a virtual column computed post-pipeline. Other sorts pass through.
-    const pipelineSort = params.sort?.by === 'similarity' ? undefined : params.sort;
-
     // Step 4: Delegate full pipeline (SetIR → EventPlan → execute) to orchestrator.
+    // Similarity is a real column from SemanticSearch — Sort handles it in the IR.
     const orchResult = await executeQueryFromAst({
       predicate,
       entity,
       op: effectiveOp,
       select: expandedSelect,
-      sort: pipelineSort,
+      sort: params.sort,
       limit: effectiveLimit,
     });
 
@@ -185,27 +182,15 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       return { success: true, exists: totalCount > 0 };
     }
 
-    // Similarity enrichment: compute similarity from distance BEFORE selectFields
-    // strips columns, then inject into final output AFTER selectFields.
-    const hasSimilarDistance = rows.length > 0 && 'distance' in rows[0];
-    let similarities: number[] | null = null;
-    if (hasSimilarDistance) {
-      similarities = rows.map(row => {
-        const sim = distanceToSimilarity(row.distance as number);
-        delete row.distance;
-        return sim;
-      });
-    }
-
+    // Similarity is now a real column from the pipeline (computed in
+    // SemanticSearch, carried through via HashJoin on the output Intersect).
     // Threshold filter: remove rows below the minimum similarity threshold.
+    const hasSimilarColumn = rows.length > 0 && 'similarity' in rows[0];
     let filteredRows = rows;
-    let filteredSimilarities = similarities;
-    if (similarities) {
+    if (hasSimilarColumn) {
       const threshold = extractSimilarThreshold(params.where);
       if (threshold !== undefined) {
-        const keep: boolean[] = similarities.map(s => s >= threshold);
-        filteredRows = rows.filter((_, i) => keep[i]);
-        filteredSimilarities = similarities.filter((_, i) => keep[i]);
+        filteredRows = rows.filter(row => (row.similarity as number) >= threshold);
       }
     }
 
@@ -218,17 +203,15 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
       items = injectMandatoryTaskFields(items);
     }
 
-    // Inject similarity AFTER field selection — always visible for similar queries.
-    if (filteredSimilarities) {
-      for (let i = 0; i < items.length; i++) {
-        items[i].similarity = filteredSimilarities[i];
+    // Inject similarity AFTER field selection — always visible for similar queries
+    // regardless of what the user selected.
+    if (hasSimilarColumn) {
+      for (const item of items) {
+        const row = filteredRows[items.indexOf(item)];
+        if (row && 'similarity' in row) {
+          item.similarity = row.similarity;
+        }
       }
-    }
-
-    // Post-pipeline sort by similarity if requested.
-    if (params.sort?.by === 'similarity' && filteredSimilarities) {
-      const dir = params.sort.direction === 'asc' ? 1 : -1;
-      items.sort((a, b) => dir * ((a.similarity as number) - (b.similarity as number)));
     }
 
     return { success: true, items, count: items.length };
@@ -237,17 +220,6 @@ export async function queryOmnifocus(params: QueryOmnifocusParams): Promise<Quer
     logQuery({ where: params.where, entity: params.entity, op: effectiveOp, strategy: 'error', totalMs: Date.now() - t0, resultCount: 0, error: msg });
     return { success: false, error: msg };
   }
-}
-
-// ── Similarity computation ──────────────────────────────────────────────
-
-/**
- * Convert L2 distance to a 0-100 similarity percentage.
- * Matches the formula from the former standalone semantic_search tool.
- */
-function distanceToSimilarity(distance: number): number {
-  const sim = 100 * Math.exp(-distance * distance);
-  return Math.round(sim * 10) / 10;
 }
 
 // ── Similar predicate helpers ───────────────────────────────────────────

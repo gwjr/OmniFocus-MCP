@@ -369,7 +369,24 @@ export function lowerSetIrToEventPlan(root: SetIrNode, outputColumns?: string[])
         const rightRef = lower(node.right);
         // Extract the id column from the right side for use as the SemiJoin id set
         const idsRef = push({ kind: 'ColumnValues', source: rightRef, field: 'id' });
-        return push({ kind: 'SemiJoin', source: leftRef, ids: idsRef });
+        const filteredRef = push({ kind: 'SemiJoin', source: leftRef, ids: idsRef });
+
+        // When mergeColumns is set, enrich the filtered rows with columns
+        // from the right side via HashJoin (e.g. similarity from SimilarItems).
+        if (node.mergeColumns && node.mergeColumns.length > 0) {
+          const fieldMap: Record<string, string> = {};
+          for (const col of node.mergeColumns) fieldMap[col] = col;
+          return push({
+            kind: 'HashJoin',
+            source: filteredRef,
+            lookup: rightRef,
+            sourceKey: 'id',
+            lookupKey: 'id',
+            fieldMap,
+          });
+        }
+
+        return filteredRef;
       }
 
       case 'Union': {
