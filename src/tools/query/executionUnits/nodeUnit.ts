@@ -13,6 +13,7 @@ import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import { compileNodePredicate, type Row } from '../backends/nodeEval.js';
 import { getVarRegistry, type EntityType } from '../variables.js';
+import { type Kind, type NodeKind, dispatchCollectRefs, isNodeKind, dispatchNodeKind3 } from '../eventNodeRegistry.js';
 
 // ── Computed var derivers (mirrored from executor.ts) ───────────────────
 
@@ -67,29 +68,41 @@ function resolve(ctx: ExecCtx, ref: Ref): unknown {
   return val;
 }
 
-// ── Node dispatch ───────────────────────────────────────────────────────
+// ── Node execution registry ─────────────────────────────────────────────
+
+// NodeKind is derived from EVENT_NODE_IR in eventNodeRegistry.ts:
+//   NodeKind = { [K in Kind]: runtime extends 'node' ? K : never }[Kind]
+// Adding a new node-runtime kind to EventNode automatically requires a
+// NODE_EXEC entry here (compile error).
+
+/**
+ * Per-kind narrowed execution registry. Each entry receives its specific
+ * EventNode variant — no local casts needed. Adding a new node-runtime
+ * kind without an entry is a compile error.
+ */
+const NODE_EXEC: { [K in NodeKind]: (node: Extract<EventNode, { kind: K }>, ctx: ExecCtx, ref: Ref) => unknown } = {
+  Zip:          (node, ctx) => execZip(ctx, node),
+  Filter:       (node, ctx, ref) => execFilter(ctx, ref, node),
+  SemiJoin:     (node, ctx) => execSemiJoin(ctx, node),
+  HashJoin:     (node, ctx) => execHashJoin(ctx, node),
+  Sort:         (node, ctx) => execSort(ctx, node),
+  Limit:        (node, ctx) => execLimit(ctx, node),
+  Pick:         (node, ctx) => execPick(ctx, node),
+  Derive:       (node, ctx) => execDerive(ctx, node),
+  ColumnValues: (node, ctx) => execColumnValues(ctx, node),
+  Flatten:      (node, ctx) => execFlatten(ctx, node),
+  Union:        (node, ctx) => execUnion(ctx, node),
+  RowCount:     (node, ctx) => execRowCount(ctx, node),
+  AddSwitch:    (node, ctx, ref) => execAddSwitch(ctx, ref, node),
+  SetOp:        (node, ctx) => execSetOp(ctx, node),
+};
 
 function execNode(ctx: ExecCtx, ref: Ref): unknown {
   const node = ctx.plan.nodes[ref];
-
-  switch (node.kind) {
-    case 'Zip':          return execZip(ctx, node);
-    case 'Filter':       return execFilter(ctx, ref, node);
-    case 'SemiJoin':     return execSemiJoin(ctx, node);
-    case 'HashJoin':     return execHashJoin(ctx, node);
-    case 'Sort':         return execSort(ctx, node);
-    case 'Limit':        return execLimit(ctx, node);
-    case 'Pick':         return execPick(ctx, node);
-    case 'Derive':       return execDerive(ctx, node);
-    case 'ColumnValues': return execColumnValues(ctx, node);
-    case 'Flatten':      return execFlatten(ctx, node);
-    case 'Union':        return execUnion(ctx, node);
-    case 'RowCount':     return execRowCount(ctx, node);
-    case 'AddSwitch':    return execAddSwitch(ctx, ref, node);
-    case 'SetOp':        return execSetOp(ctx, node);
-    default:
-      throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
+  if (!isNodeKind(node.kind)) {
+    throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
   }
+  return dispatchNodeKind3(NODE_EXEC, node as Extract<EventNode, { kind: NodeKind }>, ctx, ref);
 }
 
 // ── Op implementations ──────────────────────────────────────────────────
@@ -591,31 +604,7 @@ function detectFilterLimitFusion(
   return fused;
 }
 
-/** Extract input refs from a node (subset of collectRefs from eventPlanUtils). */
+/** Extract input refs from a node — delegates to IR registry. */
 function collectNodeInputRefs(node: EventNode): Ref[] {
-  switch (node.kind) {
-    case 'Filter':
-    case 'Sort':
-    case 'Limit':
-    case 'Pick':
-    case 'Derive':
-    case 'ColumnValues':
-    case 'Flatten':
-    case 'RowCount':
-    case 'AddSwitch':
-      return [(node as { source: Ref }).source];
-    case 'SemiJoin':
-      return [node.source, node.ids];
-    case 'HashJoin':
-      return [node.source, node.lookup];
-    case 'Union':
-    case 'SetOp':
-      return [(node as { left: Ref }).left, (node as { right: Ref }).right];
-    case 'Zip':
-      return node.columns.map(c => c.ref);
-    case 'ForEach':
-      return [node.source];
-    default:
-      return [];
-  }
+  return dispatchCollectRefs(node);
 }

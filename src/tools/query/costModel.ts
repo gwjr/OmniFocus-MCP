@@ -20,6 +20,7 @@
  */
 
 import type { Runtime, EventNode } from './eventPlan.js';
+import type { Kind } from './eventNodeRegistry.js';
 
 // ── Runtime overhead ────────────────────────────────────────────────────────
 
@@ -36,6 +37,78 @@ export function runtimeCost(runtime: Runtime): number {
   }
 }
 
+// ── Typed cost registries ───────────────────────────────────────────────────
+
+type CostFn = (cardinality: number) => number;
+
+/**
+ * Node-side (in-process) cost per kind. Exhaustive over all Kind —
+ * adding a new kind without a cost entry is a compile error.
+ *
+ * AE-only kinds return 10,000ms (unreachable in correct plans;
+ * intentionally high to surface planner bugs via cost anomalies).
+ */
+const NODE_COST: { [K in Kind]: CostFn } = {
+  // ── Node-side ops ─────────────────────────────────────────────────
+  Filter:       (c) => 0.1 * c,
+  SemiJoin:     (c) => 0.01 * c,
+  HashJoin:     (c) => 0.1 * c,
+  Sort:         (c) => c > 0 ? 0.005 * c * Math.log2(c) : 0,
+  Zip:          (c) => 0.01 * c,
+  ColumnValues: (c) => 0.01 * c,
+  Flatten:      (c) => 0.01 * c,
+  Limit:        () => 0.1,
+  Pick:         (c) => 0.01 * c,
+  Derive:       (c) => 0.05 * c,
+  Union:        (c) => 0.02 * c,
+  RowCount:     () => 0.01,
+  AddSwitch:    (c) => 0.05 * c,
+  SetOp:        (c) => 0.01 * c,
+
+  // ── AE ops should not be assigned to node — penalty costs ─────────
+  Get:          () => 10000,
+  Count:        () => 10000,
+  Set:          () => 10000,
+  Command:      () => 10000,
+  ForEach:      () => 10000,
+};
+
+/**
+ * JXA (Apple Events) cost per kind. Exhaustive over all Kind —
+ * adding a new kind without a cost entry is a compile error.
+ *
+ * Node-side ops that happen to run in JXA context use their
+ * NODE_COST equivalents (they operate on in-memory arrays with no AE overhead).
+ */
+const JXA_COST: { [K in Kind]: CostFn } = {
+  // ── AE reads ──────────────────────────────────────────────────────
+  Get:          () => 160,
+  Count:        () => 110,
+
+  // ── AE writes / commands ──────────────────────────────────────────
+  Set:          () => 150,
+  Command:      () => 200,
+
+  // ── Iteration ─────────────────────────────────────────────────────
+  ForEach:      (c) => 100 + c * 75,
+
+  // ── Node-side ops in JXA context — delegate to NODE_COST ──────────
+  Zip:          (c) => NODE_COST.Zip(c),
+  ColumnValues: (c) => NODE_COST.ColumnValues(c),
+  Flatten:      (c) => NODE_COST.Flatten(c),
+  Filter:       (c) => NODE_COST.Filter(c),
+  SemiJoin:     (c) => NODE_COST.SemiJoin(c),
+  HashJoin:     (c) => NODE_COST.HashJoin(c),
+  Sort:         (c) => NODE_COST.Sort(c),
+  Limit:        (c) => NODE_COST.Limit(c),
+  Pick:         (c) => NODE_COST.Pick(c),
+  Derive:       (c) => NODE_COST.Derive(c),
+  Union:        (c) => NODE_COST.Union(c),
+  RowCount:     (c) => NODE_COST.RowCount(c),
+  AddSwitch:    (c) => NODE_COST.AddSwitch(c),
+  SetOp:        (c) => NODE_COST.SetOp(c),
+};
+
 // ── Per-op costs ────────────────────────────────────────────────────────────
 
 /**
@@ -46,135 +119,7 @@ export function runtimeCost(runtime: Runtime): number {
  * @param cardinality - Estimated number of items the op processes
  */
 export function opCost(runtime: Runtime, kind: EventNode['kind'], cardinality: number): number {
-  // Node-side ops are effectively free
-  if (runtime === 'node') {
-    return nodeOpCost(kind, cardinality);
-  }
-
-  // JXA Apple Events ops
-  switch (kind) {
-    // ── AE reads ──────────────────────────────────────────────────────────
-
-    case 'Get':
-      // Bulk property read: ~140ms base (IPC floor + serialisation).
-      // Chain properties: ~300ms. We use a middle estimate since we
-      // can't distinguish chain vs direct from the node alone.
-      return 160;
-
-    case 'Count':
-      // Collection count: ~100-120ms (IPC floor)
-      return 110;
-
-    // ── AE writes / commands ──────────────────────────────────────────────
-
-    case 'Set':
-      // Single property write: ~IPC floor
-      return 150;
-
-    case 'Command':
-      // Arbitrary command: ~IPC floor + processing
-      return 200;
-
-    // ── Iteration ─────────────────────────────────────────────────────────
-
-    case 'ForEach':
-      // Per-item AE loop: extremely expensive.
-      // Each iteration pays ~75-150ms (amortised .whose() or per-item AE).
-      // Use per-item cost of ~75ms (amortised) for conservative estimate.
-      return 100 + cardinality * 75;
-
-    // ── Node-side ops that happen to run in JXA context ────────────────────
-    // (These shouldn't normally be assigned to jxa, but provide safe
-    //  estimates if they are.)
-
-    case 'Zip':
-    case 'ColumnValues':
-    case 'Flatten':
-    case 'Filter':
-    case 'SemiJoin':
-    case 'HashJoin':
-    case 'Sort':
-    case 'Limit':
-    case 'Pick':
-    case 'Derive':
-    case 'Union':
-    case 'RowCount':
-    case 'AddSwitch':
-    case 'SetOp':
-      // These are data-manipulation ops. If running in JXA, they operate
-      // on in-memory arrays with no AE overhead.
-      return nodeOpCost(kind, cardinality);
-  }
-}
-
-/**
- * Cost of node-side (in-process) operations.
- * These operate on in-memory arrays with no IPC overhead.
- */
-function nodeOpCost(kind: EventNode['kind'], cardinality: number): number {
-  switch (kind) {
-    case 'Filter':
-      // Predicate evaluation per row: ~0.1ms
-      return 0.1 * cardinality;
-
-    case 'SemiJoin':
-      // Set lookup per row: ~0.01ms (hash set membership)
-      return 0.01 * cardinality;
-
-    case 'HashJoin':
-      // Build hash table + probe: ~0.1ms per row
-      return 0.1 * cardinality;
-
-    case 'Sort':
-      // JS Array.sort: ~0.005ms * n * log(n)
-      return cardinality > 0 ? 0.005 * cardinality * Math.log2(cardinality) : 0;
-
-    case 'Zip':
-      // Interleave columns: ~0.01ms per row
-      return 0.01 * cardinality;
-
-    case 'ColumnValues':
-      // Extract column: ~0.01ms per row
-      return 0.01 * cardinality;
-
-    case 'Flatten':
-      // Flatten arrays: ~0.01ms per row
-      return 0.01 * cardinality;
-
-    case 'Limit':
-      // Slice: negligible
-      return 0.1;
-
-    case 'Pick':
-      // Field projection: ~0.01ms per row
-      return 0.01 * cardinality;
-
-    case 'Derive':
-      // Computed field derivation: ~0.05ms per row (may involve date math etc.)
-      return 0.05 * cardinality;
-
-    case 'Union':
-      // Concat + dedup by id: ~0.02ms per row
-      return 0.02 * cardinality;
-
-    case 'RowCount':
-      // Array length: negligible
-      return 0.01;
-
-    case 'AddSwitch':
-      // Predicate evaluation + column assignment per row: ~0.05ms
-      return 0.05 * cardinality;
-
-    case 'SetOp':
-      // Set intersection/subtraction: ~0.01ms per element
-      return 0.01 * cardinality;
-
-    // AE ops should not be assigned to node, but return safe high estimates
-    case 'Get':
-    case 'Count':
-    case 'Set':
-    case 'Command':
-    case 'ForEach':
-      return 10000;
-  }
+  return runtime === 'node'
+    ? NODE_COST[kind](cardinality)
+    : JXA_COST[kind](cardinality);
 }
