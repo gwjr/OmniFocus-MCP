@@ -6,6 +6,12 @@
  */
 
 import { type EntityType, isArrayVar } from './variables.js';
+import { type RawOp } from './operations.js';
+
+// ── FoldOp: all ops that reach foldExpr ──────────────────────────────────
+// operations.ts ops minus desugared ones (notIn), plus synthetic ops (offset).
+
+export type FoldOp = Exclude<RawOp, 'notIn'> | 'offset';
 
 // ── Typed AST Nodes ─────────────────────────────────────────────────────
 
@@ -16,65 +22,50 @@ export type LoweredExpr =
   | null
   | { var: string }
   | { type: 'date'; value: string }
-  | { op: string; args: LoweredExpr[] }
+  | { op: FoldOp; args: LoweredExpr[] }
   | LoweredExpr[];
 
 // ── Backend Interface ───────────────────────────────────────────────────
 
-export interface ExprBackend<T> {
-  // Leaves
+/** Leaf-node handlers (not operations). */
+export interface LeafHandlers<T> {
   literal(value: string | number | boolean | null): T;
   variable(name: string, entity: EntityType): T;
   dateLiteral(isoDate: string): T;
   arrayLiteral(elements: T[]): T;
-
-  // Logical
-  and(args: T[]): T;
-  or(args: T[]): T;
-  not(arg: T): T;
-
-  // Comparison (6 ops grouped)
-  comparison(op: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte', left: T, right: T): T;
-
-  // Range
-  between(value: T, low: T, high: T): T;
-
-  // Set membership
-  inArray(value: T, array: T): T;
-
-  // String/array ops
-  contains(haystack: T, needle: T, haystackIsArray: boolean): T;
-  startsWith(str: T, prefix: T): T;
-  endsWith(str: T, suffix: T): T;
-  matches(str: T, pattern: string): T;
-
-  // Date arithmetic
-  offset(date: T, days: number): T;
-
-  // Array functions
-  count(arg: T): T;
-
-  // Null checks
-  isNull(arg: T): T;
-  isNotNull(arg: T): T;
-
-  // Structural scoping
-  container(
-    type: 'project' | 'folder' | 'tag',
-    subExpr: LoweredExpr,
-    fromEntity: EntityType,
-    toEntity: EntityType,
-    fold: (node: LoweredExpr, entity: EntityType) => T
-  ): T;
-
-  // Reverse containment (e.g. projects containing tasks where ...)
-  containing(
-    childEntity: EntityType,
-    subExpr: LoweredExpr,
-    fromEntity: EntityType,
-    fold: (node: LoweredExpr, entity: EntityType) => T
-  ): T;
 }
+
+/** Per-op typed registry: each FoldOp maps to its handler signature. */
+export type OpSpec<T> = {
+  [K in FoldOp]:
+    K extends 'and' | 'or'
+      ? (args: T[]) => T :
+    K extends 'not' | 'count' | 'isNull' | 'isNotNull'
+      ? (arg: T) => T :
+    K extends 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte'
+         | 'in' | 'startsWith' | 'endsWith'
+      ? (left: T, right: T) => T :
+    K extends 'between'
+      ? (value: T, low: T, high: T) => T :
+    K extends 'contains'
+      ? (haystack: T, needle: T, haystackIsArray: boolean) => T :
+    K extends 'matches'
+      ? (str: T, pattern: string) => T :
+    K extends 'offset'
+      ? (date: T, days: number) => T :
+    K extends 'container'
+      ? (type: 'project'|'folder'|'tag', subExpr: LoweredExpr,
+         fromEntity: EntityType, toEntity: EntityType,
+         fold: (node: LoweredExpr, entity: EntityType) => T) => T :
+    K extends 'containing'
+      ? (childEntity: EntityType, subExpr: LoweredExpr,
+         fromEntity: EntityType,
+         fold: (node: LoweredExpr, entity: EntityType) => T) => T :
+    never;
+};
+
+/** Backend = leaf handlers + per-op handlers. */
+export type ExprBackend<T> = LeafHandlers<T> & OpSpec<T>;
 
 // ── Fold ────────────────────────────────────────────────────────────────
 
@@ -109,79 +100,51 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
 
   // Operation node
   if ('op' in obj) {
-    const opNode = obj as { op: string; args: LoweredExpr[] };
+    const opNode = obj as { op: FoldOp; args: LoweredExpr[] };
     const { op, args } = opNode;
 
     // Helper to fold child nodes
     const f = (n: LoweredExpr) => foldExpr(n, backend, entity);
 
     switch (op) {
-      case 'and':
-        return backend.and(args.map(f));
+      // ── Variadic ──
+      case 'and': case 'or':
+        return backend[op](args.map(f));
 
-      case 'or':
-        return backend.or(args.map(f));
+      // ── Unary ──
+      case 'not': case 'count': case 'isNull': case 'isNotNull':
+        return backend[op](f(args[0]));
 
-      case 'not':
-        return backend.not(f(args[0]));
+      // ── Binary (fold both) ──
+      case 'eq': case 'neq': case 'gt': case 'gte': case 'lt': case 'lte':
+      case 'in': case 'startsWith': case 'endsWith':
+        return backend[op](f(args[0]), f(args[1]));
 
-      case 'eq':
-      case 'neq':
-      case 'gt':
-      case 'gte':
-      case 'lt':
-      case 'lte':
-        return backend.comparison(op, f(args[0]), f(args[1]));
-
+      // ── Ternary ──
       case 'between':
         return backend.between(f(args[0]), f(args[1]), f(args[2]));
 
-      case 'in':
-        return backend.inArray(f(args[0]), f(args[1]));
-
+      // ── Special arg prep ──
       case 'contains': {
         const haystackIsArray = isArrayVarNode(args[0], entity);
         return backend.contains(f(args[0]), f(args[1]), haystackIsArray);
       }
 
-      case 'startsWith':
-        return backend.startsWith(f(args[0]), f(args[1]));
+      case 'matches':
+        return backend.matches(f(args[0]), args[1] as string);
 
-      case 'endsWith':
-        return backend.endsWith(f(args[0]), f(args[1]));
-
-      case 'matches': {
-        // Second arg is the raw pattern string (not folded)
-        const pattern = args[1] as string;
-        return backend.matches(f(args[0]), pattern);
-      }
-
-      case 'offset': {
+      case 'offset':
         return backend.offset(f(args[0]), args[1] as number);
-      }
-
-      case 'count':
-        return backend.count(f(args[0]));
-
-      case 'isNull':
-        return backend.isNull(f(args[0]));
-
-      case 'isNotNull':
-        return backend.isNotNull(f(args[0]));
 
       case 'container': {
-        // args[0] is "project", "folder", or "tag"; args[1] is the sub-expression
         const containerType = args[0] as unknown as 'project' | 'folder' | 'tag';
         const subExpr = args[1];
-
-        // Determine target entity for the container scope
         const toEntityMap: Record<string, EntityType> = {
           project: 'projects',
           folder: 'folders',
           tag: 'tags',
         };
         const toEntity = toEntityMap[containerType];
-
         return backend.container(
           containerType,
           subExpr,
@@ -192,10 +155,8 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
       }
 
       case 'containing': {
-        // args[0] is the child entity name; args[1] is the child predicate
         const childEntity = args[0] as unknown as EntityType;
         const subExpr = args[1];
-
         return backend.containing(
           childEntity,
           subExpr,

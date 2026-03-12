@@ -16,7 +16,7 @@
  */
 
 import { operations, validateArgCount } from './operations.js';
-import type { LoweredExpr } from './fold.js';
+import type { LoweredExpr, FoldOp } from './fold.js';
 
 export class LowerError extends Error {
   constructor(message: string, public path: string, public node: unknown) {
@@ -154,7 +154,7 @@ export function lowerExpr(node: unknown, path = 'where'): LoweredExpr {
           }
         }
 
-        return { op: opName, args: loweredArgs };
+        return { op: opName as FoldOp, args: loweredArgs };
       }
     }
 

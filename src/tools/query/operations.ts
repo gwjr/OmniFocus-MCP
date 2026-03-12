@@ -15,7 +15,7 @@ export interface OpMeta {
   description: string;
 }
 
-export const operations: Record<string, OpMeta> = {
+export const operations = {
   // Logical
   and:          { minArgs: 2, maxArgs: -1, description: 'Logical AND (2+ boolean args)' },
   or:           { minArgs: 2, maxArgs: -1, description: 'Logical OR (2+ boolean args)' },
@@ -54,7 +54,10 @@ export const operations: Record<string, OpMeta> = {
 
   // Set non-membership (sugar for not(in(...)))
   notIn:        { minArgs: 2, maxArgs: 2,  description: 'Value not in array ({notIn: [valueExpr, [array]]}) — desugars to not(in(...))' },
-};
+} as const satisfies Record<string, OpMeta>;
+
+/** All operation names as a literal union type. */
+export type RawOp = keyof typeof operations;
 
 // Note: 'offset' is a special node type (object with named fields), not an array-args op.
 // It's handled directly by the compiler's node dispatch, not through this registry.
@@ -66,7 +69,7 @@ export const ALL_OPS = Object.keys(operations).sort();
  * Returns an error message string if invalid, null if valid.
  */
 export function validateArgCount(op: string, argCount: number, path: string): string | null {
-  const meta = operations[op];
+  const meta = (operations as Record<string, OpMeta>)[op];
   if (!meta) return null; // unknown op handled elsewhere
 
   if (argCount < meta.minArgs) {

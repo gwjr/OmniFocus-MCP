@@ -8,7 +8,7 @@
  * match what agents actually wrote. The backend walks the lowered form.
  */
 
-import { type ExprBackend, type LoweredExpr, foldExpr } from '../fold.js';
+import { type LoweredExpr, foldExpr } from '../fold.js';
 import { type EntityType } from '../variables.js';
 import { lowerExpr } from '../lower.js';
 
@@ -169,7 +169,7 @@ function describeOffset(value: unknown): string {
 
 // ── Describer Backend (for lowered AST fold) ────────────────────────────
 
-class DescriberBackend implements ExprBackend<string> {
+class DescriberBackend {
   literal(value: string | number | boolean | null): string {
     if (value === null) return 'null';
     if (typeof value === 'string') return `"${value}"`;
@@ -202,16 +202,18 @@ class DescriberBackend implements ExprBackend<string> {
     return `NOT (${arg})`;
   }
 
-  comparison(op: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte', left: string, right: string): string {
-    const symbol = { eq: '=', neq: '!=', gt: '>', gte: '>=', lt: '<', lte: '<=' }[op];
-    return `${left} ${symbol} ${right}`;
-  }
+  eq(left: string, right: string): string { return `${left} = ${right}`; }
+  neq(left: string, right: string): string { return `${left} != ${right}`; }
+  gt(left: string, right: string): string { return `${left} > ${right}`; }
+  gte(left: string, right: string): string { return `${left} >= ${right}`; }
+  lt(left: string, right: string): string { return `${left} < ${right}`; }
+  lte(left: string, right: string): string { return `${left} <= ${right}`; }
 
   between(value: string, low: string, high: string): string {
     return `${value} between ${low} and ${high}`;
   }
 
-  inArray(value: string, array: string): string {
+  'in'(value: string, array: string): string {
     return `${value} in ${array}`;
   }
 

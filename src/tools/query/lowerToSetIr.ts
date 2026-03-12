@@ -25,7 +25,7 @@
  * op:'get'    → output columns + Sort/Limit wrappers
  */
 
-import type { LoweredExpr } from './fold.js';
+import type { LoweredExpr, FoldOp } from './fold.js';
 import { getVarRegistry, COMPUTED_VAR_SPECS, type EntityType } from './variables.js';
 import { getChildToParentFk } from './aeProps.js';
 import {
@@ -70,7 +70,7 @@ export function collectVarNames(pred: LoweredExpr): Set<string> {
     const obj = node as Record<string, unknown>;
     if ('var' in obj) { result.add(obj.var as string); return; }
     if ('op' in obj) {
-      const { args } = obj as { op: string; args: LoweredExpr[] };
+      const { args } = obj as { op: FoldOp; args: LoweredExpr[] };
       args.forEach(walk);
     }
   }
@@ -259,7 +259,7 @@ export function lowerPredicate(pred: LoweredExpr, entity: EntityType): SetIrNode
     return scan(entity, []);
   }
 
-  const { op, args } = obj as { op: string; args: LoweredExpr[] };
+  const { op, args } = obj as { op: FoldOp; args: LoweredExpr[] };
 
   switch (op) {
     case 'and': {

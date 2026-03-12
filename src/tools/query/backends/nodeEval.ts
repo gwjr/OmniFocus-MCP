@@ -108,7 +108,7 @@ function safeCompare(a: unknown, b: unknown): number | null {
 
 // ── NodeEval Backend ────────────────────────────────────────────────────
 
-class NodeEvalBackend implements ExprBackend<RowFn> {
+class NodeEvalBackend {
   private stubVars: Set<string>;
 
   constructor(options?: NodeEvalOptions) {
@@ -169,21 +169,28 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
 
   // ── Comparison ──────────────────────────────────────────────────────
 
-  comparison(op: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte', left: RowFn, right: RowFn): RowFn {
-    switch (op) {
-      case 'eq':
-        return (row) => safeEq(left(row), right(row));
-      case 'neq':
-        return (row) => !safeEq(left(row), right(row));
-      case 'gt':
-        return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c > 0; };
-      case 'gte':
-        return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c >= 0; };
-      case 'lt':
-        return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c < 0; };
-      case 'lte':
-        return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c <= 0; };
-    }
+  eq(left: RowFn, right: RowFn): RowFn {
+    return (row) => safeEq(left(row), right(row));
+  }
+
+  neq(left: RowFn, right: RowFn): RowFn {
+    return (row) => !safeEq(left(row), right(row));
+  }
+
+  gt(left: RowFn, right: RowFn): RowFn {
+    return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c > 0; };
+  }
+
+  gte(left: RowFn, right: RowFn): RowFn {
+    return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c >= 0; };
+  }
+
+  lt(left: RowFn, right: RowFn): RowFn {
+    return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c < 0; };
+  }
+
+  lte(left: RowFn, right: RowFn): RowFn {
+    return (row) => { const c = safeCompare(left(row), right(row)); return c !== null && c <= 0; };
   }
 
   // ── Range ───────────────────────────────────────────────────────────
@@ -200,7 +207,7 @@ class NodeEvalBackend implements ExprBackend<RowFn> {
 
   // ── Set Membership ──────────────────────────────────────────────────
 
-  inArray(value: RowFn, array: RowFn): RowFn {
+  'in'(value: RowFn, array: RowFn): RowFn {
     // Pre-normalize static arrays at compile time
     const staticArr = tryStaticArray(array);
     if (staticArr) {

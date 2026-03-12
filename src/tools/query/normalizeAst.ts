@@ -30,7 +30,7 @@
  *    Within tier 3: secondary sort by container type / child entity name.
  */
 
-import type { LoweredExpr } from './fold.js';
+import type { LoweredExpr, FoldOp } from './fold.js';
 
 // ── Public API ────────────────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ export function normalizeAst(node: LoweredExpr): LoweredExpr {
 
   // Op node
   if ('op' in obj) {
-    const { op, args } = obj as { op: string; args: LoweredExpr[] };
+    const { op, args } = obj as { op: FoldOp; args: LoweredExpr[] };
 
     // Recurse first (bottom-up)
     const normArgs = args.map(normalizeAst);
@@ -71,7 +71,7 @@ export function normalizeAst(node: LoweredExpr): LoweredExpr {
 
 // ── Op normalization ──────────────────────────────────────────────────────
 
-function normalizeOp(op: string, args: LoweredExpr[]): LoweredExpr {
+function normalizeOp(op: FoldOp, args: LoweredExpr[]): LoweredExpr {
   switch (op) {
     case 'and': {
       const flat = flattenSameOp(args, 'and');
@@ -179,7 +179,7 @@ function childSortKey(node: LoweredExpr): string {
  * 4 — aggregates (count)
  * 9 — unknown ops (sort last)
  */
-function opTier(op: string): number {
+function opTier(op: FoldOp): number {
   switch (op) {
     case 'eq':
     case 'neq':
@@ -225,7 +225,7 @@ function opTier(op: string): number {
  * - For structural predicates: the container type / child entity string.
  * - For others: empty string.
  */
-function primaryFieldKey(node: { op: string; args: LoweredExpr[] }): string {
+function primaryFieldKey(node: { op: FoldOp; args: LoweredExpr[] }): string {
   const { op, args } = node;
 
   // Boolean connectives: sort by child count (fewer children first)
@@ -251,7 +251,7 @@ function primaryFieldKey(node: { op: string; args: LoweredExpr[] }): string {
  * Primary literal key for within-field sorting.
  * Returns the first string/number/boolean literal found in args.
  */
-function primaryLiteralKey(node: { op: string; args: LoweredExpr[] }): string {
+function primaryLiteralKey(node: { op: FoldOp; args: LoweredExpr[] }): string {
   for (const arg of node.args) {
     if (typeof arg === 'string') return arg;
     if (typeof arg === 'number') return String(arg).padStart(20, '0');
@@ -275,7 +275,7 @@ function fieldNameKey(name: string): string {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-function isOpNode(node: LoweredExpr): node is { op: string; args: LoweredExpr[] } {
+function isOpNode(node: LoweredExpr): node is { op: FoldOp; args: LoweredExpr[] } {
   return (
     typeof node === 'object' &&
     node !== null &&
@@ -307,7 +307,7 @@ function isConstant(node: LoweredExpr): boolean {
   return false;
 }
 
-function flattenSameOp(args: LoweredExpr[], op: string): LoweredExpr[] {
+function flattenSameOp(args: LoweredExpr[], op: FoldOp): LoweredExpr[] {
   const result: LoweredExpr[] = [];
   for (const arg of args) {
     if (isOpNode(arg) && arg.op === op) {

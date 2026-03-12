@@ -3,6 +3,7 @@ import { queryOmnifocus, QueryOmnifocusParams } from '../primitives/queryOmnifoc
 import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 import { describeExpr, describeSort } from '../query/backends/describer.js';
 import { formatItems } from '../formatters/queryResults.js';
+import { ALL_OPS } from '../query/operations.js';
 
 export const schema = z.object({
   entity: z.enum(['tasks', 'projects', 'folders', 'tags', 'perspectives']).describe(
@@ -10,7 +11,7 @@ export const schema = z.object({
   ),
 
   where: coerceJson('where', z.any().optional().describe(
-    `Expression tree for filtering using compact syntax. 17 operations: and, or, not, eq, neq, gt, gte, lt, lte, between, in, container, contains, startsWith, endsWith, matches. Use {opName: [args]} syntax (e.g. {contains: [{var: "name"}, "review"]}). Dates: {date: "YYYY-MM-DD"}, {offset: {date: "now", days: -3}}, {var: "now"}. Date ranges: {between: [{var: "dueDate"}, {var: "now"}, {offset: {date: "now", days: 7}}]}. Tags: {contains: [{var: "tags"}, "tagName"]}. Container scoping: {container: ["project"|"folder"|"tag", expr]} — "project" for tasks, "folder" for tasks/projects/folders, "tag" for tags (ancestor walk). Project name: {contains: [{var: "projectName"}, "text"]}.`
+    `Expression tree for filtering using compact syntax. ${ALL_OPS.length} operations: ${ALL_OPS.join(', ')}. Use {opName: [args]} syntax (e.g. {contains: [{var: "name"}, "review"]}). Dates: {date: "YYYY-MM-DD"}, {offset: {date: "now", days: -3}}, {var: "now"}. Date ranges: {between: [{var: "dueDate"}, {var: "now"}, {offset: {date: "now", days: 7}}]}. Tags: {contains: [{var: "tags"}, "tagName"]}. Container scoping: {container: ["project"|"folder"|"tag", expr]} — "project" for tasks, "folder" for tasks/projects/folders, "tag" for tags (ancestor walk). Project name: {contains: [{var: "projectName"}, "text"]}.`
   )),
 
   select: coerceJson('select', z.array(z.string()).optional().describe(
