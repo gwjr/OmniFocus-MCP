@@ -23,6 +23,7 @@
 import type { EventPlan, EventNode, Ref, Specifier } from './eventPlan.js';
 import type { LoweredExpr } from './fold.js';
 import type { Kind } from './eventNodeRegistry.js';
+import { dispatchByKind2 } from './eventNodeRegistry.js';
 import { collectRefs, rewriteNode, compactPlan } from './eventPlanUtils.js';
 import { computedVarDeps } from './variables.js';
 
@@ -66,48 +67,45 @@ type PropagateCtx = {
   needed: Map<Ref, Set<string> | null>;
 };
 
-type ColumnPropEntry = (node: EventNode, ctx: PropagateCtx) => void;
-
 /**
  * Typed registry defining how each EventNode kind propagates needed columns
- * upstream. Adding a new kind without an entry is a compile error.
+ * upstream. Each entry receives the narrowed node type for its kind.
+ * Adding a new kind without an entry is a compile error.
  */
-const COLUMN_PROPAGATION: { [K in Kind]: ColumnPropEntry } = {
+type ColumnPropRegistry = {
+  [K in Kind]: (node: Extract<EventNode, { kind: K }>, ctx: PropagateCtx) => void;
+};
 
-  Pick(node, { needed }) {
-    const n = node as Extract<EventNode, { kind: 'Pick' }>;
-    propagate(needed, n.source, new Set(n.fields));
+const COLUMN_PROPAGATION: ColumnPropRegistry = {
+
+  Pick: (node, { needed }) => {
+    propagate(needed, node.source, new Set(node.fields));
   },
 
-  Filter(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'Filter' }>;
-    const predVars = predicateVars(n.predicate);
-    propagate(needed, n.source, myNeeded ? union(myNeeded, predVars) : null);
+  Filter: (node, { myNeeded, needed }) => {
+    const predVars = predicateVars(node.predicate);
+    propagate(needed, node.source, myNeeded ? union(myNeeded, predVars) : null);
   },
 
-  Sort(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'Sort' }>;
-    const sortVars = new Set([n.by]);
-    propagate(needed, n.source, myNeeded ? union(myNeeded, sortVars) : null);
+  Sort: (node, { myNeeded, needed }) => {
+    const sortVars = new Set([node.by]);
+    propagate(needed, node.source, myNeeded ? union(myNeeded, sortVars) : null);
   },
 
-  Limit(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'Limit' }>;
-    propagate(needed, n.source, myNeeded);
+  Limit: (node, { myNeeded, needed }) => {
+    propagate(needed, node.source, myNeeded);
   },
 
-  SemiJoin(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'SemiJoin' }>;
-    const joinField = n.field ?? 'id';
+  SemiJoin: (node, { myNeeded, needed }) => {
+    const joinField = node.field ?? 'id';
     const joinVars = new Set([joinField]);
-    propagate(needed, n.source, myNeeded ? union(myNeeded, joinVars) : null);
-    propagate(needed, n.ids, null);
+    propagate(needed, node.source, myNeeded ? union(myNeeded, joinVars) : null);
+    propagate(needed, node.ids, null);
   },
 
-  HashJoin(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'HashJoin' }>;
-    const addedFields = new Set(Object.values(n.fieldMap));
-    const sourceVars = new Set([n.sourceKey]);
+  HashJoin: (node, { myNeeded, needed }) => {
+    const addedFields = new Set(Object.values(node.fieldMap));
+    const sourceVars = new Set([node.sourceKey]);
     let combined: Set<string> | null;
     if (myNeeded) {
       const fromSource = new Set([...myNeeded].filter(f => !addedFields.has(f)));
@@ -115,17 +113,16 @@ const COLUMN_PROPAGATION: { [K in Kind]: ColumnPropEntry } = {
     } else {
       combined = null;
     }
-    propagate(needed, n.source, combined);
-    const lookupVars = new Set([n.lookupKey, ...Object.keys(n.fieldMap)]);
-    propagate(needed, n.lookup, lookupVars);
+    propagate(needed, node.source, combined);
+    const lookupVars = new Set([node.lookupKey, ...Object.keys(node.fieldMap)]);
+    propagate(needed, node.lookup, lookupVars);
   },
 
-  Derive(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'Derive' }>;
+  Derive: (node, { myNeeded, needed }) => {
     let combined: Set<string> | null;
     if (myNeeded) {
       combined = new Set(myNeeded);
-      for (const spec of n.derivations) {
+      for (const spec of node.derivations) {
         if (combined.has(spec.var)) {
           const deps = computedVarDeps(spec.entity, spec.var);
           if (deps) {
@@ -136,61 +133,54 @@ const COLUMN_PROPAGATION: { [K in Kind]: ColumnPropEntry } = {
     } else {
       combined = null;
     }
-    propagate(needed, n.source, combined);
+    propagate(needed, node.source, combined);
   },
 
-  ColumnValues(node, { needed }) {
-    const n = node as Extract<EventNode, { kind: 'ColumnValues' }>;
-    propagate(needed, n.source, new Set([n.field]));
+  ColumnValues: (node, { needed }) => {
+    propagate(needed, node.source, new Set([node.field]));
   },
 
-  Flatten(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'Flatten' }>;
-    propagate(needed, n.source, myNeeded);
+  Flatten: (node, { myNeeded, needed }) => {
+    propagate(needed, node.source, myNeeded);
   },
 
-  AddSwitch(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'AddSwitch' }>;
+  AddSwitch: (node, { myNeeded, needed }) => {
     if (myNeeded === null) {
-      propagate(needed, n.source, null);
+      propagate(needed, node.source, null);
     } else {
-      const fromSource = new Set([...myNeeded].filter(f => f !== n.column));
-      for (const c of n.cases) {
+      const fromSource = new Set([...myNeeded].filter(f => f !== node.column));
+      for (const c of node.cases) {
         for (const v of predicateVars(c.predicate)) fromSource.add(v);
       }
-      propagate(needed, n.source, fromSource);
+      propagate(needed, node.source, fromSource);
     }
   },
 
-  Union(node, { myNeeded, needed }) {
-    const n = node as Extract<EventNode, { kind: 'Union' }>;
+  Union: (node, { myNeeded, needed }) => {
     const unionNeeded = myNeeded ? union(myNeeded, new Set(['id'])) : null;
-    propagate(needed, n.left, unionNeeded);
-    propagate(needed, n.right, unionNeeded);
+    propagate(needed, node.left, unionNeeded);
+    propagate(needed, node.right, unionNeeded);
   },
 
-  RowCount(node, { needed }) {
-    const n = node as Extract<EventNode, { kind: 'RowCount' }>;
-    propagate(needed, n.source, new Set());
+  RowCount: (node, { needed }) => {
+    propagate(needed, node.source, new Set());
   },
 
-  SetOp(node, { needed }) {
-    const n = node as Extract<EventNode, { kind: 'SetOp' }>;
-    propagate(needed, n.left, null);
-    propagate(needed, n.right, null);
+  SetOp: (node, { needed }) => {
+    propagate(needed, node.left, null);
+    propagate(needed, node.right, null);
   },
 
-  ForEach(node, { needed }) {
-    const n = node as Extract<EventNode, { kind: 'ForEach' }>;
-    propagate(needed, n.source, null);
+  ForEach: (node, { needed }) => {
+    propagate(needed, node.source, null);
   },
 
   // Terminals — don't propagate column needs
-  Zip()     { /* terminal */ },
-  Get()     { /* terminal */ },
-  Count()   { /* terminal */ },
-  Set()     { /* terminal */ },
-  Command() { /* terminal */ },
+  Zip:     () => { /* terminal */ },
+  Get:     () => { /* terminal */ },
+  Count:   () => { /* terminal */ },
+  Set:     () => { /* terminal */ },
+  Command: () => { /* terminal */ },
 };
 
 // ── Needed-columns analysis ─────────────────────────────────────────────
@@ -219,7 +209,8 @@ function computeNeededColumns(
     // If this node isn't needed at all, skip it
     if (myNeeded === undefined) continue;
 
-    COLUMN_PROPAGATION[node.kind](node, { myNeeded, needed });
+    const ctx: PropagateCtx = { myNeeded, needed };
+    dispatchByKind2(COLUMN_PROPAGATION, node, ctx);
   }
 
   return needed;

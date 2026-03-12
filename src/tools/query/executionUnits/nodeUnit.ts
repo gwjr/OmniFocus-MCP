@@ -13,8 +13,7 @@ import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import { compileNodePredicate, type Row } from '../backends/nodeEval.js';
 import { getVarRegistry, type EntityType } from '../variables.js';
-import { EVENT_NODE_IR, type Kind } from '../eventNodeRegistry.js';
-import { dispatchCollectRefs } from '../eventNodeRegistry.js';
+import { type Kind, type NodeKind, dispatchCollectRefs } from '../eventNodeRegistry.js';
 
 // ── Computed var derivers (mirrored from executor.ts) ───────────────────
 
@@ -71,17 +70,10 @@ function resolve(ctx: ExecCtx, ref: Ref): unknown {
 
 // ── Node execution registry ─────────────────────────────────────────────
 
-/**
- * EventNode kinds whose default runtime is 'node'.
- * TypeScript enforces exhaustiveness: adding a new node-runtime kind
- * without adding a NODE_EXEC entry causes a compile error.
- *
- * This must match the set of kinds where EVENT_NODE_IR[K].runtime === 'node'.
- */
-type NodeKind =
-  | 'Zip' | 'Filter' | 'SemiJoin' | 'HashJoin' | 'Sort' | 'Limit'
-  | 'Pick' | 'Derive' | 'ColumnValues' | 'Flatten' | 'Union' | 'RowCount'
-  | 'AddSwitch' | 'SetOp';
+// NodeKind is derived from EVENT_NODE_IR in eventNodeRegistry.ts:
+//   NodeKind = { [K in Kind]: runtime extends 'node' ? K : never }[Kind]
+// Adding a new node-runtime kind to EventNode automatically requires a
+// NODE_EXEC entry here (compile error).
 
 type NodeExecEntry = (ctx: ExecCtx, ref: Ref, node: EventNode) => unknown;
 
@@ -104,7 +96,11 @@ const NODE_EXEC: { [K in NodeKind]: NodeExecEntry } = {
 
 function execNode(ctx: ExecCtx, ref: Ref): unknown {
   const node = ctx.plan.nodes[ref];
-  const handler = (NODE_EXEC as Record<string, NodeExecEntry>)[node.kind];
+  // Safe: the orchestrator only routes node-runtime kinds to nodeUnit.
+  // If a JXA kind reaches here, it's a bug in runtime assignment, not
+  // a missing registry entry. NODE_EXEC is compile-time exhaustive
+  // over NodeKind = Exclude<Kind, JxaKind>.
+  const handler = NODE_EXEC[node.kind as NodeKind];
   if (!handler) {
     throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
   }

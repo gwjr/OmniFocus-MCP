@@ -8,6 +8,7 @@
 import type { EventPlan, EventNode, Specifier, Ref } from './eventPlan.js';
 import type { ExecutionUnit, TargetedEventPlan } from './targetedEventPlan.js';
 import type { Kind } from './eventNodeRegistry.js';
+import { dispatchByKind4 } from './eventNodeRegistry.js';
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -127,125 +128,97 @@ function fmtRef(r: Ref): string {
 
 // ── Describer registry ───────────────────────────────────────────────────
 
-type DescribeEntry = (node: EventNode, lhs: string, idx: string, prefix: string) => string[];
-
 /**
- * Typed registry defining how each EventNode kind is pretty-printed.
- * Adding a new kind without an entry is a compile error.
+ * Per-kind narrowed describer registry. Each entry receives its specific
+ * EventNode variant — no local casts needed. Adding a new kind without
+ * an entry is a compile error.
  */
-const DESCRIBE_NODE: { [K in Kind]: DescribeEntry } = {
+type DescriberRegistry = {
+  [K in Kind]: (node: Extract<EventNode, { kind: K }>, lhs: string, idx: string, prefix: string) => string[];
+};
 
-  Get(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Get' }>;
-    return [`${lhs} = Get(${describeSpecifier(n.specifier)})`];
-  },
+const DESCRIBE_NODE: DescriberRegistry = {
 
-  Count(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Count' }>;
-    return [`${lhs} = Count(${describeSpecifier(n.specifier)})`];
-  },
+  Get: (node, lhs) =>
+    [`${lhs} = Get(${describeSpecifier(node.specifier)})`],
 
-  Set(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Set' }>;
-    return [`${lhs} = Set(${describeSpecifier(n.specifier)}, ${fmtRef(n.value)})`];
-  },
+  Count: (node, lhs) =>
+    [`${lhs} = Count(${describeSpecifier(node.specifier)})`],
 
-  Command(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Command' }>;
-    const args = Object.entries(n.args)
+  Set: (node, lhs) =>
+    [`${lhs} = Set(${describeSpecifier(node.specifier)}, ${fmtRef(node.value)})`],
+
+  Command: (node, lhs) => {
+    const args = Object.entries(node.args)
       .map(([k, v]) => {
         const vs = typeof v === 'number' ? fmtRef(v) : typeof v === 'string' ? `'${v}'` : String(v);
         return `${k}:${vs}`;
       })
       .join(', ');
-    return [`${lhs} = Command('${n.fourCC}', ${describeSpecifier(n.target)}, {${args}})`];
+    return [`${lhs} = Command('${node.fourCC}', ${describeSpecifier(node.target)}, {${args}})`];
   },
 
-  Zip(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Zip' }>;
-    const cols = n.columns.map(c => `${c.name}:${fmtRef(c.ref)}`).join(', ');
+  Zip: (node, lhs) => {
+    const cols = node.columns.map(c => `${c.name}:${fmtRef(c.ref)}`).join(', ');
     return [`${lhs} = Zip([${cols}])`];
   },
 
-  ColumnValues(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'ColumnValues' }>;
-    return [`${lhs} = ColumnValues(${fmtRef(n.source)}, '${n.field}')`];
+  ColumnValues: (node, lhs) =>
+    [`${lhs} = ColumnValues(${fmtRef(node.source)}, '${node.field}')`],
+
+  Flatten: (node, lhs) =>
+    [`${lhs} = Flatten(${fmtRef(node.source)})`],
+
+  Filter: (node, lhs) =>
+    [`${lhs} = Filter(${fmtRef(node.source)}, ${JSON.stringify(node.predicate)})`],
+
+  SemiJoin: (node, lhs) => {
+    const fieldPart = node.field && node.field !== 'id' ? `, field:'${node.field}'` : '';
+    const arrayPart = node.arrayField ? ', arrayField' : '';
+    const excludePart = node.exclude ? ', exclude' : '';
+    return [`${lhs} = SemiJoin(${fmtRef(node.source)}, ids:${fmtRef(node.ids)}${fieldPart}${arrayPart}${excludePart})`];
   },
 
-  Flatten(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Flatten' }>;
-    return [`${lhs} = Flatten(${fmtRef(n.source)})`];
+  HashJoin: (node, lhs) => {
+    const fm = Object.entries(node.fieldMap).map(([k, v]) => `${k}:${v}`).join(', ');
+    return [`${lhs} = HashJoin(${fmtRef(node.source)}, ${fmtRef(node.lookup)}, sourceKey:'${node.sourceKey}', lookupKey:'${node.lookupKey}', {${fm}})`];
   },
 
-  Filter(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Filter' }>;
-    return [`${lhs} = Filter(${fmtRef(n.source)}, ${JSON.stringify(n.predicate)})`];
+  Sort: (node, lhs) =>
+    [`${lhs} = Sort(${fmtRef(node.source)}, by:'${node.by}', dir:${node.dir})`],
+
+  Limit: (node, lhs) =>
+    [`${lhs} = Limit(${fmtRef(node.source)}, n:${node.n})`],
+
+  Pick: (node, lhs) =>
+    [`${lhs} = Pick(${fmtRef(node.source)}, [${node.fields.join(',')}])`],
+
+  Derive: (node, lhs) => {
+    const specs = node.derivations.map(d => `${d.var}@${d.entity}`).join(', ');
+    return [`${lhs} = Derive(${fmtRef(node.source)}, [${specs}])`];
   },
 
-  SemiJoin(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'SemiJoin' }>;
-    const fieldPart = n.field && n.field !== 'id' ? `, field:'${n.field}'` : '';
-    const arrayPart = n.arrayField ? ', arrayField' : '';
-    const excludePart = n.exclude ? ', exclude' : '';
-    return [`${lhs} = SemiJoin(${fmtRef(n.source)}, ids:${fmtRef(n.ids)}${fieldPart}${arrayPart}${excludePart})`];
+  Union: (node, lhs) =>
+    [`${lhs} = Union(${fmtRef(node.left)}, ${fmtRef(node.right)})`],
+
+  SetOp: (node, lhs) =>
+    [`${lhs} = SetOp(${fmtRef(node.left)}, ${fmtRef(node.right)}, op:'${node.op}')`],
+
+  RowCount: (node, lhs) =>
+    [`${lhs} = RowCount(${fmtRef(node.source)})`],
+
+  AddSwitch: (node, lhs) => {
+    const defStr = node.default === 'error' ? 'Error' : JSON.stringify(node.default);
+    return [`${lhs} = AddSwitch(${fmtRef(node.source)}, '${node.column}', ${node.cases.length} cases, default:${defStr})`];
   },
 
-  HashJoin(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'HashJoin' }>;
-    const fm = Object.entries(n.fieldMap).map(([k, v]) => `${k}:${v}`).join(', ');
-    return [`${lhs} = HashJoin(${fmtRef(n.source)}, ${fmtRef(n.lookup)}, sourceKey:'${n.sourceKey}', lookupKey:'${n.lookupKey}', {${fm}})`];
-  },
-
-  Sort(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Sort' }>;
-    return [`${lhs} = Sort(${fmtRef(n.source)}, by:'${n.by}', dir:${n.dir})`];
-  },
-
-  Limit(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Limit' }>;
-    return [`${lhs} = Limit(${fmtRef(n.source)}, n:${n.n})`];
-  },
-
-  Pick(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Pick' }>;
-    return [`${lhs} = Pick(${fmtRef(n.source)}, [${n.fields.join(',')}])`];
-  },
-
-  Derive(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Derive' }>;
-    const specs = n.derivations.map(d => `${d.var}@${d.entity}`).join(', ');
-    return [`${lhs} = Derive(${fmtRef(n.source)}, [${specs}])`];
-  },
-
-  Union(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'Union' }>;
-    return [`${lhs} = Union(${fmtRef(n.left)}, ${fmtRef(n.right)})`];
-  },
-
-  SetOp(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'SetOp' }>;
-    return [`${lhs} = SetOp(${fmtRef(n.left)}, ${fmtRef(n.right)}, op:'${n.op}')`];
-  },
-
-  RowCount(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'RowCount' }>;
-    return [`${lhs} = RowCount(${fmtRef(n.source)})`];
-  },
-
-  AddSwitch(node, lhs) {
-    const n = node as Extract<EventNode, { kind: 'AddSwitch' }>;
-    const defStr = n.default === 'error' ? 'Error' : JSON.stringify(n.default);
-    return [`${lhs} = AddSwitch(${fmtRef(n.source)}, '${n.column}', ${n.cases.length} cases, default:${defStr})`];
-  },
-
-  ForEach(node, lhs, idx, prefix) {
-    const n = node as Extract<EventNode, { kind: 'ForEach' }>;
+  ForEach: (node, lhs, idx, prefix) => {
     const lines: string[] = [];
-    lines.push(`${lhs} = ForEach(${fmtRef(n.source)}) {`);
-    for (let j = 0; j < n.body.length; j++) {
-      lines.push(...describeNode(n.body[j], `${idx}.${j}`, `${prefix}  `));
+    lines.push(`${lhs} = ForEach(${fmtRef(node.source)}) {`);
+    for (let j = 0; j < node.body.length; j++) {
+      lines.push(...describeNode(node.body[j], `${idx}.${j}`, `${prefix}  `));
     }
-    lines.push(`${prefix}  collect: %${idx}.${n.collect}`);
+    lines.push(`${prefix}  collect: %${idx}.${node.collect}`);
     lines.push(`${prefix}}`);
     return lines;
   },
@@ -258,5 +231,5 @@ const DESCRIBE_NODE: { [K in Kind]: DescribeEntry } = {
  */
 function describeNode(node: EventNode, idx: string, prefix: string): string[] {
   const lhs = `${prefix}%${idx}`;
-  return DESCRIBE_NODE[node.kind](node, lhs, idx, prefix);
+  return dispatchByKind4(DESCRIBE_NODE, node, lhs, idx, prefix);
 }
