@@ -6,6 +6,8 @@ export const schema = z.object({
   limit: z.number().optional().describe('Max results to return (default: 10)'),
   entity: z.enum(['tasks', 'projects', 'all']).optional()
     .describe('Restrict to tasks or projects (default: all)'),
+  includeCompleted: z.boolean().optional()
+    .describe('Include completed/dropped items (default: false)'),
 });
 
 export async function handler(args: z.infer<typeof schema>, _extra: any) {
@@ -14,6 +16,7 @@ export async function handler(args: z.infer<typeof schema>, _extra: any) {
       query: args.query,
       limit: args.limit,
       entity: args.entity,
+      includeCompleted: args.includeCompleted,
     });
 
     if (!result.success) {

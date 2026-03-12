@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS items (
     content TEXT NOT NULL,
     modificationDate TEXT NOT NULL,
     flagged INTEGER DEFAULT 0,
+    completed INTEGER DEFAULT 0,
     dueDate TEXT,
     deferDate TEXT
 );
@@ -88,6 +89,11 @@ export function ensureDb(): void {
     mkdirSync(DB_DIR, { recursive: true });
   }
   runSql(SCHEMA);
+  // Migration: add completed column if missing (for DBs created before this column existed)
+  const cols = runSqlJson("SELECT name FROM pragma_table_info('items') WHERE name = 'completed';");
+  if (cols.length === 0) {
+    runSql("ALTER TABLE items ADD COLUMN completed INTEGER DEFAULT 0;");
+  }
 }
 
 // ── Item operations ──────────────────────────────────────────────────────
@@ -114,6 +120,7 @@ export interface ItemData {
   content: string;
   modificationDate: string;
   flagged: number;
+  completed: number;
   dueDate: string | null;
   deferDate: string | null;
 }
@@ -125,7 +132,7 @@ export function upsertItems(items: ItemData[]): void {
   for (let i = 0; i < items.length; i += BATCH) {
     const batch = items.slice(i, i + BATCH);
     const stmts = batch.map(it =>
-      `INSERT OR REPLACE INTO items(id,entity,name,note,tags,projectName,content,modificationDate,flagged,dueDate,deferDate) VALUES(${sqlStr(it.id)},${sqlStr(it.entity)},${sqlStr(it.name)},${sqlStr(it.note)},${sqlStr(it.tags)},${sqlStr(it.projectName)},${sqlStr(it.content)},${sqlStr(it.modificationDate)},${it.flagged},${sqlStr(it.dueDate)},${sqlStr(it.deferDate)});`
+      `INSERT OR REPLACE INTO items(id,entity,name,note,tags,projectName,content,modificationDate,flagged,completed,dueDate,deferDate) VALUES(${sqlStr(it.id)},${sqlStr(it.entity)},${sqlStr(it.name)},${sqlStr(it.note)},${sqlStr(it.tags)},${sqlStr(it.projectName)},${sqlStr(it.content)},${sqlStr(it.modificationDate)},${it.flagged},${it.completed},${sqlStr(it.dueDate)},${sqlStr(it.deferDate)});`
     );
     runSql('BEGIN;\n' + stmts.join('\n') + '\nCOMMIT;');
   }
@@ -208,17 +215,24 @@ export interface SearchResult {
 
 /**
  * KNN search: find the closest items to a query embedding.
- * Returns up to `overFetch` vec results, filtered by entity, limited to `limit`.
+ * Returns up to `overFetch` vec results, filtered by entity and completion status.
+ * By default excludes completed items (matching query tool defaults).
  */
 export function knnSearch(
   queryHex: string,
   limit: number,
   entity?: 'tasks' | 'projects' | 'all',
+  includeCompleted = false,
 ): SearchResult[] {
   const overFetch = Math.max(limit * 3, 50);
-  const entityFilter = entity && entity !== 'all'
-    ? `AND i.entity = ${sqlStr(entity === 'tasks' ? 'task' : 'project')}`
-    : '';
+  const filters: string[] = [];
+  if (entity && entity !== 'all') {
+    filters.push(`i.entity = ${sqlStr(entity === 'tasks' ? 'task' : 'project')}`);
+  }
+  if (!includeCompleted) {
+    filters.push('i.completed = 0');
+  }
+  const whereClause = filters.length > 0 ? 'WHERE ' + filters.join(' AND ') : '';
 
   return runSqlJson(`
 SELECT i.id, i.entity, i.name, i.note, i.tags, i.projectName,
@@ -231,7 +245,7 @@ FROM (
   LIMIT ${overFetch}
 ) v
 JOIN items i ON i.rowid = v.item_rowid
-${entityFilter}
+${whereClause}
 ORDER BY v.distance
 LIMIT ${limit};
 `, { vec: true });

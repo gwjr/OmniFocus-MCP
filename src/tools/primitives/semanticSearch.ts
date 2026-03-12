@@ -12,6 +12,7 @@ export interface SemanticSearchParams {
   query: string;
   limit?: number;
   entity?: 'tasks' | 'projects' | 'all';
+  includeCompleted?: boolean;
 }
 
 export interface SemanticSearchResult {
@@ -47,7 +48,7 @@ function distanceToConfidence(distance: number): number {
 }
 
 export async function semanticSearch(params: SemanticSearchParams): Promise<SemanticSearchResult> {
-  const { query, limit = 10, entity = 'all' } = params;
+  const { query, limit = 10, entity = 'all', includeCompleted = false } = params;
 
   // Check index exists
   if (!isIndexReady()) {
@@ -63,7 +64,7 @@ export async function semanticSearch(params: SemanticSearchParams): Promise<Sema
     const queryHex = embeddingToHex(queryVec);
 
     // 2. KNN search
-    const raw = knnSearch(queryHex, limit, entity);
+    const raw = knnSearch(queryHex, limit, entity, includeCompleted);
 
     // 3. Format results
     const results: FormattedResult[] = raw.map((r: SearchResult) => ({

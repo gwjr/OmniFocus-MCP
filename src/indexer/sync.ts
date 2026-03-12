@@ -90,6 +90,7 @@ async function readFullData(): Promise<RawFullData> {
   var tTags = doc.flattenedTasks.tags.name();
   var tProjs = doc.flattenedTasks.containingProject.name();
   var tFlagged = doc.flattenedTasks.flagged();
+  var tCompleted = doc.flattenedTasks.completed();
   var tDue = doc.flattenedTasks.dueDate();
   var tDefer = doc.flattenedTasks.deferDate();
   var pIds = doc.flattenedProjects.id();
@@ -99,6 +100,7 @@ async function readFullData(): Promise<RawFullData> {
   var pNotes = doc.flattenedProjects.note();
   var pMods = doc.flattenedProjects.modificationDate();
   var pFlagged = doc.flattenedProjects.flagged();
+  var pCompleted = doc.flattenedProjects.completed();
   var pDue = doc.flattenedProjects.dueDate();
   var pDefer = doc.flattenedProjects.deferDate();
   var iso = function(d) { return d ? d.toISOString() : null; };
@@ -112,6 +114,7 @@ async function readFullData(): Promise<RawFullData> {
       tags: tTags[i] ? tTags[i].join(', ') : '',
       projectName: tProjs[i] || '',
       flagged: tFlagged[i] ? 1 : 0,
+      completed: tCompleted[i] ? 1 : 0,
       dueDate: iso(tDue[i]), deferDate: iso(tDefer[i]),
     });
   }
@@ -123,6 +126,7 @@ async function readFullData(): Promise<RawFullData> {
       modificationDate: iso(pMods[i]) || '',
       tags: '', projectName: '',
       flagged: pFlagged[i] ? 1 : 0,
+      completed: pCompleted[i] ? 1 : 0,
       dueDate: iso(pDue[i]), deferDate: iso(pDefer[i]),
     });
   }
@@ -137,7 +141,7 @@ async function readChangedItems(
   projectIds: string[],
 ): Promise<Array<Omit<ItemData, 'content'>>> {
   const items: Array<Omit<ItemData, 'content'>> = [];
-  const cols = ['name', 'note', 'tags', 'projectName', 'flagged', 'dueDate', 'deferDate', 'modificationDate'];
+  const cols = ['name', 'note', 'tags', 'projectName', 'flagged', 'completed', 'dueDate', 'deferDate', 'modificationDate'];
 
   if (taskIds.length > 0) {
     const rows = await enrichByIdentifier('tasks', taskIds, cols);
@@ -152,6 +156,7 @@ async function readChangedItems(
         tags: Array.isArray(row.tags) ? (row.tags as string[]).join(', ') : '',
         projectName: (row.projectName as string) || '',
         flagged: row.flagged ? 1 : 0,
+        completed: row.completed ? 1 : 0,
         dueDate: (row.dueDate as string) || null,
         deferDate: (row.deferDate as string) || null,
       });
@@ -159,7 +164,8 @@ async function readChangedItems(
   }
 
   if (projectIds.length > 0) {
-    const rows = await enrichByIdentifier('projects', projectIds, cols.filter(c => c !== 'tags' && c !== 'projectName'));
+    const projCols = cols.filter(c => c !== 'tags' && c !== 'projectName');
+    const rows = await enrichByIdentifier('projects', projectIds, projCols);
     for (const row of rows) {
       if (!row) continue;
       items.push({
@@ -171,6 +177,7 @@ async function readChangedItems(
         tags: '',
         projectName: '',
         flagged: row.flagged ? 1 : 0,
+        completed: row.completed ? 1 : 0,
         dueDate: (row.dueDate as string) || null,
         deferDate: (row.deferDate as string) || null,
       });
