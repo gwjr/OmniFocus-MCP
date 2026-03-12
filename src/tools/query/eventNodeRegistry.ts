@@ -267,6 +267,28 @@ export function dispatchByKind4<A, B, C, R>(
   return fn(node, a, b, c);
 }
 
+// ── NodeKind dispatchers ─────────────────────────────────────────────────
+
+/** Runtime type guard: true when `kind` belongs to a node-runtime EventNode. */
+export function isNodeKind(kind: Kind): kind is NodeKind {
+  return EVENT_NODE_IR[kind].runtime === 'node';
+}
+
+/**
+ * NodeKind-scoped variant of dispatchByKind for registries that only cover
+ * node-runtime kinds. Entries receive their narrowed Extract variant.
+ *
+ * Caller must ensure `node.kind` is a NodeKind (use `isNodeKind` to narrow).
+ */
+export function dispatchNodeKind3<A, B, R>(
+  registry: { [K in NodeKind]: (node: Extract<EventNode, { kind: K }>, a: A, b: B) => R },
+  node: Extract<EventNode, { kind: NodeKind }>,
+  a: A, b: B,
+): R {
+  const fn = registry[node.kind] as (n: EventNode, a: A, b: B) => R;
+  return fn(node, a, b);
+}
+
 // ── IR-specific dispatchers ─────────────────────────────────────────────
 
 interface LooseIREntry {

@@ -13,7 +13,7 @@ import type { TargetedEventPlan } from '../targetedEventPlan.js';
 import type { ExecutionUnit } from '../targetedEventPlan.js';
 import { compileNodePredicate, type Row } from '../backends/nodeEval.js';
 import { getVarRegistry, type EntityType } from '../variables.js';
-import { type Kind, type NodeKind, dispatchCollectRefs } from '../eventNodeRegistry.js';
+import { type Kind, type NodeKind, dispatchCollectRefs, isNodeKind, dispatchNodeKind3 } from '../eventNodeRegistry.js';
 
 // ── Computed var derivers (mirrored from executor.ts) ───────────────────
 
@@ -75,36 +75,34 @@ function resolve(ctx: ExecCtx, ref: Ref): unknown {
 // Adding a new node-runtime kind to EventNode automatically requires a
 // NODE_EXEC entry here (compile error).
 
-type NodeExecEntry = (ctx: ExecCtx, ref: Ref, node: EventNode) => unknown;
-
-const NODE_EXEC: { [K in NodeKind]: NodeExecEntry } = {
-  Zip:          (ctx, _ref, node) => execZip(ctx, node as Extract<EventNode, { kind: 'Zip' }>),
-  Filter:       (ctx, ref, node)  => execFilter(ctx, ref, node as Extract<EventNode, { kind: 'Filter' }>),
-  SemiJoin:     (ctx, _ref, node) => execSemiJoin(ctx, node as Extract<EventNode, { kind: 'SemiJoin' }>),
-  HashJoin:     (ctx, _ref, node) => execHashJoin(ctx, node as Extract<EventNode, { kind: 'HashJoin' }>),
-  Sort:         (ctx, _ref, node) => execSort(ctx, node as Extract<EventNode, { kind: 'Sort' }>),
-  Limit:        (ctx, _ref, node) => execLimit(ctx, node as Extract<EventNode, { kind: 'Limit' }>),
-  Pick:         (ctx, _ref, node) => execPick(ctx, node as Extract<EventNode, { kind: 'Pick' }>),
-  Derive:       (ctx, _ref, node) => execDerive(ctx, node as Extract<EventNode, { kind: 'Derive' }>),
-  ColumnValues: (ctx, _ref, node) => execColumnValues(ctx, node as Extract<EventNode, { kind: 'ColumnValues' }>),
-  Flatten:      (ctx, _ref, node) => execFlatten(ctx, node as Extract<EventNode, { kind: 'Flatten' }>),
-  Union:        (ctx, _ref, node) => execUnion(ctx, node as Extract<EventNode, { kind: 'Union' }>),
-  RowCount:     (ctx, _ref, node) => execRowCount(ctx, node as Extract<EventNode, { kind: 'RowCount' }>),
-  AddSwitch:    (ctx, ref, node)  => execAddSwitch(ctx, ref, node as Extract<EventNode, { kind: 'AddSwitch' }>),
-  SetOp:        (ctx, _ref, node) => execSetOp(ctx, node as Extract<EventNode, { kind: 'SetOp' }>),
+/**
+ * Per-kind narrowed execution registry. Each entry receives its specific
+ * EventNode variant — no local casts needed. Adding a new node-runtime
+ * kind without an entry is a compile error.
+ */
+const NODE_EXEC: { [K in NodeKind]: (node: Extract<EventNode, { kind: K }>, ctx: ExecCtx, ref: Ref) => unknown } = {
+  Zip:          (node, ctx) => execZip(ctx, node),
+  Filter:       (node, ctx, ref) => execFilter(ctx, ref, node),
+  SemiJoin:     (node, ctx) => execSemiJoin(ctx, node),
+  HashJoin:     (node, ctx) => execHashJoin(ctx, node),
+  Sort:         (node, ctx) => execSort(ctx, node),
+  Limit:        (node, ctx) => execLimit(ctx, node),
+  Pick:         (node, ctx) => execPick(ctx, node),
+  Derive:       (node, ctx) => execDerive(ctx, node),
+  ColumnValues: (node, ctx) => execColumnValues(ctx, node),
+  Flatten:      (node, ctx) => execFlatten(ctx, node),
+  Union:        (node, ctx) => execUnion(ctx, node),
+  RowCount:     (node, ctx) => execRowCount(ctx, node),
+  AddSwitch:    (node, ctx, ref) => execAddSwitch(ctx, ref, node),
+  SetOp:        (node, ctx) => execSetOp(ctx, node),
 };
 
 function execNode(ctx: ExecCtx, ref: Ref): unknown {
   const node = ctx.plan.nodes[ref];
-  // Safe: the orchestrator only routes node-runtime kinds to nodeUnit.
-  // If a JXA kind reaches here, it's a bug in runtime assignment, not
-  // a missing registry entry. NODE_EXEC is compile-time exhaustive
-  // over NodeKind = Exclude<Kind, JxaKind>.
-  const handler = NODE_EXEC[node.kind as NodeKind];
-  if (!handler) {
+  if (!isNodeKind(node.kind)) {
     throw new Error(`nodeUnit: unexpected node kind '${node.kind}' in Node unit (ref %${ref})`);
   }
-  return handler(ctx, ref, node);
+  return dispatchNodeKind3(NODE_EXEC, node as Extract<EventNode, { kind: NodeKind }>, ctx, ref);
 }
 
 // ── Op implementations ──────────────────────────────────────────────────
