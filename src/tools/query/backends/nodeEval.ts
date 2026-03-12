@@ -133,14 +133,17 @@ class NodeEvalBackend {
       return () => now;
     }
 
-    // Look up the variable definition to get the nodeKey
+    // Look up the variable definition to get the row key.
+    // For computed vars, AddSwitch writes to the var name (e.g. 'taskStatus'),
+    // not the nodeKey (e.g. 'status'). Use the var name for computed vars
+    // to match the column name in the row.
     const registry = getVarRegistry(entity);
     const varDef = registry[name];
     if (!varDef) {
       throw new Error(`Unknown variable "${name}" for entity "${entity}"`);
     }
 
-    const key = varDef.nodeKey;
+    const key = varDef.cost === 'computed' ? name : varDef.nodeKey;
     return (row) => row[key];
   }
 

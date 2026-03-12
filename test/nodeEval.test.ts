@@ -544,6 +544,51 @@ describe('nodeEval — tag container', () => {
   });
 });
 
+describe('nodeEval — computed var alias (taskStatus)', () => {
+  // Regression: taskStatus has nodeKey='status', but AddSwitch writes to
+  // 'taskStatus'. The variable lookup must use the var name for computed
+  // vars, not the nodeKey.
+  it('eq(taskStatus, "Completed") matches row with taskStatus column', () => {
+    assert.equal(
+      evalRow(
+        { eq: [{ var: 'taskStatus' }, 'Completed'] },
+        { taskStatus: 'Completed' }
+      ),
+      true
+    );
+  });
+
+  it('eq(taskStatus, "Completed") rejects row with different status', () => {
+    assert.equal(
+      evalRow(
+        { eq: [{ var: 'taskStatus' }, 'Completed'] },
+        { taskStatus: 'Active' }
+      ),
+      false
+    );
+  });
+
+  it('neq(taskStatus, "completed") excludes completed tasks', () => {
+    assert.equal(
+      evalRow(
+        { neq: [{ var: 'taskStatus' }, 'completed'] },
+        { taskStatus: 'Completed' }
+      ),
+      false  // "Completed" normalizes to "completed", matches → neq is false
+    );
+  });
+
+  it('status alias also works (nodeKey = var name)', () => {
+    assert.equal(
+      evalRow(
+        { eq: [{ var: 'status' }, 'Completed'] },
+        { status: 'Completed' }
+      ),
+      true
+    );
+  });
+});
+
 describe('nodeEval — complex expressions', () => {
   it('flagged + due within 7 days', () => {
     const now = new Date();
