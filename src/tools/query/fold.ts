@@ -165,8 +165,10 @@ export function foldExpr<T>(node: LoweredExpr, backend: ExprBackend<T>, entity: 
         );
       }
 
-      default:
-        throw new Error(`Unknown operation in fold: "${op}"`);
+      default: {
+        const _exhaustive: never = op;
+        throw new Error(`Unknown operation in fold: "${_exhaustive}"`);
+      }
     }
   }
 
