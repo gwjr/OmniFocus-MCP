@@ -2,10 +2,10 @@ import { z } from 'zod';
 import { queryOmnifocus, type QueryOmnifocusParams } from '../primitives/queryOmnifocus.js';
 import { resolvePerspectiveQuery } from '../primitives/perspectiveQuery.js';
 import { resolveViewUrl } from '../primitives/viewUrl.js';
-import { handler as listPerspectivesHandler } from './listPerspectives.js';
-import { handler as listProjectsHandler } from './listProjects.js';
-import { handler as listTagsHandler } from './listTags.js';
-import { handler as showForecastHandler } from './showForecast.js';
+import { buildForest, renderForest, type TreeNode } from '../formatters/tree.js';
+import { statusBadge, flagIndicator, dueAnnotation } from '../formatters/common.js';
+import { listTags } from '../primitives/listTags.js';
+import { showForecast, type ForecastResult } from '../primitives/showForecast.js';
 import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 import { formatItems } from '../formatters/queryResults.js';
 
@@ -165,16 +165,13 @@ async function handleReservedPerspective(args: z.infer<typeof schema>, extra: an
 
   switch (args.perspective.toLowerCase()) {
     case 'perspectives':
-      return listPerspectivesHandler({}, extra);
+      return handlePerspectivesView();
     case 'projects':
-      return listProjectsHandler(
-        { ...(args.includeCompleted != null ? { includeCompleted: args.includeCompleted } : {}) } as any,
-        extra,
-      );
+      return handleProjectsView(args.includeCompleted ?? false);
     case 'tags':
-      return listTagsHandler({} as any, extra);
+      return handleTagsView();
     case 'forecast':
-      return showForecastHandler({} as any, extra);
+      return handleForecastView();
     default:
       return null;
   }
@@ -188,4 +185,212 @@ function getViewLabel(args: z.infer<typeof schema>): string {
   if (args.perspective) return `${args.perspective} perspective`;
   if (args.inbox) return 'Inbox';
   return 'view';
+}
+
+async function handlePerspectivesView() {
+  const result = await queryOmnifocus({ entity: 'perspectives' });
+
+  if (!result.success) {
+    return {
+      content: [{ type: "text" as const, text: `Failed to list perspectives: ${result.error}` }],
+      isError: true
+    };
+  }
+
+  const perspectives = result.items || [];
+  if (perspectives.length === 0) {
+    return { content: [{ type: "text" as const, text: "No perspectives found." }] };
+  }
+
+  let output = `## Available Perspectives (${perspectives.length})\n\n`;
+  const builtIn = perspectives.filter((p: any) => p.type === 'builtin');
+  const custom = perspectives.filter((p: any) => p.type === 'custom');
+
+  if (builtIn.length > 0) {
+    output += `### Built-in Perspectives\n`;
+    builtIn.forEach((p: any) => { output += `• ${p.name}\n`; });
+  }
+  if (custom.length > 0) {
+    if (builtIn.length > 0) output += '\n';
+    output += `### Custom Perspectives\n`;
+    custom.forEach((p: any) => { output += `• ${p.name}\n`; });
+  }
+
+  return { content: [{ type: "text" as const, text: output }] };
+}
+
+async function handleProjectsView(includeCompleted: boolean) {
+  const [foldersResult, projectsResult] = await Promise.all([
+    queryOmnifocus({
+      entity: 'folders',
+      select: ['id', 'name', 'parentFolderId'],
+    }),
+    queryOmnifocus({
+      entity: 'projects',
+      select: ['id', 'name', 'status', 'flagged', 'dueDate', 'activeTaskCount', 'folderId'],
+      includeCompleted,
+    }),
+  ]);
+
+  if (!foldersResult.success) {
+    return {
+      content: [{ type: "text" as const, text: `Failed to query folders: ${foldersResult.error}` }],
+      isError: true
+    };
+  }
+  if (!projectsResult.success) {
+    return {
+      content: [{ type: "text" as const, text: `Failed to query projects: ${projectsResult.error}` }],
+      isError: true
+    };
+  }
+
+  const folders = foldersResult.items || [];
+  const projects = projectsResult.items || [];
+  const folderIdSet = new Set(folders.map((f: any) => f.id));
+
+  const folderNodes: TreeNode[] = folders.map((f: any) => ({
+    id: f.id,
+    name: f.name,
+    kind: 'folder',
+    parentId: folderIdSet.has(f.parentFolderId) ? f.parentFolderId : null,
+    children: [],
+    props: {},
+  }));
+  const projectNodes: TreeNode[] = projects.map((p: any) => ({
+    id: p.id,
+    name: p.name,
+    kind: 'project',
+    parentId: folderIdSet.has(p.folderId) ? p.folderId : null,
+    children: [],
+    props: {
+      status: p.status,
+      flagged: p.flagged,
+      dueDate: p.dueDate,
+      activeTaskCount: p.activeTaskCount,
+    },
+  }));
+
+  const roots = buildForest([...folderNodes, ...projectNodes]);
+  const tree = renderForest(roots, {
+    prefixes: { folder: 'F:', project: 'P:' },
+    annotate: (node) => {
+      if (node.kind !== 'project') return '';
+      const parts: string[] = [];
+      parts.push(flagIndicator(node.props.flagged as boolean));
+      parts.push(statusBadge(node.props.status as string));
+      parts.push(dueAnnotation(node.props.dueDate as string));
+      const count = node.props.activeTaskCount as number;
+      if (count > 0) parts.push(` (${count} tasks)`);
+      return parts.join('');
+    },
+  });
+
+  return {
+    content: [{ type: "text" as const, text: `## Projects (${projects.length} projects, ${folders.length} folders)\n\n${tree}` }]
+  };
+}
+
+async function handleTagsView() {
+  const result = await listTags({
+    includeActive: true,
+    includeOnHold: false,
+    includeDropped: false,
+  });
+
+  if (!result.success) {
+    return {
+      content: [{ type: "text" as const, text: `Failed to list tags: ${result.error}` }],
+      isError: true
+    };
+  }
+
+  const tags = result.tags || [];
+  if (tags.length === 0) {
+    return {
+      content: [{ type: "text" as const, text: "No tags found matching the specified criteria." }]
+    };
+  }
+
+  const topLevel = tags.filter(t => !t.parent);
+  const nested = tags.filter(t => t.parent);
+  let output = `## Tags (${tags.length})\n\n`;
+
+  for (const tag of topLevel) {
+    const count = tag.taskCount > 0 ? ` (${tag.taskCount} tasks)` : '';
+    const status = tag.status !== 'Active' ? ` [${tag.status}]` : '';
+    output += `• ${tag.name}${count}${status}\n`;
+
+    const children = nested.filter(t => t.parent === tag.name);
+    for (const child of children) {
+      const cCount = child.taskCount > 0 ? ` (${child.taskCount} tasks)` : '';
+      const cStatus = child.status !== 'Active' ? ` [${child.status}]` : '';
+      output += `  • ${child.name}${cCount}${cStatus}\n`;
+    }
+  }
+
+  const shownParents = new Set(topLevel.map(t => t.name));
+  const orphanedNested = nested.filter(t => t.parent && !shownParents.has(t.parent));
+  if (orphanedNested.length > 0) {
+    output += `\n### Nested (parent not shown)\n`;
+    for (const tag of orphanedNested) {
+      const count = tag.taskCount > 0 ? ` (${tag.taskCount} tasks)` : '';
+      output += `  • ${tag.parent} > ${tag.name}${count}\n`;
+    }
+  }
+
+  return { content: [{ type: "text" as const, text: output }] };
+}
+
+async function handleForecastView() {
+  const result = await showForecast({});
+
+  if (!result.success) {
+    return {
+      content: [{ type: "text" as const, text: `Forecast failed: ${result.error}` }],
+      isError: true
+    };
+  }
+
+  return { content: [{ type: "text" as const, text: formatForecast(result) }] };
+}
+
+function formatForecast(result: ForecastResult): string {
+  const { buckets, flaggedCount, todayTagCount } = result;
+  const todayBucket = buckets.find(b => b.label.startsWith('Today'));
+  const dateLabel = todayBucket ? todayBucket.label.replace('Today (', '').replace(')', '') : '';
+  let out = `OmniFocus Forecast — ${dateLabel}\n\n`;
+  const labelW = Math.max(20, ...buckets.map(b => b.label.length + 2));
+  const numW = 6;
+
+  out += pad('', labelW) + pad('Due', numW) + pad('Plan', numW) + pad('Defer', numW) + 'Tasks\n';
+  out += '─'.repeat(labelW + numW * 3 + 6) + '\n';
+
+  for (const b of buckets) {
+    const tasks = b.taskIds.size;
+    let row = pad(b.label, labelW);
+    row += pad(fmt(b.due), numW);
+    row += pad(fmt(b.planned), numW);
+    row += pad(fmt(b.deferred), numW);
+    row += fmt(tasks);
+
+    if (b.label.startsWith('Today')) {
+      const extras: string[] = [];
+      if (flaggedCount > 0) extras.push(`${flaggedCount} flagged`);
+      if (todayTagCount != null && todayTagCount > 0) extras.push(`${todayTagCount} tagged "today"`);
+      if (extras.length > 0) row += `  (+ ${extras.join(', ')})`;
+    }
+
+    out += row + '\n';
+  }
+
+  return out;
+}
+
+function fmt(n: number): string {
+  return n > 0 ? String(n) : '-';
+}
+
+function pad(s: string, w: number): string {
+  return s.padEnd(w);
 }

@@ -2,8 +2,8 @@
  * Generic tree builder and renderer.
  *
  * Takes flat arrays of items with id/parentId relationships and renders
- * an indented tree. Used by list_projects (folder→project) and potentially
- * list_tags (parent→child).
+ * an indented tree. Used by the unified view tool for folder→project and
+ * tag hierarchy rendering.
  */
 
 import { indentLine, statusBadge, flagIndicator, dueAnnotation } from './common.js';

@@ -20,10 +20,6 @@ import assert from 'node:assert/strict';
 // ── Import tool handlers ─────────────────────────────────────────────────
 import * as queryTool from '../dist/tools/definitions/queryOmnifocus.js';
 import * as viewTool from '../dist/tools/definitions/view.js';
-import * as listProjectsTool from '../dist/tools/definitions/listProjects.js';
-import * as listTagsTool from '../dist/tools/definitions/listTags.js';
-import * as listPerspectivesTool from '../dist/tools/definitions/listPerspectives.js';
-import * as showForecastTool from '../dist/tools/definitions/showForecast.js';
 import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -305,104 +301,6 @@ describe('integration: view tool', () => {
   });
 });
 
-// ── list_projects ────────────────────────────────────────────────────────
-
-describe('integration: list_projects', () => {
-  it('returns folder/project tree', async () => {
-    const result = await listProjectsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_projects');
-    const text = assertSuccess(r, 'list_projects');
-    assert.match(text, /Projects/, 'mentions Projects');
-    assert.match(text, /\d+ projects/, 'has project count');
-    assert.match(text, /\d+ folders/, 'has folder count');
-  });
-
-  it('includeCompleted returns more projects', async () => {
-    const [active, all] = await Promise.all([
-      listProjectsTool.handler({} as any, {}),
-      listProjectsTool.handler({ includeCompleted: true } as any, {}),
-    ]);
-    const activeR = assertMcpResponse(active, 'active');
-    const allR = assertMcpResponse(all, 'all');
-    assertSuccess(activeR, 'active');
-    assertSuccess(allR, 'all');
-  });
-});
-
-// ── list_tags ────────────────────────────────────────────────────────────
-
-describe('integration: list_tags', () => {
-  it('returns tag list with counts', async () => {
-    const result = await listTagsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_tags');
-    const text = assertSuccess(r, 'list_tags');
-    assert.match(text, /Tags \(\d+\)/, 'has tag count header');
-  });
-
-  it('includeOnHold returns tags', async () => {
-    const result = await listTagsTool.handler({ includeOnHold: true } as any, {});
-    const r = assertMcpResponse(result, 'list_tags onHold');
-    assertSuccess(r, 'list_tags onHold');
-  });
-});
-
-// ── list_perspectives ────────────────────────────────────────────────────
-
-describe('integration: list_perspectives', () => {
-  it('returns perspectives without crashing', async () => {
-    const result = await listPerspectivesTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_perspectives');
-    assertSuccess(r, 'list_perspectives');
-    assert.match(r.content[0].text, /Perspectives/, 'output mentions Perspectives');
-  });
-
-  it('custom-only filter', async () => {
-    const result = await listPerspectivesTool.handler({
-      includeBuiltIn: false, includeCustom: true,
-    } as any, {});
-    const r = assertMcpResponse(result, 'custom only');
-    assertSuccess(r, 'custom only');
-  });
-
-  it('built-in-only filter', async () => {
-    const result = await listPerspectivesTool.handler({
-      includeBuiltIn: true, includeCustom: false,
-    } as any, {});
-    const r = assertMcpResponse(result, 'builtin only');
-    assertSuccess(r, 'builtin only');
-  });
-});
-
-// ── show_forecast ────────────────────────────────────────────────────────
-
-describe('integration: show_forecast', () => {
-  it('default 14-day forecast', async () => {
-    const result = await showForecastTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'forecast');
-    const text = assertSuccess(r, 'forecast');
-    assert.match(text, /Forecast/, 'mentions Forecast');
-    assert.match(text, /Today/, 'has Today row');
-    assert.match(text, /Past/, 'has Past row');
-    assert.match(text, /Future/, 'has Future row');
-    assert.match(text, /Due/, 'has Due column');
-    assert.match(text, /Plan/, 'has Plan column');
-    assert.match(text, /Defer/, 'has Defer column');
-  });
-
-  it('7-day forecast', async () => {
-    const result = await showForecastTool.handler({ days: 7 } as any, {});
-    const r = assertMcpResponse(result, 'forecast 7d');
-    const text = assertSuccess(r, 'forecast 7d');
-    assert.match(text, /Forecast/, 'mentions Forecast');
-  });
-
-  it('1-day forecast (minimal)', async () => {
-    const result = await showForecastTool.handler({ days: 1 } as any, {});
-    const r = assertMcpResponse(result, 'forecast 1d');
-    assertSuccess(r, 'forecast 1d');
-  });
-});
-
 // ── query tool — similar predicate ────────────────────────────────────────
 
 describe('integration: query similar predicate', () => {
@@ -553,31 +451,31 @@ describe('integration: no raw JSON output', () => {
     assertNotRawJson(r.content[0].text, 'view project');
   });
 
-  it('list_projects — human-readable, not JSON', async () => {
-    const result = await listProjectsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_projects noJSON');
-    assertSuccess(r, 'list_projects noJSON');
-    assertNotRawJson(r.content[0].text, 'list_projects');
+  it('view perspectives — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ perspective: 'Perspectives' } as any, {});
+    const r = assertMcpResponse(result, 'view perspectives noJSON');
+    assertSuccess(r, 'view perspectives noJSON');
+    assertNotRawJson(r.content[0].text, 'view perspectives');
   });
 
-  it('list_tags — human-readable, not JSON', async () => {
-    const result = await listTagsTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_tags noJSON');
-    assertSuccess(r, 'list_tags noJSON');
-    assertNotRawJson(r.content[0].text, 'list_tags');
+  it('view projects perspective — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ perspective: 'Projects' } as any, {});
+    const r = assertMcpResponse(result, 'view projects noJSON');
+    assertSuccess(r, 'view projects noJSON');
+    assertNotRawJson(r.content[0].text, 'view projects');
   });
 
-  it('list_perspectives — human-readable, not JSON', async () => {
-    const result = await listPerspectivesTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_perspectives noJSON');
-    assertSuccess(r, 'list_perspectives noJSON');
-    assertNotRawJson(r.content[0].text, 'list_perspectives');
+  it('view tags perspective — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ perspective: 'Tags' } as any, {});
+    const r = assertMcpResponse(result, 'view tags noJSON');
+    assertSuccess(r, 'view tags noJSON');
+    assertNotRawJson(r.content[0].text, 'view tags');
   });
 
-  it('show_forecast — human-readable, not JSON', async () => {
-    const result = await showForecastTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'show_forecast noJSON');
-    assertSuccess(r, 'show_forecast noJSON');
-    assertNotRawJson(r.content[0].text, 'show_forecast');
+  it('view forecast perspective — human-readable, not JSON', async () => {
+    const result = await viewTool.handler({ perspective: 'Forecast' } as any, {});
+    const r = assertMcpResponse(result, 'view forecast noJSON');
+    assertSuccess(r, 'view forecast noJSON');
+    assertNotRawJson(r.content[0].text, 'view forecast');
   });
 });

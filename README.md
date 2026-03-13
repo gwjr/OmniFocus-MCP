@@ -19,7 +19,7 @@ Some ways you could use it:
 - Dump_database tool currently fails for very large omnifocus databases. 
 
 ## Roadmap
-- ~~Enable the client to interact with perspectives~~ ✅ (Added list_perspectives and get_perspective_view)
+- ~~Enable the client to interact with perspectives~~ ✅ (Unified under `view`)
 - ~~Add support for the new `planned` date type in Omnifocus 4.7~~ ✅ (Added plannedDate support for tasks)
 - Benefit from MCP `resource` and `prompt` features
 - Support manipulating notifications for projects and tasks
@@ -218,26 +218,17 @@ Parameters:
   - `name`: (Optional) The name of the item to remove
   - `itemType`: The type of item ('task' or 'project')
 
-### `list_perspectives` ⭐ NEW
-List all available perspectives in OmniFocus, including built-in and custom perspectives.
+### `view`
+Unified view/navigation tool for OmniFocus.
 
-Parameters:
-- `includeBuiltIn`: (Optional) Include built-in perspectives like Inbox, Projects, Tags (default: true)
-- `includeCustom`: (Optional) Include custom perspectives (Pro feature) (default: true)
+Examples:
+- `perspective: "Perspectives"` lists built-in and custom perspectives
+- `perspective: "Projects" | "Tags" | "Forecast" | "Flagged"` shows built-in views
+- `perspective: "<custom perspective name>"` resolves and runs a custom perspective
+- `url: "omnifocus:///task/<id>"` shows a task
+- `url: "omnifocus:///task/<project-id>"` shows tasks in a project
 
-Returns:
-- List of perspectives with their names, types (builtin/custom), and whether they can be modified
-
-### `get_perspective_view` ⭐ NEW
-Get the items visible in the current OmniFocus perspective. Shows what tasks and projects are displayed.
-
-Parameters:
-- `perspectiveName`: Name of the perspective to view (e.g., 'Inbox', 'Projects', 'Flagged')
-- `limit`: (Optional) Maximum number of items to return (default: 100)
-- `includeMetadata`: (Optional) Include additional metadata like tags and dates (default: true)
-- `fields`: (Optional) Specific fields to include in the response
-
-Note: This tool returns the content of the current perspective window. Due to OmniJS limitations, it cannot programmatically switch perspectives.
+It also still supports direct container-style access via `project`, `folder`, `tag`, and `inbox`.
 
 ## Development
 

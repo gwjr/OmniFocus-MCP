@@ -6,10 +6,6 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 // Import tool definitions
 import * as queryTool from './tools/definitions/queryOmnifocus.js';
 import * as viewTool from './tools/definitions/view.js';
-import * as listProjectsTool from './tools/definitions/listProjects.js';
-import * as listTagsTool from './tools/definitions/listTags.js';
-import * as listPerspectivesTool from './tools/definitions/listPerspectives.js';
-import * as showForecastTool from './tools/definitions/showForecast.js';
 import * as addTaskTool from './tools/definitions/addTask.js';
 import * as addProjectTool from './tools/definitions/addProject.js';
 import * as editTool from './tools/definitions/edit.js';
@@ -36,34 +32,10 @@ register("query",
   queryTool.handler);
 
 register("view",
-  "View tasks in a project, folder, tag, or perspective. Syntactic sugar over the query tool. Use project/folder/tag for container views, perspective for saved views (Flagged, Inbox), or inbox: true.",
+  "Unified read/navigation tool for OmniFocus. View containers, perspectives, perspective discovery, or OmniFocus URLs for tasks, projects, folders, tags, and perspectives.",
   viewTool.schema,
   { readOnlyHint: true, openWorldHint: false },
   viewTool.handler);
-
-register("list_projects",
-  "List all projects grouped by folder. Returns a folder→project tree with status, flags, due dates, and task counts.",
-  listProjectsTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  listProjectsTool.handler);
-
-register("list_tags",
-  "List all tags in OmniFocus with task counts. Returns tag names, hierarchy (parent/child), status, and number of active tasks per tag. Use this to discover available tags before filtering by them in the query tool.",
-  listTagsTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  listTagsTool.handler);
-
-register("list_perspectives",
-  "List all available perspectives in OmniFocus, including built-in perspectives (Inbox, Projects, Tags, etc.) and custom perspectives (Pro feature)",
-  listPerspectivesTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  listPerspectivesTool.handler);
-
-register("show_forecast",
-  "Show OmniFocus Forecast view: task counts per day by due, planned, and deferred date across a date range, with today's flagged and tagged counts.",
-  showForecastTool.schema,
-  { readOnlyHint: true, openWorldHint: false },
-  showForecastTool.handler);
 
 // Additive tools (not destructive, not idempotent)
 register("add_task",

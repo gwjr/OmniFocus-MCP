@@ -12,10 +12,6 @@ import assert from 'node:assert/strict';
 // ── Import all tool handlers and schemas ─────────────────────────────────
 import * as queryTool from '../dist/tools/definitions/queryOmnifocus.js';
 import * as viewTool from '../dist/tools/definitions/view.js';
-import * as listProjectsTool from '../dist/tools/definitions/listProjects.js';
-import * as listTagsTool from '../dist/tools/definitions/listTags.js';
-import * as listPerspectivesTool from '../dist/tools/definitions/listPerspectives.js';
-import * as showForecastTool from '../dist/tools/definitions/showForecast.js';
 import * as addTaskTool from '../dist/tools/definitions/addTask.js';
 import * as addProjectTool from '../dist/tools/definitions/addProject.js';
 import * as editTool from '../dist/tools/definitions/edit.js';
@@ -65,26 +61,6 @@ describe('tool schema exports: read-only tools', () => {
   it('view — exports schema and handler', () => {
     assert.ok(viewTool.schema, 'schema exists');
     assert.ok(typeof viewTool.handler === 'function', 'handler is a function');
-  });
-
-  it('list_projects — exports schema and handler', () => {
-    assert.ok(listProjectsTool.schema, 'schema exists');
-    assert.ok(typeof listProjectsTool.handler === 'function', 'handler is a function');
-  });
-
-  it('list_tags — exports schema and handler', () => {
-    assert.ok(listTagsTool.schema, 'schema exists');
-    assert.ok(typeof listTagsTool.handler === 'function', 'handler is a function');
-  });
-
-  it('list_perspectives — exports schema and handler', () => {
-    assert.ok(listPerspectivesTool.schema, 'schema exists');
-    assert.ok(typeof listPerspectivesTool.handler === 'function', 'handler is a function');
-  });
-
-  it('show_forecast — exports schema and handler', () => {
-    assert.ok(showForecastTool.schema, 'schema exists');
-    assert.ok(typeof showForecastTool.handler === 'function', 'handler is a function');
   });
 });
 
