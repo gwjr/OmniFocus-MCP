@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import { queryOmnifocus, type QueryOmnifocusParams } from '../primitives/queryOmnifocus.js';
+import { resolvePerspectiveQuery } from '../primitives/perspectiveQuery.js';
+import { resolveViewUrl } from '../primitives/viewUrl.js';
+import { handler as listPerspectivesHandler } from './listPerspectives.js';
+import { handler as listProjectsHandler } from './listProjects.js';
+import { handler as listTagsHandler } from './listTags.js';
+import { handler as showForecastHandler } from './showForecast.js';
 import { coerceJson, appendCoercionWarnings } from '../utils/coercion.js';
 import { formatItems } from '../formatters/queryResults.js';
 
@@ -13,8 +19,11 @@ export const schema = z.object({
   tag: z.string().optional().describe(
     "View tasks with a tag. Value is the tag name. Example: 'Urgent'"
   ),
+  url: z.string().optional().describe(
+    "View an OmniFocus item by URL. Supports task URLs and project URLs."
+  ),
   perspective: z.string().optional().describe(
-    "View a built-in perspective. Supported: 'Flagged', 'Inbox'. Custom perspectives run an opaque OmniJS query."
+    "View a built-in or custom perspective. Built-ins like 'Flagged' and 'Inbox' use fixed predicates; custom perspectives are translated from Omni Automation filter archives."
   ),
   inbox: z.boolean().optional().describe(
     "View inbox tasks. Shorthand for perspective: 'Inbox'."
@@ -36,27 +45,15 @@ export const schema = z.object({
   ))
 });
 
-// Built-in perspectives we can translate to predicates
-const PERSPECTIVE_PREDICATES: Record<string, { entity: string; where: unknown }> = {
-  flagged: {
-    entity: 'tasks',
-    where: { eq: [{ var: 'flagged' }, true] }
-  },
-  inbox: {
-    entity: 'tasks',
-    where: { eq: [{ var: 'inInbox' }, true] }
-  },
-};
-
 export async function handler(args: z.infer<typeof schema>, extra: any) {
   try {
     // Validate: exactly one view target
-    const targets = [args.project, args.folder, args.tag, args.perspective, args.inbox].filter(v => v != null);
+    const targets = [args.project, args.folder, args.tag, args.url, args.perspective, args.inbox].filter(v => v != null);
     if (targets.length === 0) {
       return {
         content: [{
           type: "text" as const,
-          text: appendCoercionWarnings("Specify one of: project, folder, tag, perspective, or inbox.")
+          text: appendCoercionWarnings("Specify one of: project, folder, tag, url, perspective, or inbox.")
         }],
         isError: true
       };
@@ -65,13 +62,14 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
       return {
         content: [{
           type: "text" as const,
-          text: appendCoercionWarnings("Specify only one view target (project, folder, tag, perspective, or inbox).")
+          text: appendCoercionWarnings("Specify only one view target (project, folder, tag, url, perspective, or inbox).")
         }],
         isError: true
       };
     }
 
     let queryParams: QueryOmnifocusParams;
+    let labelOverride: string | null = null;
 
     if (args.project) {
       queryParams = {
@@ -88,23 +86,19 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
         entity: 'tasks',
         where: { contains: [{ var: 'tags' }, args.tag] },
       };
+    } else if (args.url) {
+      const resolved = await resolveViewUrl(args.url);
+      queryParams = resolved.queryParams;
+      labelOverride = resolved.label;
     } else if (args.inbox) {
       queryParams = {
         entity: 'tasks',
         where: { eq: [{ var: 'inInbox' }, true] },
       };
     } else if (args.perspective) {
-      const key = args.perspective.toLowerCase();
-      const known = PERSPECTIVE_PREDICATES[key];
-      if (known) {
-        queryParams = {
-          entity: known.entity as any,
-          where: known.where,
-        };
-      } else {
-        // Unknown/custom perspective — use OmniJS getPerspectiveView fallback
-        return executeCustomPerspective(args);
-      }
+      const delegated = await handleReservedPerspective(args, extra);
+      if (delegated) return delegated;
+      queryParams = await resolvePerspectiveQuery(args.perspective);
     } else {
       return {
         content: [{
@@ -125,7 +119,7 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
 
     if (result.success) {
       const items = result.items || [];
-      const label = getViewLabel(args);
+      const label = labelOverride ?? getViewLabel(args);
 
       if (items.length === 0) {
         return {
@@ -166,53 +160,32 @@ export async function handler(args: z.infer<typeof schema>, extra: any) {
   }
 }
 
+async function handleReservedPerspective(args: z.infer<typeof schema>, extra: any) {
+  if (!args.perspective) return null;
+
+  switch (args.perspective.toLowerCase()) {
+    case 'perspectives':
+      return listPerspectivesHandler({}, extra);
+    case 'projects':
+      return listProjectsHandler(
+        { ...(args.includeCompleted != null ? { includeCompleted: args.includeCompleted } : {}) } as any,
+        extra,
+      );
+    case 'tags':
+      return listTagsHandler({} as any, extra);
+    case 'forecast':
+      return showForecastHandler({} as any, extra);
+    default:
+      return null;
+  }
+}
+
 function getViewLabel(args: z.infer<typeof schema>): string {
   if (args.project) return `project "${args.project}"`;
   if (args.folder) return `folder "${args.folder}"`;
   if (args.tag) return `tag "${args.tag}"`;
+  if (args.url) return `url "${args.url}"`;
   if (args.perspective) return `${args.perspective} perspective`;
   if (args.inbox) return 'Inbox';
   return 'view';
-}
-
-async function executeCustomPerspective(args: z.infer<typeof schema>) {
-  // For custom/unknown perspectives, delegate to the existing OmniJS script
-  const { executeOmniFocusScript } = await import('../../utils/scriptExecution.js');
-  const result = await executeOmniFocusScript('@getPerspectiveView.js');
-
-  if (result.error) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: appendCoercionWarnings(`Failed to get perspective: ${result.error}`)
-      }],
-      isError: true
-    };
-  }
-
-  let items = result.items || [];
-
-  if (args.limit) {
-    items = items.slice(0, args.limit);
-  }
-
-  const label = `${args.perspective} perspective`;
-  if (items.length === 0) {
-    return {
-      content: [{
-        type: "text" as const,
-        text: appendCoercionWarnings(`No items found in ${label}.`)
-      }]
-    };
-  }
-
-  let output = `## ${label} (${items.length} items)\n\n`;
-  output += formatItems(items, 'tasks');
-
-  return {
-    content: [{
-      type: "text" as const,
-      text: appendCoercionWarnings(output)
-    }]
-  };
 }

@@ -52,6 +52,52 @@ const PERSPECTIVES_SCRIPT = `(() => {
   }
 })()`;
 
+export interface CustomPerspectiveArchiveRow extends Row {
+  id: string;
+  name: string;
+  type: 'custom';
+  archivedTopLevelFilterAggregation: string | null;
+  archivedFilterRules: unknown[] | null;
+}
+
+function buildCustomPerspectiveArchivesScript(nameOrId?: string): string {
+  return `(() => {
+  try {
+    var match = ${JSON.stringify(nameOrId ?? null)};
+    var items = [];
+    var customs = Perspective.Custom.all || [];
+
+    customs.forEach(function(p) {
+      var id = p.identifier || ("custom_" + p.name.toLowerCase().replace(/\\s+/g, "_"));
+      if (match && p.name !== match && id !== match) return;
+
+      items.push({
+        id: id,
+        name: p.name,
+        type: "custom",
+        archivedTopLevelFilterAggregation: p.archivedTopLevelFilterAggregation || null,
+        archivedFilterRules: p.archivedFilterRules || null
+      });
+    });
+
+    return JSON.stringify({ items: items, count: items.length, error: null });
+  } catch (error) {
+    return JSON.stringify({ error: error.toString(), items: [], count: 0 });
+  }
+})()`;
+}
+
+async function executeTempOmniJs(script: string, prefix: string): Promise<any> {
+  const tempFile = `/tmp/${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.js`;
+  const fs = await import('fs');
+  fs.writeFileSync(tempFile, script);
+  try {
+    return await executeOmniFocusScript(tempFile);
+  } finally {
+    try { fs.unlinkSync(tempFile); } catch { /* ignore */ }
+  }
+}
+
 /**
  * Query perspectives via OmniJS, with optional Node-side predicate filtering.
  *
@@ -61,12 +107,7 @@ const PERSPECTIVES_SCRIPT = `(() => {
 export async function queryPerspectives(
   filterAst: LoweredExpr | true,
 ): Promise<Row[]> {
-  const tempFile = `/tmp/omnifocus_perspectives_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.js`;
-  const fs = await import('fs');
-  fs.writeFileSync(tempFile, PERSPECTIVES_SCRIPT);
-
-  const result = await executeOmniFocusScript(tempFile);
-  fs.unlinkSync(tempFile);
+  const result = await executeTempOmniJs(PERSPECTIVES_SCRIPT, 'omnifocus_perspectives');
 
   if (result.error) {
     throw new Error(`Perspectives error: ${result.error}`);
@@ -91,4 +132,39 @@ export async function queryPerspectives(
   // For count: caller reads items.length
   // For get: return all items
   return items;
+}
+
+export async function fetchCustomPerspectiveArchives(
+  nameOrId?: string,
+): Promise<CustomPerspectiveArchiveRow[]> {
+  const result = await executeTempOmniJs(
+    buildCustomPerspectiveArchivesScript(nameOrId),
+    'omnifocus_perspective_archives',
+  );
+
+  if (result.error) {
+    throw new Error(`Perspective archive fetch failed: ${result.error}`);
+  }
+
+  return (result.items || []) as CustomPerspectiveArchiveRow[];
+}
+
+export async function fetchTagNamesWithStatus(status: 'OnHold'): Promise<string[]> {
+  const result = await executeTempOmniJs(`(() => {
+  try {
+    var wanted = ${JSON.stringify(status)};
+    var names = flattenedTags
+      .filter(function(tag) { return String(tag.status).indexOf(wanted) !== -1; })
+      .map(function(tag) { return tag.name; });
+    return JSON.stringify({ items: names, count: names.length, error: null });
+  } catch (error) {
+    return JSON.stringify({ error: error.toString(), items: [], count: 0 });
+  }
+})()`, 'omnifocus_tag_status_names');
+
+  if (result.error) {
+    throw new Error(`Tag status fetch failed: ${result.error}`);
+  }
+
+  return (result.items || []) as string[];
 }

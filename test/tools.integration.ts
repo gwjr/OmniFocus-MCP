@@ -24,6 +24,7 @@ import * as listProjectsTool from '../dist/tools/definitions/listProjects.js';
 import * as listTagsTool from '../dist/tools/definitions/listTags.js';
 import * as listPerspectivesTool from '../dist/tools/definitions/listPerspectives.js';
 import * as showForecastTool from '../dist/tools/definitions/showForecast.js';
+import { queryOmnifocus } from '../dist/tools/primitives/queryOmnifocus.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -55,6 +56,41 @@ function assertNotRawJson(text: string, label: string): void {
     !trimmed.startsWith('{') && !trimmed.startsWith('['),
     `${label}: response starts with raw JSON — expected human-readable text.\nFirst 200 chars: ${trimmed.slice(0, 200)}`
   );
+}
+
+async function getSampleViewUrls(): Promise<{ taskUrl: string; projectUrl: string }> {
+  const [taskResult, projectResult] = await Promise.all([
+    queryOmnifocus({
+      entity: 'tasks',
+      where: {
+        and: [
+          { eq: [{ var: 'hasChildren' }, false] },
+          { isNotNull: [{ var: 'projectId' }] },
+        ],
+      },
+      select: ['id'],
+      limit: 1,
+    }),
+    queryOmnifocus({
+      entity: 'projects',
+      select: ['id'],
+      includeCompleted: true,
+      limit: 1,
+    }),
+  ]);
+
+  assert.ok(taskResult.success, `sample task ID query failed: ${taskResult.error}`);
+  assert.ok(projectResult.success, `sample project ID query failed: ${projectResult.error}`);
+
+  const taskId = taskResult.items?.[0]?.id;
+  const projectId = projectResult.items?.[0]?.id;
+  assert.equal(typeof taskId, 'string', 'sample task ID is missing');
+  assert.equal(typeof projectId, 'string', 'sample project ID is missing');
+
+  return {
+    taskUrl: `omnifocus:///task/${taskId}`,
+    projectUrl: `omnifocus:///task/${projectId}`,
+  };
 }
 
 // ── query tool ───────────────────────────────────────────────────────────
@@ -212,6 +248,50 @@ describe('integration: view tool', () => {
     const result = await viewTool.handler({ perspective: 'Flagged' } as any, {});
     const r = assertMcpResponse(result, 'flagged');
     assertSuccess(r, 'flagged');
+  });
+
+  it('Perspectives pseudo-perspective — lists perspectives', async () => {
+    const result = await viewTool.handler({ perspective: 'Perspectives' } as any, {});
+    const r = assertMcpResponse(result, 'perspectives view');
+    const text = assertSuccess(r, 'perspectives view');
+    assert.match(text, /Perspectives/, 'mentions Perspectives');
+  });
+
+  it('Projects built-in perspective — delegates to projects view', async () => {
+    const result = await viewTool.handler({ perspective: 'Projects' } as any, {});
+    const r = assertMcpResponse(result, 'projects perspective');
+    const text = assertSuccess(r, 'projects perspective');
+    assert.match(text, /Projects/, 'mentions Projects');
+  });
+
+  it('Tags built-in perspective — delegates to tags view', async () => {
+    const result = await viewTool.handler({ perspective: 'Tags' } as any, {});
+    const r = assertMcpResponse(result, 'tags perspective');
+    const text = assertSuccess(r, 'tags perspective');
+    assert.match(text, /Tags \(\d+\)/, 'has tag count header');
+  });
+
+  it('Forecast built-in perspective — delegates to forecast view', async () => {
+    const result = await viewTool.handler({ perspective: 'Forecast' } as any, {});
+    const r = assertMcpResponse(result, 'forecast perspective');
+    const text = assertSuccess(r, 'forecast perspective');
+    assert.match(text, /Forecast/, 'mentions Forecast');
+  });
+
+  it('task URL — returns the matching task', async () => {
+    const { taskUrl } = await getSampleViewUrls();
+    const result = await viewTool.handler({ url: taskUrl } as any, {});
+    const r = assertMcpResponse(result, 'task url');
+    const text = assertSuccess(r, 'task url');
+    assert.match(text, /task "/i, 'mentions task label');
+  });
+
+  it('project URL — returns tasks in the matching project', async () => {
+    const { projectUrl } = await getSampleViewUrls();
+    const result = await viewTool.handler({ url: projectUrl } as any, {});
+    const r = assertMcpResponse(result, 'project url');
+    const text = assertSuccess(r, 'project url');
+    assert.match(text, /project "/i, 'mentions project label');
   });
 
   it('view with select + limit — returns results', async () => {

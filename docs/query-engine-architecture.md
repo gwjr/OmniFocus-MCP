@@ -205,3 +205,7 @@ Easy and chain variables become `Scan` columns. Per-item and expensive variables
 - **Apple Events status descriptors** are strings like `"active status"`, not enums. Must map via lookup table.
 - **Chain properties** must use chained form (`items.containingProject.name()`) — 20x faster than per-item.
 - **Projects ARE tasks.** Every project has a root task in `flattenedTasks`. Task queries subtract project IDs via a `Difference` node.
+
+## Known Gap / TODO
+
+- **`container(tag, pred)` does not fully preserve tag scope through planning.** Translating custom perspective archives exposed a real domain-model gap: tasks may need to be filtered by properties of related tags, including tag status. The natural lowering is `container('tag', pred)` with `pred` evaluated against the tag registry, but parts of the current planner/validation flow still treat nested tag predicates as if they were task-scoped, so tag-only properties can fail as "unknown variable for entity tasks". This should be fixed in the planner/data model rather than papered over in perspective translation. Short-term metadata-assisted translation is acceptable as a spike, but the proper fix is to preserve related-entity scope end-to-end and possibly add explicit task-level joined/derived tag-state vars if they prove broadly useful.
