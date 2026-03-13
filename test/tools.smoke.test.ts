@@ -250,10 +250,10 @@ describe('smoke: view tool', () => {
   });
 });
 
-describe('smoke: list_perspectives', () => {
-  it('default args — returns perspectives', async () => {
-    const result = await listPerspectivesTool.handler({} as any, {});
-    const r = assertMcpResponse(result, 'list_perspectives');
-    assertSuccess(r, 'list_perspectives');
+describe('smoke: view perspectives', () => {
+  it('Perspectives pseudo-perspective — returns perspectives', async () => {
+    const result = await viewTool.handler({ perspective: 'Perspectives' } as any, {});
+    const r = assertMcpResponse(result, 'view perspectives');
+    assertSuccess(r, 'view perspectives');
   });
 });
