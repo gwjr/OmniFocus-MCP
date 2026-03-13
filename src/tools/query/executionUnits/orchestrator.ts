@@ -35,6 +35,8 @@ import { isTaskOnlyVar, type EntityType } from '../variables.js';
 import { enrichByIdentifier, canEnrichColumn } from '../../../utils/omniJsEnrich.js';
 import { extractLinks } from '../../../utils/extractLinks.js';
 import type { Row } from '../backends/nodeEval.js';
+import { composeAsyncPasses, composePasses, type ExecutePass, type LowerPass, type OptimizePass } from '../pipeline.js';
+import type { SetIrNode } from '../setIr.js';
 
 // ── Custom post-query enrichment registry ─────────────────────────────────
 //
@@ -406,9 +408,7 @@ export async function executeTargetedPlan(
 export async function executeEventPlan(
   plan: EventPlan,
 ): Promise<OrchestratorResult> {
-  const reordered = reorderEventPlan(plan);
-  const targeted = assignRuntimes(reordered);
-  return executeTargetedPlan(targeted);
+  return executeEventPlanPipeline(plan);
 }
 
 // ── Query pipeline entry point ───────────────────────────────────────────────
@@ -518,6 +518,78 @@ export function buildSetIrPlan(params: QueryPlanParams): import('../setIr.js').S
   }
 
   return plan;
+}
+
+export const compileQueryToSetIr: LowerPass<QueryPlanParams, SetIrNode> = function compileQueryToSetIr(
+  params,
+) {
+  return buildSetIrPlan(params);
+};
+
+export const optimizeSetIrPipeline: OptimizePass<SetIrNode> = function optimizeSetIrPipeline(
+  plan,
+) {
+  return optimizeSetIr(plan);
+};
+
+export function compileSetIrToEventPlan(
+  plan: SetIrNode,
+  outputColumns?: string[],
+): EventPlan {
+  return lowerSetIrToEventPlan(plan, outputColumns);
+}
+
+export const optimizeEventPlanPipeline: OptimizePass<EventPlan> = composePasses(
+  cseEventPlan,
+  pruneColumns,
+  mergeSemiJoins,
+);
+
+export const compileEventPlanToTargetedPlan: LowerPass<EventPlan, TargetedEventPlan> = function compileEventPlanToTargetedPlan(
+  plan,
+) {
+  return assignRuntimes(reorderEventPlan(plan));
+};
+
+export const executeTargetedPlanPipeline: ExecutePass<TargetedEventPlan, Promise<OrchestratorResult>> = function executeTargetedPlanPipeline(
+  plan,
+) {
+  return executeTargetedPlan(plan);
+};
+
+export const executeEventPlanPipeline: ExecutePass<EventPlan, Promise<OrchestratorResult>> = async function executeEventPlanPipeline(
+  plan,
+) {
+  const runEventPlan = composeAsyncPasses(
+    compileEventPlanToTargetedPlan,
+    executeTargetedPlanPipeline,
+  );
+  return runEventPlan(plan);
+};
+
+export function compileQueryToEventPlan(
+  params: QueryPlanParams,
+): EventPlan {
+  const buildEventPlan = composePasses(
+    compileQueryToSetIr,
+    optimizeSetIrPipeline,
+    (setIr: SetIrNode) => compileSetIrToEventPlan(setIr, params.select),
+    optimizeEventPlanPipeline,
+  );
+  return buildEventPlan(params);
+}
+
+export async function executeSetIrPlan(
+  plan: SetIrNode,
+  outputColumns?: string[],
+): Promise<OrchestratorResult> {
+  const executeFromSetIr = composeAsyncPasses(
+    optimizeSetIrPipeline,
+    (optimizedSetIr: SetIrNode) => compileSetIrToEventPlan(optimizedSetIr, outputColumns),
+    optimizeEventPlanPipeline,
+    executeEventPlanPipeline,
+  );
+  return executeFromSetIr(plan);
 }
 
 // ── Column overlap analysis ──────────────────────────────────────────────────
@@ -645,13 +717,7 @@ export async function executeQueryFromAst(
 
   // ── Standard full-scan path ────────────────────────────────────────────
 
-  let plan = buildSetIrPlan(planParams);
-  plan = optimizeSetIr(plan);
-  const ep     = lowerSetIrToEventPlan(plan, planParams.select);
-  const csed   = cseEventPlan(ep);
-  const pruned = pruneColumns(csed);
-  const merged = mergeSemiJoins(pruned);
-  const result = await executeEventPlan(merged);
+  const result = await executeEventPlanPipeline(compileQueryToEventPlan(planParams));
 
   if (customCols.length > 0) return applyCustomEnrichments(result, entity, customCols);
   return result;
@@ -853,15 +919,8 @@ async function executeDeferredEnrichment(
 
   // Build and execute the filter-only plan
   const filterParams: QueryPlanParams = { ...params, select: filterSelect };
-  let plan = buildSetIrPlan(filterParams);
-  plan = optimizeSetIr(plan);
-  const ep     = lowerSetIrToEventPlan(plan, filterSelect);
-  const csed   = cseEventPlan(ep);
-  const pruned = pruneColumns(csed);
-  const merged = mergeSemiJoins(pruned);
-
   const t0 = Date.now();
-  const filterResult = await executeEventPlan(merged);
+  const filterResult = await executeEventPlanPipeline(compileQueryToEventPlan(filterParams));
   const filterMs = Date.now() - t0;
 
   // Extract rows and IDs from the filter result

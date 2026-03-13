@@ -13,7 +13,14 @@ import assert from 'node:assert/strict';
 import type { EventNode, Ref, RuntimeAllocation } from '../dist/tools/query/eventPlan.js';
 import type { TargetedEventPlan, TargetedNode, ExecutionUnit, Input } from '../dist/tools/query/targetedEventPlan.js';
 import { executeNodeUnit } from '../dist/tools/query/executionUnits/nodeUnit.js';
-import { executeTargetedPlan, computeExportedRefs, unpackResult, buildInputMap } from '../dist/tools/query/executionUnits/orchestrator.js';
+import {
+  executeTargetedPlan,
+  computeExportedRefs,
+  unpackResult,
+  buildInputMap,
+  compileEventPlanToTargetedPlan,
+  executeEventPlanPipeline,
+} from '../dist/tools/query/executionUnits/orchestrator.js';
 import { splitExecutionUnits } from '../dist/tools/query/targetedEventPlanLowering.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -750,6 +757,56 @@ describe('executeTargetedPlan — multi-node unit', () => {
 
     const result = await executeTargetedPlan(plan);
     assert.deepEqual(result.value, []);
+  });
+});
+
+describe('pass-composed execution helpers', () => {
+
+  it('compileEventPlanToTargetedPlan targets a node-only EventPlan', () => {
+    const eventPlan = {
+      nodes: [
+        { kind: 'Zip', columns: [] },
+        { kind: 'Limit', source: 0, n: 1 },
+      ],
+      result: 1,
+    } as const;
+
+    const targeted = compileEventPlanToTargetedPlan(eventPlan);
+    assert.equal(targeted.nodes[0].runtimeAllocation.runtime, 'node');
+    assert.equal(targeted.nodes[1].runtimeAllocation.runtime, 'node');
+  });
+
+  it('executeEventPlanPipeline executes a node-only EventPlan', async () => {
+    const eventPlan = {
+      nodes: [
+        { kind: 'Zip', columns: [] },
+        { kind: 'Limit', source: 0, n: 1 },
+      ],
+      result: 1,
+    } as const;
+
+    const result = await executeEventPlanPipeline(eventPlan);
+    assert.deepEqual(result.value, []);
+    assert.equal(result.timings.length, 1);
+    assert.equal(result.timings[0].runtime, 'node');
+  });
+
+  it('repeated executeEventPlanPipeline calls do not leak state', async () => {
+    const eventPlan = {
+      nodes: [
+        { kind: 'Zip', columns: [] },
+        { kind: 'Limit', source: 0, n: 1 },
+      ],
+      result: 1,
+    } as const;
+
+    const first = await executeEventPlanPipeline(eventPlan);
+    const second = await executeEventPlanPipeline(eventPlan);
+
+    assert.deepEqual(first.value, []);
+    assert.deepEqual(second.value, []);
+    assert.equal(first.timings[0].runtime, 'node');
+    assert.equal(second.timings[0].runtime, 'node');
   });
 });
 

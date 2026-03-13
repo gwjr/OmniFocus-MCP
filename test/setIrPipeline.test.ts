@@ -9,7 +9,18 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildSetIrPlan, analyseColumnOverlap, isNativeCountEligible, buildNativeCountScript, isNativeExistsEligible, buildNativeExistsScript } from '../dist/tools/query/executionUnits/orchestrator.js';
+import {
+  buildSetIrPlan,
+  analyseColumnOverlap,
+  isNativeCountEligible,
+  buildNativeCountScript,
+  isNativeExistsEligible,
+  buildNativeExistsScript,
+  compileQueryToSetIr,
+  compileSetIrToEventPlan,
+  compileQueryToEventPlan,
+  optimizeEventPlanPipeline,
+} from '../dist/tools/query/executionUnits/orchestrator.js';
 import { lowerSetIrToEventPlan } from '../dist/tools/query/lowerSetIrToEventPlan.js';
 import { canEnrichColumn } from '../dist/utils/omniJsEnrich.js';
 import type { LoweredExpr }      from '../dist/tools/query/fold.js';
@@ -62,6 +73,41 @@ describe('buildSetIrPlan — op:count on projects (no project exclusion)', () =>
   it('outermost node is Count', () => {
     const plan = buildSetIrPlan({ entity: 'projects', op: 'count', predicate: null });
     assert.equal(plan.kind, 'Count');
+  });
+});
+
+describe('pass-composed query pipeline helpers', () => {
+  it('compileQueryToSetIr matches buildSetIrPlan', () => {
+    const params = { entity: 'tasks' as const, op: 'get' as const, predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } as LoweredExpr, select: ['name'] };
+    assert.deepEqual(
+      compileQueryToSetIr(params),
+      buildSetIrPlan(params),
+    );
+  });
+
+  it('compileSetIrToEventPlan matches direct lowering', () => {
+    const setIr = buildSetIrPlan({ entity: 'tasks', op: 'get', predicate: { op: 'eq', args: [{ var: 'flagged' }, true] }, select: ['name'] });
+    assert.deepEqual(
+      compileSetIrToEventPlan(setIr, ['name']),
+      lowerSetIrToEventPlan(setIr, ['name']),
+    );
+  });
+
+  it('compileQueryToEventPlan returns the optimized EventPlan pipeline output', () => {
+    const params = {
+      entity: 'tasks' as const,
+      op: 'get' as const,
+      predicate: { op: 'eq', args: [{ var: 'flagged' }, true] } as LoweredExpr,
+      select: ['name'],
+    };
+
+    const setIr = optimizeSetIr(buildSetIrPlan(params));
+    const eventPlan = lowerSetIrToEventPlan(setIr, ['name']);
+
+    assert.deepEqual(
+      compileQueryToEventPlan(params),
+      optimizeEventPlanPipeline(eventPlan),
+    );
   });
 });
 
